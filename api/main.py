@@ -1,6 +1,7 @@
 """
 FastAPI 主入口 + 全局中间件
 """
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -18,6 +19,24 @@ from core.auth import hash_password
 from config.settings import settings
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理（替代废弃的 on_event）"""
+    logger.info("=" * 60)
+    logger.info("个人数字分身 · 多Agent私有RAG系统 启动中...")
+    logger.info("=" * 60)
+    init_database()
+    create_admin_user(settings.admin_username, hash_password(settings.admin_password))
+    logger.info(f"DeepSeek 模型: {settings.deepseek_model}")
+    logger.info(f"Embedding 模型: {settings.embedding_model}")
+    logger.info(f"Rerank 模型: {settings.rerank_model}")
+    logger.info(f"ChromaDB 路径: {settings.chroma_persist_dir}")
+    logger.info(f"上传文件路径: {settings.upload_dir}")
+    logger.info("系统就绪 ✓")
+    yield
+    logger.info("系统关闭")
+
+
 def create_app() -> FastAPI:
     """创建并配置 FastAPI 应用"""
     app = FastAPI(
@@ -26,6 +45,7 @@ def create_app() -> FastAPI:
         version="1.0.0",
         docs_url="/api/docs",
         redoc_url="/api/redoc",
+        lifespan=lifespan,
     )
 
     # --- CORS 中间件 ---
@@ -74,21 +94,6 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     async def health_check():
         return {"status": "ok", "version": "1.0.0"}
-
-    # --- 启动初始化（lifespan 替代废弃的 on_event） ---
-    @app.on_event("startup")
-    async def startup():
-        logger.info("=" * 60)
-        logger.info("个人数字分身 · 多Agent私有RAG系统 启动中...")
-        logger.info("=" * 60)
-        init_database()
-        create_admin_user(settings.admin_username, hash_password(settings.admin_password))
-        logger.info(f"DeepSeek 模型: {settings.deepseek_model}")
-        logger.info(f"Embedding 模型: {settings.embedding_model}")
-        logger.info(f"Rerank 模型: {settings.rerank_model}")
-        logger.info(f"ChromaDB 路径: {settings.chroma_persist_dir}")
-        logger.info(f"上传文件路径: {settings.upload_dir}")
-        logger.info("系统就绪 ✓")
 
     return app
 

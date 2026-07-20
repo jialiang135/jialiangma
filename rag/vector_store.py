@@ -62,9 +62,10 @@ def add_documents(
     chunks: list[str],
     metadatas: list[dict],
     ids: Optional[list[str]] = None,
+    batch_size: int = 10,
 ) -> list[str]:
     """
-    将文本块添加到向量库。
+    将文本块分批添加到向量库（DashScope Embedding 限制每批最多 10 条）。
     metadatas 必须包含 owner_id 和 source 字段。
     返回添加的文档 ID 列表。
     """
@@ -74,24 +75,34 @@ def add_documents(
     vector_store = get_vector_store()
 
     if ids is None:
-        # 基于内容哈希生成 ID
         import hashlib
         ids = [
             hashlib.md5(chunk.encode("utf-8")).hexdigest()[:16]
             for chunk in chunks
         ]
 
-    try:
-        added_ids = vector_store.add_texts(
-            texts=chunks,
-            metadatas=metadatas,
-            ids=ids,
-        )
-        logger.info(f"向量库入库: {len(added_ids)} 条")
-        return added_ids
-    except Exception as e:
-        logger.error(f"向量库入库失败: {e}")
-        raise
+    all_ids = []
+    total = len(chunks)
+
+    for i in range(0, total, batch_size):
+        batch_chunks = chunks[i:i + batch_size]
+        batch_metadatas = metadatas[i:i + batch_size]
+        batch_ids = ids[i:i + batch_size]
+
+        try:
+            added = vector_store.add_texts(
+                texts=batch_chunks,
+                metadatas=batch_metadatas,
+                ids=batch_ids,
+            )
+            all_ids.extend(added)
+            logger.info(f"向量库入库: {i + len(batch_chunks)}/{total}")
+        except Exception as e:
+            logger.error(f"向量库入库失败 (batch {i // batch_size}): {e}")
+            raise
+
+    logger.info(f"向量库入库完成: {len(all_ids)} 条")
+    return all_ids
 
 
 def search_by_owner(

@@ -436,11 +436,11 @@ class TestIntegration:
         assert resp.status_code == 200
         # 读取 SSE 流
         body = ""
-        for chunk in resp.iter_content(chunk_size=1024, decode_unicode=True):
-            if chunk:
-                body += chunk
-                if '"done"' in body:
-                    break
+        for chunk in resp.iter_bytes(chunk_size=1024):
+            text = chunk.decode("utf-8", errors="replace")
+            body += text
+            if '"done"' in body:
+                break
         assert len(body) > 0
 
         os.unlink(tmp_path)
@@ -453,11 +453,11 @@ class TestIntegration:
         })
         assert resp.status_code == 200
         body = ""
-        for chunk in resp.iter_content(chunk_size=1024, decode_unicode=True):
-            if chunk:
-                body += chunk
-                if '"done"' in body:
-                    break
+        for chunk in resp.iter_bytes(chunk_size=1024):
+            text = chunk.decode("utf-8", errors="replace")
+            body += text
+            if '"done"' in body:
+                break
         # 公开接口不需要登录，但 owner_id=0，应该搜不到知识库
         # 不验证具体内容，只验证返回了 SSE 格式
         assert "data:" in body

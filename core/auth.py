@@ -11,6 +11,7 @@ from loguru import logger
 from config.settings import settings
 
 security_scheme = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 
 # ========================================
@@ -111,12 +112,14 @@ async def require_admin(
 
 
 async def get_optional_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
 ) -> dict | None:
     """
     可选的鉴权依赖。如果 token 无效不报错，返回 None。
     用于对话页：未登录也可简单对话，但无法访问知识库。
     """
+    if credentials is None:
+        return None
     try:
         return await get_current_user(credentials)
     except HTTPException:

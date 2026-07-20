@@ -23,14 +23,14 @@ class Settings(BaseSettings):
     # --- 阿里云 DashScope ---
     dashscope_api_key: str = "sk-your-dashscope-api-key-here"
     embedding_model: str = "text-embedding-v4"
-    rerank_model: str = "gte-rerank"
+    rerank_model: str = "gte-rerank-v2"
 
     # --- 管理员 ---
     admin_username: str = "admin"
     admin_password: str = "admin123456"
 
     # --- JWT ---
-    jwt_secret_key: str = "change-me-to-a-random-secret-string"
+    jwt_secret_key: str = "personal-agent-default-jwt-secret-change-in-production-env"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 480
 
@@ -131,7 +131,7 @@ def rerank_with_dashscope(query: str, documents: list[str], top_n: int = 5) -> l
                 {
                     "index": item["index"],
                     "score": item["relevance_score"],
-                    "text": item["document"],
+                    "text": item["document"] if isinstance(item["document"], str) else item["document"]["text"],
                 }
                 for item in result.output["results"]
             ]
