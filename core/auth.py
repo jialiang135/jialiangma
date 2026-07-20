@@ -36,11 +36,12 @@ def verify_password(password: str, hashed: str) -> bool:
 # JWT Token
 # ========================================
 
-def create_access_token(owner_id: int, username: str) -> str:
+def create_access_token(owner_id: int, username: str, role: str = "user") -> str:
     """签发 JWT access token"""
     payload = {
         "sub": str(owner_id),
         "username": username,
+        "role": role,
         "iat": datetime.now(timezone.utc),
         "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes),
     }
@@ -83,13 +84,30 @@ async def get_current_user(
     """
     FastAPI 鉴权依赖注入。
     在所有需要登录的 API 路由中注入此依赖即可。
-    返回 {"owner_id": int, "username": str}
+    返回 {"owner_id": int, "username": str, "role": str}
     """
     payload = verify_token(credentials.credentials)
     owner_id = int(payload.get("sub"))
     username = payload.get("username", "")
-    logger.debug(f"鉴权通过: owner_id={owner_id}, username={username}")
-    return {"owner_id": owner_id, "username": username}
+    role = payload.get("role", "user")
+    logger.debug(f"鉴权通过: owner_id={owner_id}, username={username}, role={role}")
+    return {"owner_id": owner_id, "username": username, "role": role}
+
+
+async def require_admin(
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """
+    管理员权限依赖注入。
+    在 get_current_user 基础上额外检查 role == 'admin'，
+    非管理员返回 403 Forbidden。
+    """
+    if user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="需要管理员权限",
+        )
+    return user
 
 
 async def get_optional_user(
@@ -100,9 +118,6 @@ async def get_optional_user(
     用于对话页：未登录也可简单对话，但无法访问知识库。
     """
     try:
-        payload = verify_token(credentials.credentials)
-        owner_id = int(payload.get("sub"))
-        username = payload.get("username", "")
-        return {"owner_id": owner_id, "username": username}
+        return await get_current_user(credentials)
     except HTTPException:
         return None

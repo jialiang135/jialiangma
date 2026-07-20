@@ -4,6 +4,9 @@
 # --- UI 框架 ---
 # (已替换为 Vue 3 前端，不再需要 Gradio)
 
+# --- FastAPI 文件上传依赖 ---
+python-multipart>=0.0.9
+
 # --- 异步 HTTP ---
 httpx>=0.25.0
 

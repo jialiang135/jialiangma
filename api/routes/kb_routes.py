@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Form
 from loguru import logger
 
 from core.schemas import FileUploadResponse, KnowledgeBaseStats, FileMetaOut, APIResponse
-from core.auth import get_current_user
+from core.auth import get_current_user, require_admin
 from core.database import (
     get_files_by_owner,
     get_file_by_id,
@@ -34,9 +34,10 @@ router = APIRouter(prefix="/api/kb", tags=["知识库"])
 
 @router.get("/files", response_model=KnowledgeBaseStats)
 async def list_files(user: dict = Depends(get_current_user)):
-    """列出当前用户的所有已上传文件"""
-    files = get_files_by_owner(user["owner_id"])
-    stats = get_collection_stats(user["owner_id"])
+    """列出知识库文件（所有用户共享管理员的知识库）"""
+    KB_OWNER_ID = 1
+    files = get_files_by_owner(KB_OWNER_ID)
+    stats = get_collection_stats(KB_OWNER_ID)
 
     return KnowledgeBaseStats(
         total_files=len(files),
@@ -59,10 +60,10 @@ async def list_files(user: dict = Depends(get_current_user)):
 @router.post("/upload", response_model=APIResponse)
 async def upload_files(
     files: list[UploadFile] = File(...),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_admin),
 ):
     """
-    批量上传文件并入库。
+    批量上传文件并入库。（仅管理员）
     支持 PDF/Word/Excel/TXT/MD/图片/ZIP。
     """
     if not files:
@@ -162,9 +163,9 @@ async def upload_files(
 @router.delete("/files/{file_id}", response_model=APIResponse)
 async def delete_file(
     file_id: int,
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_admin),
 ):
-    """删除指定文件（知识库 + 磁盘 + 数据库）"""
+    """删除指定文件（知识库 + 磁盘 + 数据库）（仅管理员）"""
     owner_id = user["owner_id"]
 
     file_record = get_file_by_id(file_id)
@@ -195,8 +196,8 @@ async def delete_file(
 
 
 @router.delete("/clear", response_model=APIResponse)
-async def clear_knowledge_base(user: dict = Depends(get_current_user)):
-    """清空当前用户的所有知识库数据"""
+async def clear_knowledge_base(user: dict = Depends(require_admin)):
+    """清空当前用户的所有知识库数据（仅管理员）"""
     owner_id = user["owner_id"]
 
     deleted_chunks = delete_all_by_owner(owner_id)
@@ -220,8 +221,8 @@ async def clear_knowledge_base(user: dict = Depends(get_current_user)):
 
 
 @router.post("/rebuild", response_model=APIResponse)
-async def rebuild_knowledge_base(user: dict = Depends(get_current_user)):
-    """重建知识库：重新处理所有已上传文件"""
+async def rebuild_knowledge_base(user: dict = Depends(require_admin)):
+    """重建知识库：重新处理所有已上传文件（仅管理员）"""
     owner_id = user["owner_id"]
 
     # 清空向量库

@@ -1,6 +1,6 @@
 <template>
   <div class="kb-view">
-    <div class="kb-upload-area">
+    <div class="kb-upload-area" v-if="auth.isAdmin">
       <h3>📤 上传文档</h3>
       <div class="upload-row">
         <input type="file" ref="fileInput" multiple accept=".pdf,.docx,.xlsx,.txt,.md,.py,.json,.zip,.png,.jpg" />
@@ -15,7 +15,7 @@
 
     <div class="kb-toolbar">
       <button class="btn btn-sm" @click="refreshFiles">🔄 刷新文件列表</button>
-      <div class="toolbar-right">
+      <div class="toolbar-right" v-if="auth.isAdmin">
         <button class="btn btn-sm btn-danger" @click="doClear">🗑 清空知识库</button>
         <button class="btn btn-sm" :disabled="rebuilding" @click="doRebuild">
           {{ rebuilding ? '重建中...' : '🔧 重建向量索引' }}
@@ -34,7 +34,7 @@
           <span class="file-name">#{{ f.id }} {{ f.filename }}</span>
           <span class="file-meta">{{ formatSize(f.file_size) }} · {{ f.chunk_count }} 块 · {{ formatDate(f.created_at) }}</span>
         </div>
-        <button class="btn btn-sm btn-danger" @click="doDelete(f.id)">删除</button>
+        <button v-if="auth.isAdmin" class="btn btn-sm btn-danger" @click="doDelete(f.id)">删除</button>
       </div>
     </div>
   </div>

@@ -62,7 +62,10 @@
             <td>{{ formatPct(r.accuracy) }}</td>
             <td>{{ formatPct(r.hallucination_rate) }}</td>
             <td>{{ String(r.created_at || '').slice(0, 19) }}</td>
-            <td><button class="btn btn-sm" @click="viewDetail(r.id)">详情</button></td>
+            <td>
+              <button class="btn btn-sm" @click="viewDetail(r.id)">详情</button>
+              <button v-if="auth.isAdmin" class="btn btn-sm btn-danger" @click="doDeleteReport(r.id)">删除</button>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -81,7 +84,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { uploadTestset, runEval, getEvalReports, getEvalReportDetail } from '../api/eval.js'
+import { uploadTestset, runEval, getEvalReports, getEvalReportDetail, deleteEvalReport } from '../api/eval.js'
 import { exportEvalReportMarkdown } from '../api/export.js'
 import { useAuthStore } from '../stores/auth.js'
 
@@ -170,6 +173,21 @@ async function viewDetail(id) {
     }
   } catch (e) {
     showMsg(`获取详情失败: ${e.message}`, 'error')
+  }
+}
+
+async function doDeleteReport(reportId) {
+  if (!confirm('确定删除此评测报告？此操作不可恢复！')) return
+  try {
+    const res = await deleteEvalReport(reportId)
+    if (res.success) {
+      showMsg(`✅ ${res.message}`, 'success')
+      await refreshReports()
+    } else {
+      showMsg(`❌ ${res.error || res.message || '删除失败'}`, 'error')
+    }
+  } catch (e) {
+    showMsg(`❌ ${e.message}`, 'error')
   }
 }
 

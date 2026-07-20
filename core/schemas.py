@@ -20,9 +20,16 @@ class UserLogin(BaseModel):
     password: str
 
 
+class UserRegister(BaseModel):
+    """用户注册——默认注册为普通用户"""
+    username: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=6, max_length=128)
+
+
 class UserOut(BaseModel):
     id: int
     username: str
+    role: str
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -33,6 +40,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     owner_id: int
     username: str
+    role: str = "user"
 
 
 # ========================================

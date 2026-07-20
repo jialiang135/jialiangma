@@ -30,9 +30,17 @@ def init_database():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # 兼容旧数据库：如果 role 列不存在则添加
+    try:
+        cursor.execute("SELECT role FROM users LIMIT 1")
+    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'")
+        logger.info("数据库迁移：users 表添加 role 列（旧用户默认 admin）")
 
     # 上传文件元数据表
     cursor.execute("""
@@ -125,16 +133,41 @@ def create_admin_user(username: str, password_hash: str):
             "SELECT id FROM users WHERE username = ?", (username,)
         ).fetchone()
         if existing:
+            # 确保已有管理员角色
+            conn.execute(
+                "UPDATE users SET role = 'admin' WHERE username = ? AND role != 'admin'",
+                (username,),
+            )
+            conn.commit()
             logger.info("管理员账号已存在，跳过创建")
             return existing["id"]
 
         cursor = conn.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')",
             (username, password_hash),
         )
         conn.commit()
         user_id = cursor.lastrowid
-        logger.info("管理员账号创建成功: {} (id={})", username, user_id)
+        logger.info("管理员账号创建成功: {} (id={}, role=admin)", username, user_id)
+        return user_id
+
+
+def create_user(username: str, password_hash: str, role: str = "user") -> int:
+    """创建普通用户，返回用户ID。用户名已存在则抛异常"""
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT id FROM users WHERE username = ?", (username,)
+        ).fetchone()
+        if existing:
+            raise ValueError(f"用户名已被占用: {username}")
+
+        cursor = conn.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            (username, password_hash, role),
+        )
+        conn.commit()
+        user_id = cursor.lastrowid
+        logger.info("用户创建成功: {} (id={}, role={})", username, user_id, role)
         return user_id
 
 
@@ -383,3 +416,13 @@ def get_eval_report_by_id(report_id: int) -> Optional[dict]:
         d["results"] = json.loads(d.get("results_json", "[]"))
         d["recommendations"] = json.loads(d.get("recommendations_json", "[]"))
         return d
+
+
+def delete_eval_report(report_id: int) -> bool:
+    """删除评测报告，返回是否成功"""
+    with get_db() as conn:
+        cursor = conn.execute(
+            "DELETE FROM eval_reports WHERE id = ?", (report_id,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0

@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from loguru import logger
 
 from core.schemas import APIResponse, EvalTestSet
-from core.auth import get_current_user
-from core.database import get_eval_reports, get_eval_report_by_id, insert_eval_report
+from core.auth import get_current_user, require_admin
+from core.database import get_eval_reports, get_eval_report_by_id, insert_eval_report, delete_eval_report
 from agent.eval_agent import eval_agent_node
 from agent.state import AgentState
 
@@ -181,3 +181,24 @@ async def get_report_detail(
         message=f"评测报告: {report['testset_name']}",
         data=report,
     )
+
+
+@router.delete("/reports/{report_id}", response_model=APIResponse)
+async def delete_report(
+    report_id: int,
+    user: dict = Depends(require_admin),
+):
+    """删除评测报告（仅管理员）"""
+    report = get_eval_report_by_id(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="报告不存在")
+
+    deleted = delete_eval_report(report_id)
+    if deleted:
+        logger.info(f"[Eval API] 删除评测报告: id={report_id}, name={report['testset_name']}, by={user['username']}")
+        return APIResponse(
+            success=True,
+            message=f"已删除评测报告: {report['testset_name']}",
+        )
+    else:
+        raise HTTPException(status_code=500, detail="删除失败")

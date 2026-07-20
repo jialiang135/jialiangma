@@ -122,6 +122,8 @@ async def tool_executor_node(state: AgentState) -> dict:
         return {"needs_tool_call": False}
 
     owner_id = state.get("owner_id", 1)
+    # KB 工具统一用管理员知识库（owner_id=1），对话历史用用户自己的
+    KB_OWNER_ID = 1
     tool_messages = []
     reasoning_updates = []
 
@@ -130,8 +132,11 @@ async def tool_executor_node(state: AgentState) -> dict:
         tool_args = tc.get("args", {})
         tool_call_id = tc["id"]
 
-        # 自动注入 owner_id
-        tool_args["owner_id"] = owner_id
+        # 注入 owner_id：对话历史用用户自己的，其余工具用管理员的
+        if tool_name == "get_chat_context":
+            tool_args["owner_id"] = owner_id
+        else:
+            tool_args["owner_id"] = KB_OWNER_ID
 
         logger.info("[ToolExecutor] 执行: {} args={}", tool_name, tool_args)
 
@@ -175,12 +180,12 @@ async def retrieve_before_chat(state: AgentState) -> dict:
     如果检索结果为空，设置兜底标记。
     """
     user_query = state.get("user_query", "")
-    owner_id = state.get("owner_id", 1)
 
     if not user_query.strip():
         return {"knowledge_context": "", "retrieved_docs": []}
 
-    result = retrieve(query=user_query, owner_id=owner_id, top_k_rerank=5)
+    # 所有用户共享同一份知识库（管理员的知识库），检索时固定查 owner_id=1
+    result = retrieve(query=user_query, owner_id=1, top_k_rerank=5)
 
     if not result["documents"]:
         logger.info("[ChatAgent] 知识库检索为空，将使用兜底回复")

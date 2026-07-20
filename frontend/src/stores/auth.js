@@ -11,6 +11,8 @@ export const useAuthStore = defineStore('auth', () => {
   const isLoggedIn = computed(() => !!token.value)
   const username = computed(() => user.value?.username || '')
   const ownerId = computed(() => user.value?.owner_id || user.value?.id || 0)
+  const role = computed(() => user.value?.role || 'user')
+  const isAdmin = computed(() => role.value === 'admin')
 
   async function login(username, password) {
     loading.value = true
@@ -22,7 +24,7 @@ export const useAuthStore = defineStore('auth', () => {
         return false
       }
       token.value = res.access_token
-      const userData = { username: res.username, owner_id: res.owner_id }
+      const userData = { username: res.username, owner_id: res.owner_id, role: res.role || 'user' }
       user.value = userData
       localStorage.setItem('token', res.access_token)
       localStorage.setItem('user', JSON.stringify(userData))
@@ -50,5 +52,5 @@ export const useAuthStore = defineStore('auth', () => {
     })
   }
 
-  return { token, user, loading, error, isLoggedIn, username, ownerId, login, logout }
+  return { token, user, loading, error, isLoggedIn, username, ownerId, role, isAdmin, login, logout }
 })

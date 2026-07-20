@@ -77,18 +77,62 @@ body {
 /* ═══ Login Bar ═══ */
 .login-bar {
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.login-row {
+  display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
 }
 
 .user-badge {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
-  color: #16a34a;
 }
 
-.error-msg {
+.role-tag {
+  font-size: 11px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+.role-admin { background: #fee2e2; color: #dc2626; }
+.role-user  { background: #dcfce7; color: #16a34a; }
+
+.input-xs {
+  width: 100px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
   font-size: 12px;
+  outline: none;
+}
+.input-xs:focus { border-color: var(--primary); }
+
+.btn-xs {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.btn-xs:hover { background: #f1f5f9; }
+.btn-xs:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-xs.btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+.btn-xs.btn-primary:hover { background: var(--primary-hover); }
+.btn-xs.btn-outline { background: transparent; }
+.btn-xs.btn-register { background: #16a34a; color: #fff; border-color: #16a34a; }
+.btn-xs.btn-register:hover { background: #15803d; }
+
+.error-msg {
+  font-size: 11px;
   color: var(--danger);
   max-width: 200px;
   overflow: hidden;
