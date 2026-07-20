@@ -1,0 +1,43 @@
+# ============================================
+# Docker build context 忽略清单
+# ============================================
+
+# --- 依赖目录（镜像内重新安装）---
+node_modules
+frontend/node_modules
+
+# --- Python 缓存 ---
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+*.egg-info
+
+# --- Git ---
+.git
+.gitignore
+.gitattributes
+
+# --- 前端构建产物（镜像内重新构建）---
+frontend/dist
+
+# --- 日志（运行时 volume 挂载）---
+logs/*.log
+logs/
+
+# --- 安全：不将 .env 打入镜像 ---
+.env
+
+# --- IDE / 编辑器 ---
+.idea
+.vscode
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- 临时文件 ---
+*.tmp
+.tmp

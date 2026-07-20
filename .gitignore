@@ -1,0 +1,44 @@
+# ============================================
+# 个人数字分身 · Git 忽略清单
+# ============================================
+
+# --- 🔴 敏感信息，绝对不能提交 ---
+.env
+*.key
+*.pem
+
+# --- 依赖 ---
+node_modules
+frontend/node_modules
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+*.egg-info
+
+# --- 数据文件（本地运行时产生） ---
+assets/chroma_db/
+assets/upload_docs/*
+!assets/upload_docs/.gitkeep
+assets/personal_agent.db
+assets/test_data/*.json
+!assets/test_data/sample_eval_testset.json
+
+# --- 日志 ---
+logs/
+*.log
+
+# --- IDE ---
+.idea
+.vscode
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- 临时文件 ---
+*.tmp
+*.bak
+*.orig
