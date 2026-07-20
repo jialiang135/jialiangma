@@ -376,11 +376,70 @@ body {
   border-radius: 12px;
   font-size: 14px;
   line-height: 1.6;
-  white-space: pre-wrap;
   word-break: break-word;
 }
 .msg.user .msg-text { background: var(--primary); color: #fff; }
 .msg.assistant .msg-text { background: #f1f5f9; }
+
+/* markdown 内容样式 */
+.msg-text p { margin: 0 0 8px; }
+.msg-text p:last-child { margin-bottom: 0; }
+.msg-text ul, .msg-text ol { margin: 4px 0; padding-left: 20px; }
+.msg-text li { margin: 2px 0; }
+.msg-text code {
+  background: rgba(0,0,0,0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+.msg.user .msg-text code { background: rgba(255,255,255,0.2); color: #fff; }
+.msg-text pre {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  padding: 12px 14px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 8px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.msg-text pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+.msg-text blockquote {
+  border-left: 3px solid var(--primary);
+  margin: 8px 0;
+  padding: 4px 12px;
+  color: #666;
+  background: rgba(0,0,0,0.03);
+  border-radius: 0 6px 6px 0;
+}
+.msg-text table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+  width: 100%;
+}
+.msg-text th, .msg-text td {
+  border: 1px solid #ddd;
+  padding: 6px 10px;
+  text-align: left;
+}
+.msg-text th { background: #f8f9fa; font-weight: 600; }
+.msg-text h1, .msg-text h2, .msg-text h3, .msg-text h4 {
+  margin: 10px 0 6px;
+  font-weight: 600;
+}
+.msg-text h1 { font-size: 18px; }
+.msg-text h2 { font-size: 16px; }
+.msg-text h3 { font-size: 15px; }
+.msg-text hr { border: none; border-top: 1px solid #e5e7eb; margin: 12px 0; }
+.msg-text strong { font-weight: 600; }
+.msg-text a { color: var(--primary); text-decoration: underline; }
+.msg.user .msg-text a { color: #fff; }
 
 .msg-reasoning { margin-top: 6px; }
 .msg-reasoning details { font-size: 12px; }

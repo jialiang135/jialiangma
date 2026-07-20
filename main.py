@@ -54,21 +54,48 @@ mount_frontend()
 app = fastapi_app
 
 if __name__ == "__main__":
+    import socket
     import uvicorn
+    from uvicorn import Config
     from config.settings import settings
 
-    browser_host = "127.0.0.1" if settings.host == "0.0.0.0" else settings.host
-    logger.info("=" * 60)
-    logger.info("🚀 个人数字分身 · 多Agent私有RAG系统 启动")
-    logger.info(f"   浏览器打开: http://{browser_host}{settings.port}")
-    logger.info(f"   API 文档:   http://{browser_host}{settings.port}/api/docs")
-    logger.info(f"   默认管理员: {settings.admin_username}")
-    logger.info("=" * 60)
+    # 获取本机局域网 IP（用于手机/其他设备访问）
+    def get_lan_ip() -> str | None:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(1)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip if ip != "127.0.0.1" else None
+        except Exception:
+            return None
 
-    uvicorn.run(
+    lan_ip = get_lan_ip()
+
+    # 替换 uvicorn 默认的 "Uvicorn running on http://0.0.0.0:7860"
+    # 改为显示实际可用的浏览器地址
+    class FriendlyServer(uvicorn.Server):
+        def _log_started_message(self, listeners):
+            lines = [
+                "=" * 60,
+                "🚀 个人数字分身 · 多Agent私有RAG系统 启动成功！",
+                "=" * 60,
+                f"   👉 本机访问:  http://127.0.0.1:{self.config.port}",
+                *([f"   👉 手机访问:  http://{lan_ip}:{self.config.port}  (同WiFi下)"] if lan_ip else []),
+                f"   📖 API 文档:  http://127.0.0.1:{self.config.port}/api/docs",
+                f"   🔑 管理员:    {settings.admin_username} / {settings.admin_password}",
+                "=" * 60,
+            ]
+            for line in lines:
+                logger.info(line)
+
+    config = Config(
         app,
         host=settings.host,
         port=settings.port,
         reload=False,
         log_level=settings.log_level.lower(),
     )
+    server = FriendlyServer(config=config)
+    server.run()

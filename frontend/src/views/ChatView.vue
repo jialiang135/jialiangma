@@ -47,7 +47,7 @@
         <div v-for="(msg, i) in messages" :key="i" :class="['msg', msg.role]">
           <div class="msg-avatar">{{ msg.role === 'user' ? '👤' : '🤖' }}</div>
           <div class="msg-content">
-            <div class="msg-text">{{ msg.content }}</div>
+            <div class="msg-text" v-html="renderMarkdown(msg.content)"></div>
             <div v-if="msg.role === 'assistant' && msg.reasoning" class="msg-reasoning">
               <details>
                 <summary>🧠 查看完整推理过程（{{ parseSteps(msg.reasoning).length }} 步）</summary>
@@ -64,7 +64,7 @@
         <div v-if="streaming" class="msg assistant streaming">
           <div class="msg-avatar">🤖</div>
           <div class="msg-content">
-            <div class="msg-text">{{ streamingText }}<span class="cursor">▌</span></div>
+            <div class="msg-text" v-html="renderMarkdown(streamingText)"></div>
           </div>
         </div>
         <div ref="msgEnd"></div>
@@ -153,6 +153,13 @@ import { streamChat, getConversations, getConversation, deleteConversation } fro
 import { exportChatMarkdown, exportChatJson } from '../api/export.js'
 import { useAuthStore } from '../stores/auth.js'
 import TokenStats from '../components/TokenStats.vue'
+import { marked } from 'marked'
+
+// 配置 marked：安全的 markdown 渲染
+marked.setOptions({
+  breaks: true,      // 单个换行也转 <br>
+  gfm: true,         // GitHub Flavored Markdown
+})
 
 const auth = useAuthStore()
 const messages = ref([])
@@ -188,6 +195,11 @@ function onClickAway(e) {
   if (exportMenuRef.value && !exportMenuRef.value.contains(e.target)) {
     showExportMenu.value = false
   }
+}
+
+function renderMarkdown(text) {
+  if (!text) return ''
+  return marked(text)
 }
 
 function exportMarkdown() {

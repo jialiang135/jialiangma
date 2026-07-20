@@ -212,18 +212,18 @@ async def sse_simple_generator(
         # 发送最终回答
         answer = final_state.get("final_answer", "")
         if answer:
-            # 逐字符/逐行流式发送（模拟打字机效果）
-            words = answer.split()
+            # 逐段流式发送（保留换行和段落结构）
+            # 用 split(' ') 而非 split() 以保留 \n 换行符
+            words = answer.split(' ')
             buffer = ""
             for i, word in enumerate(words):
-                buffer += (" " if buffer else "") + word
-                # 每5个词或遇到换行时发送一次
-                if (i + 1) % 5 == 0 or "\n" in word:
+                sep = "\n" if buffer.endswith("\n") or not buffer else " "
+                buffer += sep + word
+                # 每5个词、或遇到换行、或最后一段时发送
+                if (i + 1) % 5 == 0 or "\n" in word or i == len(words) - 1:
                     yield _sse_event("answer", buffer)
                     buffer = ""
                     await asyncio.sleep(0.02)  # 打字机延迟
-            if buffer:
-                yield _sse_event("answer", buffer)
 
         # 保存对话日志
         try:
