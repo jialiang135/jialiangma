@@ -54,7 +54,4 @@ class AgentState(TypedDict):
     operation: Optional[str]  # upload / delete / list / rebuild
     operation_result: Optional[str]
 
-    # --- 评测专用 ---
-    testset: Optional[dict]
-    eval_results: Optional[list[dict]]
-    eval_report: Optional[dict]
+    # --- 预留扩展字段 ---

@@ -120,49 +120,6 @@ class ConversationListResponse(BaseModel):
 
 
 # ========================================
-# 评测
-# ========================================
-
-class EvalQuestion(BaseModel):
-    id: str
-    question: str
-    expected_answer: Optional[str] = None
-    category: Optional[str] = None
-
-
-class EvalTestSet(BaseModel):
-    name: str = "unnamed"
-    questions: list[EvalQuestion]
-
-
-class EvalResultItem(BaseModel):
-    question_id: str
-    question: str
-    ai_answer: str
-    expected_answer: Optional[str] = None
-    sources_used: list[str] = []
-    is_hallucination: bool = False
-    hallucination_detail: Optional[str] = None
-    match_score: float = 0.0
-    retrieval_quality: str = "unknown"  # good / partial / poor
-
-
-class EvalReport(BaseModel):
-    id: Optional[int] = None
-    testset_name: str
-    total_questions: int
-    completed: int
-    accuracy: float  # 0-100
-    hallucination_count: int
-    hallucination_rate: float  # 0-100
-    avg_match_score: float
-    poor_retrieval_count: int
-    results: list[EvalResultItem] = []
-    recommendations: list[str] = []
-    created_at: Optional[datetime] = None
-
-
-# ========================================
 # 通用响应
 # ========================================
 

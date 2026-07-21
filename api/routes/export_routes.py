@@ -12,7 +12,6 @@ from core.auth import get_current_user
 from core.database import (
     get_chat_history,
     get_chat_by_conversation_id,
-    get_eval_report_by_id,
 )
 
 router = APIRouter(prefix="/api/export", tags=["导出"])
@@ -70,68 +69,6 @@ def _build_markdown_export(chats: list[dict]) -> str:
         lines.append("")
         lines.append("---")
         lines.append("")
-
-    return "\n".join(lines)
-
-
-def _build_eval_report_markdown(report: dict) -> str:
-    """将评测报告渲染为 Markdown 格式。
-
-    包含：概览表格、逐题详情表格、改进建议列表。
-    """
-    lines: list[str] = []
-    lines.append("# 个人数字分身 · 评测报告")
-    lines.append(f"导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-
-    # ── 报告概览 ──
-    lines.append("## 报告概览")
-    lines.append("")
-    lines.append("| 项目 | 数值 |")
-    lines.append("|------|------|")
-    lines.append(f"| 测试集名称 | {report.get('testset_name', 'N/A')} |")
-    lines.append(f"| 总题数 | {report.get('total_questions', 0)} |")
-    lines.append(f"| 完成数 | {report.get('completed', 0)} |")
-    lines.append(f"| 准确率 | {report.get('accuracy', 0.0):.1f}% |")
-    lines.append(f"| 幻觉数量 | {report.get('hallucination_count', 0)} |")
-    lines.append(f"| 幻觉率 | {report.get('hallucination_rate', 0.0):.1f}% |")
-    lines.append(f"| 平均匹配分 | {report.get('avg_match_score', 0.0):.2f} |")
-    lines.append(f"| 检索不良数量 | {report.get('poor_retrieval_count', 0)} |")
-    lines.append(f"| 创建时间 | {str(report.get('created_at', 'N/A'))} |")
-    lines.append("")
-
-    # ── 逐题详情 ──
-    results = report.get("results", [])
-    if results:
-        lines.append("## 逐题详情")
-        lines.append("")
-        lines.append("| 题号 | 问题 | AI 回答摘要 | 匹配分 | 幻觉 | 检索质量 |")
-        lines.append("|------|------|------------|--------|------|----------|")
-        for item in results:
-            qid = item.get("question_id", "?")
-            question = (item.get("question", "") or "")[:60]
-            ai_answer = (item.get("ai_answer", "") or "")[:60]
-            score = f"{item.get('match_score', 0.0):.1f}"
-            hallucination = "⚠️ 是" if item.get("is_hallucination") else "否"
-            retrieval_quality = item.get("retrieval_quality", "unknown")
-            lines.append(
-                f"| {qid} | {question} | {ai_answer} | {score} | {hallucination} | {retrieval_quality} |"
-            )
-        lines.append("")
-
-    # ── 改进建议 ──
-    recommendations = report.get("recommendations", [])
-    if recommendations:
-        lines.append("## 改进建议")
-        lines.append("")
-        for rec in recommendations:
-            lines.append(f"- {rec}")
-        lines.append("")
-
-    lines.append("---")
-    lines.append("")
 
     return "\n".join(lines)
 
@@ -227,30 +164,3 @@ async def export_chat_json(
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
-
-# ========================================
-# 导出评测报告 — Markdown
-# ========================================
-
-@router.get("/eval/report/{report_id}/markdown")
-async def export_eval_report_markdown(
-    report_id: int,
-    user: dict = Depends(get_current_user),
-):
-    """导出评测报告为 Markdown 文件（表格格式）"""
-    report = get_eval_report_by_id(report_id)
-    if not report:
-        raise HTTPException(status_code=404, detail="报告不存在")
-
-    md_content = _build_eval_report_markdown(report)
-    filename = f"eval_report_{report_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
-
-    logger.info(
-        f"[Export] 用户 {user['username']} 导出评测报告: report_id={report_id}"
-    )
-
-    return Response(
-        content=md_content,
-        media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )

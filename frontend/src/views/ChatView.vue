@@ -64,10 +64,32 @@
         <div v-if="streaming" class="msg assistant streaming">
           <div class="msg-avatar">🤖</div>
           <div class="msg-content">
+            <div v-if="streamingReasoning" class="msg-reasoning streaming-reasoning">
+              <details open>
+                <summary>🧠 推理中...（{{ parseSteps(streamingReasoning).length }} 步）</summary>
+                <div class="reasoning-timeline inline-timeline">
+                  <div v-for="(step, si) in parseSteps(streamingReasoning)" :key="si"
+                       :class="['timeline-step', { latest: si === parseSteps(streamingReasoning).length - 1 }]">
+                    <span class="step-icon">{{ step.icon }}</span>
+                    <span class="step-text">{{ step.text }}</span>
+                  </div>
+                </div>
+              </details>
+            </div>
             <div class="msg-text" v-html="renderMarkdown(streamingText)"></div>
           </div>
         </div>
         <div ref="msgEnd"></div>
+      </div>
+
+      <!-- 快捷问题 -->
+      <div class="quick-questions">
+        <button v-for="q in quickQuestions" :key="q.label"
+                class="quick-q-btn"
+                :disabled="streaming"
+                @click="askQuick(q.text)">
+          {{ q.icon }} {{ q.label }}
+        </button>
       </div>
 
       <div class="chat-input-area">
@@ -82,48 +104,12 @@
         ></textarea>
         <button class="btn btn-primary" :disabled="streaming || !input.trim()" @click="send">发送</button>
         <button v-if="streaming" class="btn btn-stop" @click="stopStream">停止</button>
-        <button class="btn btn-sm" @click="clearChat">清空</button>
-        <div class="export-dropdown" ref="exportMenuRef" style="position:relative;display:inline-block;">
-          <button class="btn btn-sm" @click.stop="showExportMenu = !showExportMenu">📥 导出</button>
-          <div v-if="showExportMenu"
-               style="position:absolute;bottom:100%;right:0;margin-bottom:4px;background:#fff;border:1px solid #d9d9d9;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.12);z-index:1000;min-width:150px;overflow:hidden;">
-            <button
-              style="display:flex;align-items:center;gap:6px;width:100%;padding:10px 16px;border:none;background:none;cursor:pointer;font-size:13px;color:#333;transition:background 0.15s;"
-              @click="exportMarkdown"
-              @mouseenter="$event.target.style.background='#f5f5f5'"
-              @mouseleave="$event.target.style.background='none'"
-            >📝 导出 Markdown</button>
-            <button
-              style="display:flex;align-items:center;gap:6px;width:100%;padding:10px 16px;border:none;background:none;cursor:pointer;font-size:13px;color:#333;transition:background 0.15s;border-top:1px solid #f0f0f0;"
-              @click="exportJSON"
-              @mouseenter="$event.target.style.background='#f5f5f5'"
-              @mouseleave="$event.target.style.background='none'"
-            >📦 导出 JSON</button>
-          </div>
-        </div>
-        <button v-if="reasoningSteps.length" class="btn btn-sm reasoning-toggle-btn"
-                @click="showReasoning = !showReasoning">
-          🧠 {{ showReasoning ? '隐藏推理' : '推理' }}{{ streaming ? ` (${reasoningSteps.length})` : '' }}
-        </button>
       </div>
 
       <!-- Token 统计面板 -->
       <TokenStats v-if="auth.isLoggedIn" />
     </div>
 
-    <!-- 右侧：实时推理时间线（对话进行中显示） -->
-    <div v-if="reasoningSteps.length && showReasoning" class="chat-reasoning-panel">
-      <div class="panel-header">
-        <h4>🧠 推理过程</h4>
-        <span class="step-count-badge">{{ reasoningSteps.length }}</span>
-      </div>
-      <div class="reasoning-timeline">
-        <div v-for="(step, i) in reasoningSteps" :key="i" :class="['timeline-step', { latest: i === reasoningSteps.length - 1 && streaming }]">
-          <span class="step-icon">{{ step.icon }}</span>
-          <span class="step-text">{{ step.text }}</span>
-        </div>
-      </div>
-    </div>
 
     <!-- 删除确认弹窗 -->
     <Teleport to="body">
@@ -150,7 +136,6 @@
 <script setup>
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { streamChat, getConversations, getConversation, deleteConversation } from '../api/chat.js'
-import { exportChatMarkdown, exportChatJson } from '../api/export.js'
 import { useAuthStore } from '../stores/auth.js'
 import TokenStats from '../components/TokenStats.vue'
 import { marked } from 'marked'
@@ -180,21 +165,24 @@ const loadingHistory = ref(false)
 const currentConversationId = ref(null)
 const activeHistoryId = ref(null)  // 高亮当前活跃的历史记录
 
-// 推理面板
-const showReasoning = ref(false)
-
-// 导出下拉菜单
-const showExportMenu = ref(false)
-const exportMenuRef = ref(null)
+// 流式推理文本（实时显示用）
+const streamingReasoning = ref('')
 
 // 删除确认弹窗
 const showDeleteConfirm = ref(false)
 const pendingDelete = ref(null)  // 待删的 conversation 对象
 
-function onClickAway(e) {
-  if (exportMenuRef.value && !exportMenuRef.value.contains(e.target)) {
-    showExportMenu.value = false
-  }
+// —— 快捷问题 ——
+const quickQuestions = [
+  { icon: '👋', label: '介绍一下你自己', text: '介绍一下你自己' },
+  { icon: '💻', label: '你熟悉哪些技术栈', text: '你熟悉哪些技术栈？' },
+  { icon: '🚀', label: '你做过哪些项目', text: '你做过哪些项目？' },
+]
+
+function askQuick(text) {
+  if (streaming.value) return
+  input.value = text
+  send()
 }
 
 function renderMarkdown(text) {
@@ -202,21 +190,6 @@ function renderMarkdown(text) {
   return marked(text)
 }
 
-function exportMarkdown() {
-  showExportMenu.value = false
-  exportChatMarkdown('all', 50).catch(err => {
-    console.error('导出 Markdown 失败:', err)
-    alert('导出失败: ' + err.message)
-  })
-}
-
-function exportJSON() {
-  showExportMenu.value = false
-  exportChatJson(50).catch(err => {
-    console.error('导出 JSON 失败:', err)
-    alert('导出失败: ' + err.message)
-  })
-}
 
 // —— 推理步骤解析 ——
 // 后端已经给每行带了 emoji 前缀，直接提取；不匹配的自动分配
@@ -264,12 +237,13 @@ async function send() {
   streaming.value = true
   streamingText.value = ''
   reasoningLog.value = ''
-  showReasoning.value = true   // 发消息时自动打开推理面板
+  streamingReasoning.value = ''
   let answerBuffer = ''
 
   abortController = streamChat(text, {
     onReasoning(r) {
       reasoningLog.value += (reasoningLog.value ? '\n' : '') + r
+      streamingReasoning.value += (streamingReasoning.value ? '\n' : '') + r
     },
     onAnswer(a) {
       answerBuffer += a
@@ -285,6 +259,7 @@ async function send() {
       }
       streaming.value = false
       streamingText.value = ''
+      streamingReasoning.value = ''
       abortController = null
       scrollBottom()
       loadHistory()
@@ -308,6 +283,7 @@ function stopStream() {
     }
     streaming.value = false
     streamingText.value = ''
+    streamingReasoning.value = ''
     abortController = null
     loadHistory()
   }
@@ -317,6 +293,7 @@ function clearChat() {
   messages.value = []
   streamingText.value = ''
   reasoningLog.value = ''
+  streamingReasoning.value = ''
   currentConversationId.value = null
   activeHistoryId.value = null
 }
@@ -402,11 +379,9 @@ function formatTime(d) {
 
 onMounted(() => {
   if (auth.isLoggedIn) loadHistory()
-  document.addEventListener('click', onClickAway)
 })
 
 onUnmounted(() => {
   if (abortController) abortController.abort()
-  document.removeEventListener('click', onClickAway)
 })
 </script>

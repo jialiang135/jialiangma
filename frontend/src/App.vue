@@ -9,7 +9,6 @@
       <nav class="header-nav">
         <router-link to="/chat" class="nav-link" active-class="active">💬 对话</router-link>
         <router-link to="/knowledge" class="nav-link" active-class="active">📚 知识库</router-link>
-        <router-link to="/eval" class="nav-link" active-class="active">📊 评测</router-link>
       </nav>
       <div class="header-right">
         <LoginBar />

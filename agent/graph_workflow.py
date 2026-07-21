@@ -8,7 +8,6 @@ from loguru import logger
 from agent.state import AgentState
 from agent.chat_agent import chat_agent_node, tool_executor_node, retrieve_before_chat
 from agent.manage_agent import manage_agent_node
-from agent.eval_agent import eval_agent_node
 
 
 # ========================================
@@ -66,7 +65,6 @@ def create_agent_graph():
     workflow.add_node("chat_agent", chat_agent_node)
     workflow.add_node("tools", tool_executor_node)
     workflow.add_node("manage_agent", manage_agent_node)
-    workflow.add_node("eval_agent", eval_agent_node)
 
     # --- 添加路由节点 ---
     workflow.add_node("router", _router_node)
@@ -81,7 +79,6 @@ def create_agent_graph():
         {
             "chat": "retrieve",     # 先检索再问答
             "manage": "manage_agent",
-            "eval": "eval_agent",
         },
     )
 
@@ -102,9 +99,8 @@ def create_agent_graph():
     # tools → chat_agent (回到循环)
     workflow.add_edge("tools", "chat_agent")
 
-    # --- Manage / Eval → END ---
+    # --- Manage → END ---
     workflow.add_edge("manage_agent", END)
-    workflow.add_edge("eval_agent", END)
 
     # --- 编译 ---
     graph = workflow.compile()

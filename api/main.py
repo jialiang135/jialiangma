@@ -11,7 +11,6 @@ import time
 from api.routes.auth_routes import router as auth_router
 from api.routes.chat_routes import router as chat_router
 from api.routes.kb_routes import router as kb_router
-from api.routes.eval_routes import router as eval_router
 from api.routes.token_routes import router as token_router
 from api.routes.export_routes import router as export_router
 from core.database import init_database, create_admin_user
@@ -86,7 +85,6 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(chat_router)
     app.include_router(kb_router)
-    app.include_router(eval_router)
     app.include_router(token_router)
     app.include_router(export_router)
 

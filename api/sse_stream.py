@@ -55,9 +55,6 @@ async def sse_chat_generator(
         "upload_files": None,
         "operation": None,
         "operation_result": None,
-        "testset": None,
-        "eval_results": None,
-        "eval_report": None,
     }
 
     graph = get_agent_graph()
@@ -183,9 +180,6 @@ async def sse_simple_generator(
         "upload_files": None,
         "operation": None,
         "operation_result": None,
-        "testset": None,
-        "eval_results": None,
-        "eval_report": None,
     }
 
     graph = get_agent_graph()
@@ -197,8 +191,6 @@ async def sse_simple_generator(
         # 如果非 chat 模式，注入 operation
         if agent_mode == "manage":
             initial_state["operation"] = "list"
-        elif agent_mode == "eval":
-            yield _sse_event("reasoning", "📊 评测模式需要在评测页面上传测试集")
 
         # 执行图
         final_state = await graph.ainvoke(initial_state)

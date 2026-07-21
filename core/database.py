@@ -72,26 +72,6 @@ def init_database():
         )
     """)
 
-    # 评测报告表
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS eval_reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            owner_id INTEGER NOT NULL,
-            testset_name TEXT NOT NULL,
-            total_questions INTEGER DEFAULT 0,
-            completed INTEGER DEFAULT 0,
-            accuracy REAL DEFAULT 0.0,
-            hallucination_count INTEGER DEFAULT 0,
-            hallucination_rate REAL DEFAULT 0.0,
-            avg_match_score REAL DEFAULT 0.0,
-            poor_retrieval_count INTEGER DEFAULT 0,
-            results_json TEXT,
-            recommendations_json TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (owner_id) REFERENCES users(id)
-        )
-    """)
-
     # Token 使用统计表
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS token_usage (
@@ -354,75 +334,3 @@ def delete_conversation(owner_id: int, group_id: str) -> int:
         conn.commit()
         return cursor.rowcount
 
-
-# ========================================
-# 评测报告操作
-# ========================================
-
-def insert_eval_report(owner_id: int, report: dict) -> int:
-    """保存评测报告"""
-    import json
-    with get_db() as conn:
-        cursor = conn.execute(
-            "INSERT INTO eval_reports (owner_id, testset_name, total_questions, "
-            "completed, accuracy, hallucination_count, hallucination_rate, "
-            "avg_match_score, poor_retrieval_count, results_json, recommendations_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                owner_id,
-                report.get("testset_name", ""),
-                report.get("total_questions", 0),
-                report.get("completed", 0),
-                report.get("accuracy", 0.0),
-                report.get("hallucination_count", 0),
-                report.get("hallucination_rate", 0.0),
-                report.get("avg_match_score", 0.0),
-                report.get("poor_retrieval_count", 0),
-                json.dumps(report.get("results", []), ensure_ascii=False),
-                json.dumps(report.get("recommendations", []), ensure_ascii=False),
-            ),
-        )
-        conn.commit()
-        return cursor.lastrowid
-
-
-def get_eval_reports(owner_id: int) -> list[dict]:
-    """获取用户所有评测报告"""
-    import json
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM eval_reports WHERE owner_id = ? ORDER BY created_at DESC",
-            (owner_id,),
-        ).fetchall()
-        results = []
-        for r in rows:
-            d = dict(r)
-            d["results"] = json.loads(d.get("results_json", "[]"))
-            d["recommendations"] = json.loads(d.get("recommendations_json", "[]"))
-            results.append(d)
-        return results
-
-
-def get_eval_report_by_id(report_id: int) -> Optional[dict]:
-    """根据ID获取评测报告"""
-    import json
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM eval_reports WHERE id = ?", (report_id,)
-        ).fetchone()
-        if not row:
-            return None
-        d = dict(row)
-        d["results"] = json.loads(d.get("results_json", "[]"))
-        d["recommendations"] = json.loads(d.get("recommendations_json", "[]"))
-        return d
-
-
-def delete_eval_report(report_id: int) -> bool:
-    """删除评测报告，返回是否成功"""
-    with get_db() as conn:
-        cursor = conn.execute(
-            "DELETE FROM eval_reports WHERE id = ?", (report_id,)
-        )
-        conn.commit()
-        return cursor.rowcount > 0

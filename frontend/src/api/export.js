@@ -67,11 +67,3 @@ export function exportChatJson(limit = 50) {
   const params = new URLSearchParams({ limit })
   return downloadAsFile(`${BASE}/export/chat/json?${params}`)
 }
-
-/**
- * 导出评测报告为 Markdown 文件
- * @param {number} reportId 报告 ID
- */
-export function exportEvalReportMarkdown(reportId) {
-  return downloadAsFile(`${BASE}/export/eval/report/${reportId}/markdown`)
-}
