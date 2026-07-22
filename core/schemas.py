@@ -127,3 +127,67 @@ class APIResponse(BaseModel):
     success: bool
     message: str
     data: Optional[dict] = None
+
+
+# ========================================
+# 管理员：用户管理
+# ========================================
+
+class UserAdminOut(BaseModel):
+    id: int
+    username: str
+    role: str
+    created_at: datetime
+    file_count: int = 0
+    chat_count: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class UserRoleUpdate(BaseModel):
+    role: str = Field(..., pattern="^(admin|user)$")
+
+
+# ========================================
+# 管理员：仪表盘
+# ========================================
+
+class DashboardStats(BaseModel):
+    user_count: int
+    file_count: int
+    today_chats: int
+    total_chats: int
+    total_tokens: int
+    total_cost: float
+    disk_used_mb: float
+    chroma_db_mb: float
+
+
+# ========================================
+# 管理员：全局查询
+# ========================================
+
+class ChatLogAdminOut(BaseModel):
+    id: int
+    owner_id: int
+    username: str = ""
+    agent_mode: str
+    conversation_id: Optional[str] = None
+    question: str
+    answer: str
+    reasoning: Optional[str] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class FileAdminOut(BaseModel):
+    id: int
+    owner_id: int
+    username: str = ""
+    filename: str
+    file_size: int
+    chunk_count: int
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

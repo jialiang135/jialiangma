@@ -403,3 +403,151 @@ def record_login_attempt(username: str, ip_address: str = None, success: bool = 
     conn.commit()
     conn.close()
 
+
+# ========================================
+# 管理员：用户管理
+# ========================================
+
+def get_all_users() -> list[dict]:
+    """获取所有用户列表（管理员用）"""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, username, role, created_at FROM users ORDER BY created_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_user_role(user_id: int, role: str) -> bool:
+    """修改用户角色（管理员用）"""
+    if role not in ("admin", "user"):
+        raise ValueError("角色只能是 admin 或 user")
+    with get_db() as conn:
+        cursor = conn.execute(
+            "UPDATE users SET role = ? WHERE id = ?", (role, user_id)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def delete_user_cascade(user_id: int) -> dict:
+    """
+    删除用户及其所有关联数据（管理员用）。
+    返回各表删除条数。
+    """
+    counts = {}
+    with get_db() as conn:
+        for table in ("chat_logs", "token_usage", "login_attempts", "files", "upload_tasks"):
+            cursor = conn.execute(f"DELETE FROM {table} WHERE owner_id = ?", (user_id,))
+            counts[table] = cursor.rowcount
+
+        # 审计日志按 user_id 字段
+        cursor = conn.execute("DELETE FROM audit_log WHERE user_id = ?", (user_id,))
+        counts["audit_log"] = cursor.rowcount
+
+        cursor = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        counts["users"] = cursor.rowcount
+
+        conn.commit()
+    return counts
+
+
+# ========================================
+# 管理员：全局数据查询
+# ========================================
+
+def get_all_chat_logs(limit: int = 50, offset: int = 0,
+                      username: str = None) -> list[dict]:
+    """跨用户查询对话日志（管理员用）"""
+    with get_db() as conn:
+        if username:
+            rows = conn.execute(
+                """SELECT cl.*, u.username FROM chat_logs cl
+                   JOIN users u ON cl.owner_id = u.id
+                   WHERE u.username = ?
+                   ORDER BY cl.created_at DESC LIMIT ? OFFSET ?""",
+                (username, limit, offset),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT cl.*, u.username FROM chat_logs cl
+                   JOIN users u ON cl.owner_id = u.id
+                   ORDER BY cl.created_at DESC LIMIT ? OFFSET ?""",
+                (limit, offset),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_all_files(limit: int = 50, offset: int = 0,
+                  username: str = None) -> list[dict]:
+    """跨用户查询文件列表（管理员用）"""
+    with get_db() as conn:
+        if username:
+            rows = conn.execute(
+                """SELECT f.*, u.username FROM files f
+                   JOIN users u ON f.owner_id = u.id
+                   WHERE u.username = ?
+                   ORDER BY f.created_at DESC LIMIT ? OFFSET ?""",
+                (username, limit, offset),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT f.*, u.username FROM files f
+                   JOIN users u ON f.owner_id = u.id
+                   ORDER BY f.created_at DESC LIMIT ? OFFSET ?""",
+                (limit, offset),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_global_stats() -> dict:
+    """获取全局仪表盘数据（管理员用）"""
+    import os
+    with get_db() as conn:
+        user_count = conn.execute("SELECT COUNT(*) as cnt FROM users").fetchone()["cnt"]
+        file_count = conn.execute("SELECT COUNT(*) as cnt FROM files").fetchone()["cnt"]
+        today_chats = conn.execute(
+            "SELECT COUNT(*) as cnt FROM chat_logs WHERE date(created_at) = date('now')"
+        ).fetchone()["cnt"]
+        total_chats = conn.execute("SELECT COUNT(*) as cnt FROM chat_logs").fetchone()["cnt"]
+        total_tokens = conn.execute(
+            "SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0) as cnt FROM token_usage"
+        ).fetchone()["cnt"]
+        total_cost = conn.execute(
+            "SELECT COALESCE(SUM(cost_estimate), 0) as cnt FROM token_usage"
+        ).fetchone()["cnt"]
+
+    # 磁盘用量
+    from config.settings import settings, PROJECT_ROOT
+    upload_dir = settings.resolve_path(settings.upload_dir)
+    disk_used_mb = 0
+    if os.path.exists(upload_dir):
+        for root, dirs, files in os.walk(upload_dir):
+            for f in files:
+                fp = os.path.join(root, f)
+                try:
+                    disk_used_mb += os.path.getsize(fp) / (1024 * 1024)
+                except OSError:
+                    pass
+
+    chroma_dir = settings.resolve_path(settings.chroma_persist_dir)
+    chroma_mb = 0
+    if os.path.exists(chroma_dir):
+        for root, dirs, files in os.walk(chroma_dir):
+            for f in files:
+                fp = os.path.join(root, f)
+                try:
+                    chroma_mb += os.path.getsize(fp) / (1024 * 1024)
+                except OSError:
+                    pass
+
+    return {
+        "user_count": user_count,
+        "file_count": file_count,
+        "today_chats": today_chats,
+        "total_chats": total_chats,
+        "total_tokens": total_tokens,
+        "total_cost": round(total_cost, 6),
+        "disk_used_mb": round(disk_used_mb, 2),
+        "chroma_db_mb": round(chroma_mb, 2),
+    }
+

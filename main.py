@@ -38,6 +38,7 @@ def mount_frontend():
     @fastapi_app.get("/")
     @fastapi_app.get("/chat")
     @fastapi_app.get("/knowledge")
+    @fastapi_app.get("/admin")
     @fastapi_app.get("/eval")
     async def serve_spa():
         if index_path.exists():

@@ -4,12 +4,14 @@ import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
 import ChatView from './views/ChatView.vue'
 import KnowledgeView from './views/KnowledgeView.vue'
+import AdminView from './views/AdminView.vue'
 import './style.css'
 
 const routes = [
   { path: '/', redirect: '/chat' },
   { path: '/chat', component: ChatView, name: 'chat' },
   { path: '/knowledge', component: KnowledgeView, name: 'knowledge' },
+  { path: '/admin', component: AdminView, name: 'admin' },
 ]
 
 const router = createRouter({

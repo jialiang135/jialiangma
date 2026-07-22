@@ -1,12 +1,24 @@
 """
-管理员运维接口 — 查看审计日志、熔断状态、队列状态
+管理员运维接口 — 用户管理 / 仪表盘 / 审计日志 / 熔断状态 / 队列状态
 """
 import sqlite3
+import os
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
+from loguru import logger
+
 from core.auth import require_admin
 from core.circuit_breaker import llm_circuit_breaker, embedding_circuit_breaker
 from core.async_queue import async_queue
+from core.schemas import (
+    DashboardStats, UserAdminOut, UserRoleUpdate,
+    ChatLogAdminOut, FileAdminOut, APIResponse,
+)
+from core.database import (
+    get_all_users, update_user_role, delete_user_cascade,
+    get_all_chat_logs, get_all_files, get_global_stats,
+    get_user_by_id,
+)
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 DB_PATH = PROJECT_ROOT / "assets" / "personal_agent.db"
@@ -14,7 +26,203 @@ DB_PATH = PROJECT_ROOT / "assets" / "personal_agent.db"
 router = APIRouter(prefix="/api/admin", tags=["运维"])
 
 
-# ─── 审计日志查询 ───
+def _get_conn():
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# ═══════════════════════════════════════════
+# 用户管理
+# ═══════════════════════════════════════════
+
+@router.get("/users")
+async def list_users(current_user: dict = Depends(require_admin)):
+    """
+    列出所有用户（含文件数、对话数统计）。
+    仅管理员可调用。
+    """
+    users = get_all_users()
+    result = []
+    for u in users:
+        uid = u["id"]
+        conn = _get_conn()
+        file_cnt = conn.execute(
+            "SELECT COUNT(*) as cnt FROM files WHERE owner_id = ?", (uid,)
+        ).fetchone()["cnt"]
+        chat_cnt = conn.execute(
+            "SELECT COUNT(*) as cnt FROM chat_logs WHERE owner_id = ?", (uid,)
+        ).fetchone()["cnt"]
+        conn.close()
+        result.append({
+            **u,
+            "file_count": file_cnt,
+            "chat_count": chat_cnt,
+        })
+    return {
+        "success": True,
+        "total": len(result),
+        "users": result,
+    }
+
+
+@router.put("/users/{user_id}/role")
+async def change_user_role(
+    user_id: int,
+    body: UserRoleUpdate,
+    current_user: dict = Depends(require_admin),
+):
+    """修改用户角色（admin/user）。不能修改自己。"""
+    if user_id == current_user["owner_id"]:
+        raise HTTPException(status_code=400, detail="不能修改自己的角色")
+
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    updated = update_user_role(user_id, body.role)
+    if not updated:
+        raise HTTPException(status_code=500, detail="更新失败")
+
+    logger.info(
+        f"[Admin] 用户角色变更: {current_user['username']} 将 {user['username']} "
+        f"({user_id}) 从 {user['role']} 改为 {body.role}"
+    )
+    return {
+        "success": True,
+        "message": f"用户 {user['username']} 角色已更新为 {body.role}",
+    }
+
+
+@router.delete("/users/{user_id}")
+async def remove_user(
+    user_id: int,
+    current_user: dict = Depends(require_admin),
+):
+    """删除用户及其所有关联数据（知识库、对话记录、Token 统计等）。不能删除自己。"""
+    if user_id == current_user["owner_id"]:
+        raise HTTPException(status_code=400, detail="不能删除自己")
+
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    # 清理向量库数据
+    try:
+        from rag.vector_store import delete_all_by_owner
+        delete_all_by_owner(user_id)
+    except Exception as e:
+        logger.warning(f"[Admin] 清理用户 {user_id} 向量库失败: {e}")
+
+    # 清理上传文件
+    from config.settings import settings
+    upload_dir = settings.resolve_path(settings.upload_dir)
+    conn = _get_conn()
+    file_rows = conn.execute(
+        "SELECT filepath FROM files WHERE owner_id = ?", (user_id,)
+    ).fetchall()
+    for row in file_rows:
+        try:
+            if os.path.exists(row["filepath"]):
+                os.remove(row["filepath"])
+        except OSError:
+            pass
+    conn.close()
+
+    counts = delete_user_cascade(user_id)
+
+    logger.info(
+        f"[Admin] 用户删除: {current_user['username']} 删除了 {user['username']} "
+        f"({user_id}), 清理数据: {counts}"
+    )
+    return {
+        "success": True,
+        "message": f"用户 {user['username']} 已删除",
+        "cleaned": counts,
+    }
+
+
+# ═══════════════════════════════════════════
+# 仪表盘
+# ═══════════════════════════════════════════
+
+@router.get("/dashboard", response_model=DashboardStats)
+async def get_dashboard(current_user: dict = Depends(require_admin)):
+    """
+    全局数据总览仪表盘。
+    返回用户数、文件数、今日对话、Token 消耗、磁盘用量等关键指标。
+    """
+    return get_global_stats()
+
+
+# ═══════════════════════════════════════════
+# 全局对话查询
+# ═══════════════════════════════════════════
+
+@router.get("/chat-logs")
+async def list_chat_logs(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    username: str = None,
+    current_user: dict = Depends(require_admin),
+):
+    """跨用户查询对话记录（可按用户名筛选）"""
+    logs = get_all_chat_logs(limit=limit, offset=offset, username=username)
+    return {
+        "success": True,
+        "total": len(logs),
+        "logs": [
+            {
+                "id": log["id"],
+                "owner_id": log["owner_id"],
+                "username": log.get("username", ""),
+                "agent_mode": log["agent_mode"],
+                "conversation_id": log.get("conversation_id"),
+                "question": log["question"],
+                "answer": log["answer"],
+                "reasoning": log.get("reasoning"),
+                "created_at": log["created_at"],
+            }
+            for log in logs
+        ],
+    }
+
+
+# ═══════════════════════════════════════════
+# 全局文件查询
+# ═══════════════════════════════════════════
+
+@router.get("/files")
+async def list_all_files(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    username: str = None,
+    current_user: dict = Depends(require_admin),
+):
+    """跨用户查询文件列表（可按用户名筛选）"""
+    files = get_all_files(limit=limit, offset=offset, username=username)
+    return {
+        "success": True,
+        "total": len(files),
+        "files": [
+            {
+                "id": f["id"],
+                "owner_id": f["owner_id"],
+                "username": f.get("username", ""),
+                "filename": f["filename"],
+                "file_size": f.get("file_size", 0),
+                "chunk_count": f.get("chunk_count", 0),
+                "created_at": f["created_at"],
+            }
+            for f in files
+        ],
+    }
+
+
+# ═══════════════════════════════════════════
+# 审计日志查询
+# ═══════════════════════════════════════════
+
 @router.get("/audit-logs")
 async def get_audit_logs(
     limit: int = Query(50, ge=1, le=500),
@@ -23,8 +231,7 @@ async def get_audit_logs(
     current_user: dict = Depends(require_admin),
 ):
     """查询审计日志（管理员）"""
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
+    conn = _get_conn()
     query = "SELECT * FROM audit_log WHERE 1=1"
     params = []
     if action:
@@ -44,7 +251,10 @@ async def get_audit_logs(
     }
 
 
-# ─── 熔断器状态 ───
+# ═══════════════════════════════════════════
+# 熔断器状态
+# ═══════════════════════════════════════════
+
 @router.get("/circuit-status")
 async def get_circuit_status(current_user: dict = Depends(require_admin)):
     """查看所有熔断器状态"""
@@ -67,7 +277,10 @@ async def get_circuit_status(current_user: dict = Depends(require_admin)):
     }
 
 
-# ─── 异步队列状态 ───
+# ═══════════════════════════════════════════
+# 异步队列状态
+# ═══════════════════════════════════════════
+
 @router.get("/queue-status")
 async def get_queue_status(current_user: dict = Depends(require_admin)):
     """查看异步任务队列状态"""
@@ -78,7 +291,10 @@ async def get_queue_status(current_user: dict = Depends(require_admin)):
     }
 
 
-# ─── 会话统计 ───
+# ═══════════════════════════════════════════
+# 会话统计
+# ═══════════════════════════════════════════
+
 @router.get("/session-stats")
 async def get_session_stats(current_user: dict = Depends(require_admin)):
     """会话统计（需 Redis 连接）"""

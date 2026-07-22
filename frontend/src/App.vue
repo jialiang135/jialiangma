@@ -15,6 +15,7 @@
         <a class="nav-link" @click="showGuide = true" href="javascript:void(0)">📖 使用指南</a>
         <router-link to="/chat" class="nav-link" active-class="active">💬 对话</router-link>
         <router-link to="/knowledge" class="nav-link" active-class="active">📚 知识库</router-link>
+        <router-link v-if="auth.isAdmin" to="/admin" class="nav-link" active-class="active">🔴 管理</router-link>
       </nav>
 
       <div class="header-right">
@@ -30,6 +31,7 @@
           <a class="nav-link" @click="showGuide = true; showMobileNav = false" href="javascript:void(0)">📖 使用指南</a>
           <router-link to="/chat" class="nav-link" active-class="active" @click="showMobileNav = false">💬 对话</router-link>
           <router-link to="/knowledge" class="nav-link" active-class="active" @click="showMobileNav = false">📚 知识库</router-link>
+          <router-link v-if="auth.isAdmin" to="/admin" class="nav-link" active-class="active" @click="showMobileNav = false">🔴 管理</router-link>
           <div class="mobile-nav-divider"></div>
           <LoginBar />
         </nav>
@@ -47,9 +49,11 @@
 
 <script setup>
 import { ref } from 'vue'
+import { useAuthStore } from './stores/auth.js'
 import LoginBar from './components/LoginBar.vue'
 import GuideModal from './components/GuideModal.vue'
 
+const auth = useAuthStore()
 const showMobileNav = ref(false)
 // 首次访问自动弹出使用指南
 const showGuide = ref(!localStorage.getItem('guide_seen'))
