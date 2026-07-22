@@ -45,7 +45,7 @@
           </section>
 
           <div class="g-footer">
-            🌐 服务器地址：<code>http://39.106.191.98</code>
+            🌐 服务器地址：<code>http://39.106.191.98:8080</code>
           </div>
         </div>
       </div>
