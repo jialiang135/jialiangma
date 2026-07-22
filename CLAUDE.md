@@ -99,8 +99,7 @@ git push origin main
 **Step 3: Determine what to sync to server**
 
 - **Only static files changed** (README.md, dist/, nginx config, docker-compose.yml): → Step 4a (tar+SSH 秒传)
-- **Source code changed** (api/, core/, agent/, rag/, main.py, requirements.txt, frontend/src/): → Step 4b (tar+SSH + 服务器构建) 或 Step 4c (本地构建镜像 + push + 服务器 pull，更快)
-- **Dockerfile 或 requirements.txt 变了**: 推荐 Step 4c
+- **Source code changed** (api/, core/, agent/, rag/, main.py, requirements.txt, frontend/src/): → Step 4b (tar+SSH + 服务器 Docker 构建)
 
 **Step 4a: Static files sync (no rebuild)**
 ```bash
@@ -110,39 +109,6 @@ cd e:/zuoye/jialiangma/personal_agent && tar czf - <file1> <file2> ... | ssh -o 
 **Step 4b: Full source sync + Docker rebuild**
 ```bash
 cd e:/zuoye/jialiangma/personal_agent && tar czf - --exclude='config/.env' --exclude='node_modules' --exclude='__pycache__' --exclude='*.pyc' --exclude='assets' --exclude='logs' --exclude='frontend/node_modules' --exclude='frontend/dist' api/ core/ config/ agent/ rag/ frontend/ scripts/ nginx/ .github/ requirements.txt Dockerfile docker-compose.yml main.py | ssh -o StrictHostKeyChecking=no admin@39.106.191.98 "cd /opt/personal-agent && tar xzf - && docker compose up -d --build app && echo 'deploy ok'"
-```
-
-**Step 4c: Docker 镜像推送（可选，比服务器构建更快）**
-
-适用场景：代码改动频繁时，本地构建镜像推送到阿里云容器镜像服务（ACR），服务器直接 pull，省去服务器构建时间。
-
-前置条件（一次性配置）：
-```bash
-# 1. 登录阿里云 Docker Registry
-docker login --username=<你的阿里云账号> registry.cn-hangzhou.aliyuncs.com
-
-# 2. 在服务器上也登录
-ssh -o StrictHostKeyChecking=no admin@39.106.191.98 "docker login --username=<你的阿里云账号> registry.cn-hangzhou.aliyuncs.com"
-```
-
-推送流程：
-```bash
-# 本地构建 + 打标签 + 推送
-cd e:/zuoye/jialiangma/personal_agent
-docker compose build app
-docker tag personal_agent-app:latest registry.cn-hangzhou.aliyuncs.com/<命名空间>/personal-agent:latest
-docker push registry.cn-hangzhou.aliyuncs.com/<命名空间>/personal-agent:latest
-
-# 服务器拉取 + 重启
-ssh -o StrictHostKeyChecking=no admin@39.106.191.98 "docker pull registry.cn-hangzhou.aliyuncs.com/<命名空间>/personal-agent:latest && cd /opt/personal-agent && docker compose up -d app"
-```
-
-同步本地 docker-compose.yml 使用远程镜像（省去 build 步骤）：
-```yaml
-# docker-compose.yml 中 app 服务改为：
-app:
-    image: registry.cn-hangzhou.aliyuncs.com/<命名空间>/personal-agent:latest
-    # 删除 build: 段落
 ```
 
 **Step 5: Verify**
