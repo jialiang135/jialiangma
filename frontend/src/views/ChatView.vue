@@ -377,7 +377,46 @@ function formatTime(d) {
   return String(d).slice(5, 19)
 }
 
+// 移动端检测
+const isMobile = ref(window.innerWidth <= 768)
+
+function onResize() {
+  isMobile.value = window.innerWidth <= 768
+  // 手机端默认收起侧边栏
+  if (isMobile.value) showHistory.value = false
+}
+
+async function loadConversation(c) {
+  const gid = c.group_id
+  if (!gid) return
+
+  // 手机端选择对话后自动关闭侧边栏
+  if (isMobile.value) showHistory.value = false
+
+  try {
+    const res = await getConversation(gid)
+    const ctx = res.messages || []
+    if (ctx.length > 0) {
+      clearChat()
+      for (const m of ctx) {
+        messages.value.push({
+          role: m.role,
+          content: m.content,
+          reasoning: m.role === 'assistant' ? m.reasoning : undefined,
+        })
+      }
+      currentConversationId.value = gid.startsWith('__single_') ? null : gid
+      activeHistoryId.value = gid
+      scrollBottom()
+    }
+  } catch {
+    // 接口不可用，忽略
+  }
+}
+
 onMounted(() => {
+  if (isMobile.value) showHistory.value = false
+  window.addEventListener('resize', onResize)
   if (auth.isLoggedIn) loadHistory()
 })
 

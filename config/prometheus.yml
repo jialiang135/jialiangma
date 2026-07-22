@@ -1,0 +1,36 @@
+# ═══════════════════════════════════════════
+# Prometheus 监控配置
+# ═══════════════════════════════════════════
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # FastAPI 应用指标（含 QPS / 延迟 / 错误率）
+  - job_name: 'personal_agent'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['app:7863']
+        labels:
+          service: 'personal-agent'
+          env: 'production'
+
+  # Nginx 指标（需 nginx 启用 stub_status）
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx:80']
+
+  # Redis 指标
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+
+# 告警规则
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+# Alertmanager（可选）
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']

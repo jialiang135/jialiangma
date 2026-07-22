@@ -7,12 +7,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 import time
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from api.routes.auth_routes import router as auth_router
 from api.routes.chat_routes import router as chat_router
 from api.routes.kb_routes import router as kb_router
 from api.routes.token_routes import router as token_router
 from api.routes.export_routes import router as export_router
+from api.routes.tool_routes import router as tool_router
+from api.routes.admin_routes import router as admin_router
 from core.database import init_database, create_admin_user
 from core.auth import hash_password
 from config.settings import settings
@@ -31,8 +36,30 @@ async def lifespan(app: FastAPI):
     logger.info(f"Rerank 模型: {settings.rerank_model}")
     logger.info(f"ChromaDB 路径: {settings.chroma_persist_dir}")
     logger.info(f"上传文件路径: {settings.upload_dir}")
+
+    # 初始化会话管理器
+    from core.session_manager import session_manager
+    logger.info(f"会话管理器: {'Redis' if session_manager._redis else '内存'} 模式")
+
+    # 启动定时任务调度器
+    from core.scheduler import start_scheduler
+    start_scheduler()
+
     logger.info("系统就绪 ✓")
     yield
+    # 优雅关闭
+    from core.scheduler import stop_scheduler
+    stop_scheduler()
+
+    import asyncio
+    try:
+        pending = asyncio.all_tasks()
+        for task in pending:
+            if task is not asyncio.current_task():
+                task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+    except Exception:
+        pass
     logger.info("系统关闭")
 
 
@@ -48,13 +75,24 @@ def create_app() -> FastAPI:
     )
 
     # --- CORS 中间件 ---
+    from config.settings import settings as app_settings
+    cors_origins = app_settings.cors_origins
+    if cors_origins == "*":
+        cors_origins_list = ["*"]
+    else:
+        cors_origins_list = [o.strip() for o in cors_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins_list,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # --- 请求限流（IP 级别，每分钟 N 次） ---
+    limiter = Limiter(key_func=get_remote_address, default_limits=[f"{app_settings.rate_limit_per_minute}/minute"])
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     # --- 请求日志中间件 ---
     @app.middleware("http")
@@ -67,6 +105,11 @@ def create_app() -> FastAPI:
             f"({duration:.3f}s)"
         )
         return response
+
+    # --- 审计日志中间件 ---
+    from core.audit import AuditMiddleware, init_audit_table
+    init_audit_table()
+    app.add_middleware(AuditMiddleware)
 
     # --- 全局异常处理 ---
     @app.exception_handler(Exception)
@@ -87,11 +130,20 @@ def create_app() -> FastAPI:
     app.include_router(kb_router)
     app.include_router(token_router)
     app.include_router(export_router)
+    app.include_router(tool_router)
+    app.include_router(admin_router)
 
     # --- 健康检查 ---
     @app.get("/api/health")
     async def health_check():
         return {"status": "ok", "version": "1.0.0"}
+
+    # Prometheus 指标监控（可选，未安装则跳过）
+    try:
+        from prometheus_fastapi_instrumentator import Instrumentator
+        Instrumentator().instrument(app).expose(app, include_in_schema=False)
+    except ImportError:
+        pass
 
     return app
 

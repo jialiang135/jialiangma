@@ -1,6 +1,7 @@
 """
 SQLite 数据库初始化与 CRUD 操作
 """
+import datetime
 import sqlite3
 import os
 from pathlib import Path
@@ -85,6 +86,18 @@ def init_database():
             FOREIGN KEY (owner_id) REFERENCES users(id)
         )
     """)
+
+    # 登录尝试记录（用于锁定）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            ip_address TEXT,
+            success INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_login_attempts_user ON login_attempts(username, created_at)")
 
     conn.commit()
     conn.close()
@@ -333,4 +346,36 @@ def delete_conversation(owner_id: int, group_id: str) -> int:
             )
         conn.commit()
         return cursor.rowcount
+
+
+def _get_conn():
+    """获取数据库连接（用于独立函数）"""
+    import sqlite3
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def check_login_locked(username: str) -> bool:
+    """检查用户是否因登录失败过多被锁定"""
+    cutoff = datetime.datetime.utcnow() - datetime.timedelta(minutes=settings.login_lockout_minutes)
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT COUNT(*) as cnt FROM login_attempts WHERE username = ? AND success = 0 AND created_at > ?",
+        (username, cutoff.isoformat()),
+    ).fetchone()
+    conn.close()
+    return (row["cnt"] if row else 0) >= settings.max_login_attempts
+
+
+def record_login_attempt(username: str, ip_address: str = None, success: bool = False):
+    """记录一次登录尝试"""
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO login_attempts (username, ip_address, success) VALUES (?, ?, ?)",
+        (username, ip_address, 1 if success else 0),
+    )
+    conn.commit()
+    conn.close()
 

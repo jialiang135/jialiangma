@@ -45,10 +45,25 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 7860
 
+    # --- 安全 ---
+    cors_origins: str = "*"  # 生产环境改为具体域名，如 "https://your-domain.com"
+    rate_limit_per_minute: int = 60  # 每 IP 每分钟最大请求数
+    password_min_length: int = 8  # 密码最小长度
+    max_login_attempts: int = 5  # 最大登录失败次数
+    login_lockout_minutes: int = 30  # 登录锁定时间（分钟）
+
+    # --- Redis（会话缓存 + 向量缓存 + 异步队列）---
+    redis_url: str = "redis://localhost:6379/0"
+
+    # --- 文档处理 ---
+    chunk_size: int = 1000
+    chunk_overlap: int = 200
+
     model_config = {
         "env_file": os.path.join(os.path.dirname(__file__), ".env"),
         "env_file_encoding": "utf-8",
         "case_sensitive": False,
+        "extra": "ignore",  # 忽略 .env 中未定义的字段，避免多余环境变量导致启动失败
     }
 
     def resolve_path(self, relative_path: str) -> Path:

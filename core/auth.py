@@ -54,6 +54,32 @@ def create_access_token(owner_id: int, username: str, role: str = "user") -> str
     return token
 
 
+def decode_token(token: str) -> dict | None:
+    """解码 JWT token，不抛异常"""
+    try:
+        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        return payload
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+
+
+def validate_password_strength(password: str) -> str | None:
+    """
+    密码强度校验
+    返回 None 表示通过，否则返回错误消息
+    规则：最小长度 + 至少包含数字和字母
+    """
+    if len(password) < settings.password_min_length:
+        return f"密码至少需要 {settings.password_min_length} 位字符"
+    if not any(c.isdigit() for c in password):
+        return "密码必须包含至少一个数字"
+    if not any(c.isalpha() for c in password):
+        return "密码必须包含至少一个字母"
+    return None
+
+
 def verify_token(token: str) -> dict:
     """校验 JWT token，返回 payload"""
     try:

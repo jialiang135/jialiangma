@@ -1,6 +1,6 @@
 # ============================================
 # 个人数字分身 · 多Agent私有RAG系统
-# Docker Compose — 生产级编排
+# Docker Compose — 企业版（含监控/缓存/队列）
 # ============================================
 
 services:
@@ -12,16 +12,15 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: personal-agent
-    # 不对外暴露端口，仅内网通过 nginx 访问
     expose:
       - "7863"
     environment:
       - PORT=7863
       - HOST=0.0.0.0
+      - REDIS_URL=redis://redis:6379/0
     env_file:
       - config/.env
     volumes:
-      # 持久化数据（Chromadb + SQLite + 上传文件）
       - ./assets:/app/assets
       - ./logs:/app/logs
     restart: unless-stopped
@@ -31,7 +30,6 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    # 资源限制
     deploy:
       resources:
         limits:
@@ -40,21 +38,25 @@ services:
         reservations:
           cpus: "0.5"
           memory: 512M
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - agent_net
 
   # ========================================
-  # Nginx 反向代理
+  # Nginx 反向代理（安全头 + 限流 + HTTPS 终端）
   # ========================================
   nginx:
     image: nginx:1.27-alpine
     container_name: personal-agent-nginx
     ports:
       - "8080:80"
-      # - "8443:443"  # HTTPS 上线时取消注释
+      # - "443:443"  # HTTPS 上线时取消注释
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      # - ./nginx/ssl:/etc/nginx/ssl:ro  # SSL 证书目录（上线时取消注释）
+      # - ./nginx/ssl:/etc/nginx/ssl:ro
+      # - /etc/letsencrypt:/etc/letsencrypt:ro  # Let's Encrypt 证书
     depends_on:
       app:
         condition: service_healthy
@@ -76,6 +78,83 @@ services:
     networks:
       - agent_net
 
+  # ========================================
+  # Redis（会话缓存 + 向量缓存 + 异步队列）
+  # ========================================
+  redis:
+    image: redis:7-alpine
+    container_name: personal-agent-redis
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+    networks:
+      - agent_net
+
+  # ========================================
+  # Prometheus 指标采集
+  # ========================================
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: personal-agent-prometheus
+    expose:
+      - "9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - agent_net
+
+  # ========================================
+  # Grafana 监控面板
+  # ========================================
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: personal-agent-grafana
+    expose:
+      - "3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    volumes:
+      - ./config/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - agent_net
+
 # ========================================
 # 命名卷（数据持久化）
 # ========================================
@@ -84,6 +163,12 @@ volumes:
     name: personal-agent-assets
   app_logs:
     name: personal-agent-logs
+  redis_data:
+    name: personal-agent-redis-data
+  prometheus_data:
+    name: personal-agent-prometheus-data
+  grafana_data:
+    name: personal-agent-grafana-data
 
 # ========================================
 # 内网隔离
