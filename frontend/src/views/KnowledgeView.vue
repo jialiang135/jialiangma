@@ -5,11 +5,26 @@
       <div class="upload-row">
         <input type="file" ref="fileInput" multiple accept=".pdf,.docx,.xlsx,.txt,.md,.py,.json,.zip,.png,.jpg" />
         <button class="btn btn-primary" :disabled="uploading" @click="doUpload">
-          {{ uploading ? '上传中...' : '上传并入库' }}
+          {{ uploading ? '提交中...' : '上传并入库' }}
         </button>
       </div>
       <div class="upload-hint">
         支持: PDF、Word、Excel、TXT、Markdown、代码文件、图片(OCR)、ZIP
+        <br />相同文件自动跳过，无需担心重复上传
+      </div>
+
+      <!-- 上传进度列表 -->
+      <div v-if="uploadTasks.length > 0" class="upload-progress-list">
+        <div v-for="t in uploadTasks" :key="t.task_id" class="progress-item">
+          <div class="progress-header">
+            <span class="progress-filename">{{ t.filename }}</span>
+            <span :class="['progress-status', t.status]">{{ statusLabel(t.status) }}</span>
+          </div>
+          <div class="progress-bar-track">
+            <div :class="['progress-bar-fill', t.status]" :style="{ width: t.progress + '%' }"></div>
+          </div>
+          <div v-if="t.error" class="progress-error">{{ t.error }}</div>
+        </div>
       </div>
     </div>
 
@@ -42,7 +57,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { getKbFiles, uploadKbFiles, deleteKbFile, clearKb, rebuildKb } from '../api/kb.js'
+import { getKbFiles, uploadKbFiles, deleteKbFile, clearKb, rebuildKb, getUploadStatus } from '../api/kb.js'
 import { useAuthStore } from '../stores/auth.js'
 
 const auth = useAuthStore()
@@ -52,6 +67,7 @@ const uploading = ref(false)
 const rebuilding = ref(false)
 const statusMsg = ref('')
 const statusType = ref('')
+const uploadTasks = ref([])
 
 function showMsg(msg, type = 'info') {
   statusMsg.value = msg
@@ -59,12 +75,51 @@ function showMsg(msg, type = 'info') {
   setTimeout(() => { statusMsg.value = '' }, 5000)
 }
 
+function statusLabel(s) {
+  return { pending: '⏳ 排队中', processing: '🔄 处理中', done: '✅ 完成', failed: '❌ 失败', skipped: '⏭️ 已跳过' }[s] || s
+}
+
+async function pollTaskStatus(taskId, filename) {
+  let attempts = 0
+  const maxAttempts = 120  // 最多轮询 2 分钟
+  const task = uploadTasks.value.find(t => t.task_id === taskId)
+  if (!task) return
+
+  const poll = async () => {
+    if (attempts >= maxAttempts) {
+      if (task) task.status = 'failed'; task.error = '处理超时'
+      return
+    }
+    attempts++
+    try {
+      const res = await getUploadStatus(taskId)
+      if (task) {
+        task.status = res.status
+        task.progress = res.progress
+        task.error = res.error
+      }
+      if (res.status === 'done' || res.status === 'failed' || res.status === 'skipped') {
+        await refreshFiles()
+        // 清理已完成的任务（3 秒后移除）
+        setTimeout(() => {
+          const idx = uploadTasks.value.findIndex(t => t.task_id === taskId)
+          if (idx >= 0) uploadTasks.value.splice(idx, 1)
+        }, 3000)
+        return
+      }
+      setTimeout(poll, 1500)  // 1.5 秒轮询一次
+    } catch {
+      setTimeout(poll, 2000)
+    }
+  }
+  poll()
+}
+
 async function refreshFiles() {
   if (!auth.isLoggedIn) { showMsg('请先登录', 'error'); return }
   try {
     const res = await getKbFiles()
     files.value = res.files || []
-    showMsg(`📁 共 ${files.value.length} 个文件 · 🧩 共 ${res.total_chunks || 0} 个向量块`, 'info')
   } catch (e) {
     showMsg(`加载失败: ${e.message}`, 'error')
   }
@@ -78,9 +133,25 @@ async function doUpload() {
   try {
     const res = await uploadKbFiles(input.files)
     if (res.success) {
-      showMsg(`✅ ${res.message}`, 'success')
+      // 新异步模式：创建任务并轮询
+      if (res.data?.task_ids?.length > 0) {
+        for (const tid of res.data.task_ids) {
+          uploadTasks.value.push({ task_id: tid, filename: '处理中...', status: 'pending', progress: 0, error: '' })
+        }
+        // 获取每项的文件名并开始轮询
+        for (let i = 0; i < res.data.task_ids.length; i++) {
+          const tid = res.data.task_ids[i]
+          const fname = input.files[i]?.name || '未知文件'
+          const task = uploadTasks.value.find(t => t.task_id === tid)
+          if (task) task.filename = fname
+          pollTaskStatus(tid, fname)
+        }
+        showMsg(`📨 ${res.message}`, 'info')
+      } else {
+        showMsg(res.message || '已提交', 'info')
+        await refreshFiles()
+      }
       input.value = ''
-      await refreshFiles()
     } else {
       showMsg(`❌ ${res.message || '上传失败'}`, 'error')
     }
@@ -139,8 +210,68 @@ function formatDate(d) {
   return String(d).slice(0, 10)
 }
 
-// 进入页面时自动加载文件列表
 onMounted(() => {
   if (auth.isLoggedIn) refreshFiles()
 })
 </script>
+
+<style scoped>
+/* 上传进度 */
+.upload-progress-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.progress-item {
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.progress-filename {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.progress-status {
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+.progress-status.done { background: #dcfce7; color: #16a34a; }
+.progress-status.processing { background: #eff6ff; color: #2563eb; }
+.progress-status.pending { background: #fef9c3; color: #a16207; }
+.progress-status.failed { background: #fef2f2; color: #dc2626; }
+.progress-status.skipped { background: #f1f5f9; color: #64748b; }
+.progress-bar-track {
+  width: 100%;
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+  background: #4f46e5;
+}
+.progress-bar-fill.done { background: #16a34a; }
+.progress-bar-fill.failed { background: #dc2626; }
+.progress-bar-fill.skipped { background: #94a3b8; }
+.progress-error {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #dc2626;
+}
+</style>

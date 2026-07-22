@@ -16,6 +16,10 @@ export function clearKb() {
   return del('/kb/clear')
 }
 
+export function getUploadStatus(taskId) {
+  return get(`/kb/upload-status/${taskId}`)
+}
+
 export function rebuildKb() {
   const token = localStorage.getItem('token')
   return fetch('/api/kb/rebuild', {

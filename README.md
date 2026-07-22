@@ -1,248 +1,201 @@
-# 个人数字分身 · 多 Agent 私有 RAG 系统
+# 个人数字分身 · AI 面试助手
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)](https://fastapi.tiangolo.com)
 [![Vue](https://img.shields.io/badge/Vue-3-green)](https://vuejs.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue)](https://docker.com)
 
-基于 **LangChain + LangGraph** 生态的多智能体私有知识库问答系统，专为 AI Agent/大模型开发岗位面试演示设计。前端 Vue 3 SPA，后端 FastAPI SSE 流式，本地 ChromaDB 向量库，云端 DeepSeek V4 Pro 推理。
+> 基于 LangGraph + DeepSeek V4 Pro 的企业级多 Agent 私有知识库问答系统
+
+**🌐 在线地址：http://39.106.191.98:8080**
 
 ---
 
-## 技术栈全景
+## 架构全景
 
-### AI / LLM
+```
+手机/桌面浏览器
+      ↓
+   Nginx (反向代理 + 限流 + HTTPS)
+      ↓
+   FastAPI (SSE 流式)
+      ↓
+   LangGraph ReAct Agent
+      ├── ChromaDB (向量存储)
+      ├── Redis (缓存 + 会话 + 队列)
+      ├── SQLite (元数据 + 审计日志)
+      ├── DeepSeek V4 Pro (LLM)
+      └── DashScope (Embedding + Rerank)
 
-| 组件 | 技术 | 用途 |
-|------|------|------|
-| 大模型 | DeepSeek V4 Pro | 对话生成、幻觉检测、评测 |
-| Agent 框架 | **LangGraph 1.x** | 多智能体状态图编排（路由→检索→ReAct⇄工具→END） |
-| LLM 接口 | **LangChain DeepSeek** | ChatDeepSeek 客户端，bind_tools 工具绑定 |
-| 工具系统 | **LangChain Core @tool** | 5 个 ReAct 工具装饰器，ToolMessage 消息传递 |
-| 消息模型 | **LangChain Core Messages** | SystemMessage / HumanMessage / AIMessage / ToolMessage |
-| Embedding | **LangChain Community + DashScope** | text-embedding-v4，1024 维向量 |
-| 向量库 | **LangChain Chroma** | ChromaDB PersistentClient 封装，owner_id 元数据过滤 |
-| 文本分块 | **LangChain Text Splitters** | RecursiveCharacterTextSplitter，中文句号/问号/感叹号分隔 |
-| 关键词检索 | rank-bm25 | BM25 + RRF 融合，与向量检索互补 |
+监控: Prometheus + Grafana  |  容器: Docker Compose
+```
 
-### 后端
+## 核心功能
 
-| 组件 | 技术 | 用途 |
-|------|------|------|
-| Web 框架 | FastAPI 0.115 | 6 组 REST 路由 + SSE 流式 |
-| 流式协议 | Server-Sent Events | 推理步骤 + 回答文本实时推送 |
-| 数据库 | SQLite + sqlite3 | 用户、文件元数据、对话日志、评测报告、Token 统计 |
-| 鉴权 | JWT + bcrypt | HS256 签名，480 分钟过期 |
-| 文档解析 | PyPDF / python-docx / openpyxl | 15+ 格式，含 OCR 和 ZIP 递归 |
-| 重排 | DashScope gte-rerank | 10 选 5 重排，失败降级回原始排序 |
-| 日志 | Loguru | 文件轮转 + UTF-8 编码 |
+### 🤖 智能对话
+- ReAct 多 Agent 架构，SSE 流式输出
+- 推理过程可视化（思考步骤时间线）
+- 5 个 ReAct 工具：知识库检索、文件列表、内容摘要、上下文、幻觉校验
+- 防幻觉策略：检索为空强制兜底回答
 
-### 前端
+### 📚 知识库管理
+- 支持 PDF / Word / Excel / TXT / Markdown / 代码 / 图片(OCR) / ZIP 等 15 种格式
+- 文档切片 → 清洗 → 去重 → 向量化全链路
+- 混合检索：语义搜索 + BM25 关键词 + DashScope Rerank 重排序
+- 优雅降级：Rerank API 失败自动回退原始排序
 
-| 组件 | 技术 | 用途 |
-|------|------|------|
-| 框架 | Vue 3 (Composition API) | SPA 三页面 |
-| 构建 | Vite 6 | 生产构建产物托管于 FastAPI |
-| 路由 | Vue Router | /chat /knowledge /eval |
-| 状态 | Pinia | 登录态持久化 (localStorage) |
-| HTTP | fetch + ReadableStream | SSE 流式解析，AbortController 中断 |
+### 📱 全端适配
+- 手机 / 平板 / 桌面 三档响应式断点（480px / 768px / 1024px）
+- 汉堡菜单侧滑导航、刘海屏安全区域适配
+- 触摸友好：44px 最小触控目标、减少动画偏好支持
 
-### 部署
-
-| 组件 | 技术 |
+### 🛡️ 企业安全
+| 功能 | 说明 |
 |------|------|
-| 容器化 | Docker 多阶段构建（Node 20 + Python 3.12） |
-| 编排 | Docker Compose，健康检查 + 数据持久化 |
+| JWT 鉴权 | HS256 签名，480 分钟过期 |
+| 密码强度 | 至少 8 位，含数字和字母 |
+| 登录锁定 | 连续 5 次失败锁定 30 分钟 |
+| 请求限流 | IP 级别，默认 60 次/分钟 |
+| CORS 白名单 | 生产环境限制域名 |
+| 审计日志 | 全量 API 调用记录（用户/操作/耗时/IP） |
+
+### ⚡ 高可用
+| 功能 | 说明 |
+|------|------|
+| 熔断降级 | LLM 失败 ≥5 次自动熔断，返回兜底回答，60s 后自动恢复 |
+| 优雅关闭 | SIGTERM 等待请求处理完再退出 |
+| 异步队列 | 长任务异步化（文档入库），Redis RQ + 线程池 fallback |
+| 定时备份 | 每日凌晨 4 点自动备份数据库，保留 7 天 |
+
+### 🔧 Agent 平台化
+| 功能 | 说明 |
+|------|------|
+| 工具注册中心 | `@register_tool` 装饰器插件式注册，`/api/tools` 查看所有工具 |
+| 会话管理 | Redis 持久化 + 24h TTL + 上下文超 8000 token 自动裁剪 |
+| 定时任务 | 日志清理(30天)、数据库备份、审计归档(90天)、健康巡检 |
+
+### 📈 可观测性
+| 功能 | 说明 |
+|------|------|
+| Prometheus | `/metrics` 端点，采集 QPS / 延迟 / 错误率 |
+| Grafana | 一键起面板，预配 Prometheus 数据源 |
+| 健康巡检 | 检查 API / 磁盘 / 内存 / 容器状态，异常钉钉告警 |
+| 审计日志 | `GET /api/admin/audit-logs` 查询，SQLite 持久化 |
 
 ---
 
-## 快速启动
+## 快速开始
+
+### 本地开发
 
 ```bash
-# 1. 配置 API Key
-# 编辑 config/.env，填入 DeepSeek 和 DashScope 的 API Key
-
-# 2. 安装依赖
+# 1. 安装依赖
 pip install -r requirements.txt
 
-# 3. 启动
+# 2. 配置 API Key
+# 编辑 config/.env，填入 DeepSeek 和 DashScope 的 API Key
+
+# 3. 构建前端
+cd frontend && npm ci && npm run build && cd ..
+
+# 4. 启动
 python main.py
 # → 前端 http://localhost:7860
 # → Swagger http://localhost:7860/api/docs
 ```
 
-默认管理员 `admin` / `admin123456`（`.env` 可改）。
+默认管理员 `admin` / `admin123456`。
 
-## Docker 部署
+### Docker 部署
 
 ```bash
+# 完整栈（含 Redis + Prometheus + Grafana）
 docker compose up -d --build
-# → http://localhost:7863
+
+# 核心服务（节省资源）
+docker compose up -d app nginx redis
+```
+
+### 服务器部署
+
+```bash
+cd /opt/personal-agent
+git pull
+docker compose up -d --build
 ```
 
 ---
+
+## API 接口
+
+启动后访问 Swagger 文档：http://localhost:7860/api/docs
+
+| 方法 | 路径 | 说明 | 权限 |
+|------|------|------|------|
+| POST | `/api/auth/login` | 登录 | 公开 |
+| POST | `/api/auth/register` | 注册 | 公开 |
+| GET | `/api/auth/me` | 当前用户 | 登录 |
+| POST | `/api/chat/stream` | SSE 流式对话 | 登录 |
+| GET | `/api/chat/conversations` | 历史对话 | 登录 |
+| POST | `/api/kb/upload` | 上传文档 | 管理员 |
+| GET | `/api/kb/files` | 文件列表 | 登录 |
+| DELETE | `/api/kb/files/{id}` | 删除文件 | 管理员 |
+| GET | `/api/tools` | 工具列表 | 登录 |
+| GET | `/api/admin/audit-logs` | 审计日志 | 管理员 |
+| GET | `/api/admin/circuit-status` | 熔断器状态 | 管理员 |
+| GET | `/api/admin/queue-status` | 队列状态 | 管理员 |
+| GET | `/api/metrics` | Prometheus 指标 | — |
+
+---
+
+## 运维命令
+
+```bash
+# 查看实时日志
+docker logs -f personal-agent
+
+# 健康巡检
+./scripts/health_check.sh
+
+# 回滚到指定版本
+./scripts/rollback.sh v1.2.0
+
+# 查看审计日志
+curl http://localhost:7860/api/admin/audit-logs \
+  -H "Authorization: Bearer <token>"
+
+# 查看熔断器状态
+curl http://localhost:7860/api/admin/circuit-status \
+  -H "Authorization: Bearer <token>"
+```
+
+## 技术栈
+
+| 层级 | 技术 |
+|------|------|
+| 前端 | Vue 3, Vite, Vue Router, Pinia, 纯 CSS 响应式 |
+| 后端 | FastAPI, LangGraph, LangChain, SSE 流式 |
+| AI | DeepSeek V4 Pro, DashScope Embedding, Rerank |
+| 存储 | ChromaDB, SQLite, Redis |
+| 安全 | JWT + bcrypt, slowapi 限流, 审计日志 |
+| 运维 | Docker Compose, Nginx, Prometheus, Grafana |
 
 ## 项目结构
 
 ```
 personal_agent/
-├── agent/                  # LangGraph 多智能体
-│   ├── graph_workflow.py   # 状态图：router → [retrieve → chat ⇄ tools | manage | eval]
-│   ├── state.py            # AgentState TypedDict（22 字段）
-│   ├── chat_agent.py       # ReAct 问答节点（retrieve + chat_agent + tool_executor）
-│   ├── manage_agent.py     # 知识库管理节点（upload/delete/list/rebuild/clear）
-│   ├── eval_agent.py       # 自动评测节点（并发 + 幻觉检测）
-│   ├── prompts.py          # 三大 Agent 中文系统提示词
-│   └── tools.py            # 5 个 ReAct 工具（search / list / summary / context / verify）
-│
-├── api/                    # FastAPI 接口层
-│   ├── main.py             # App 工厂：CORS、中间件、路由注册
-│   ├── sse_stream.py       # SSE 双通道（astream_events + ainvoke 降级）
-│   └── routes/             # 6 组路由：auth / chat / kb / eval / token / export
-│
-├── core/                   # 核心模块
-│   ├── auth.py             # JWT + bcrypt + FastAPI 鉴权依赖
-│   ├── database.py         # SQLite CRUD（5 张表，owner_id 隔离）
-│   ├── schemas.py          # Pydantic v2 数据模型
-│   └── token_tracker.py    # Token 用量统计 + DeepSeek 费用估算
-│
-├── rag/                    # RAG 检索增强生成链路
-│   ├── document_loader.py  # 15+ 格式解析（PDF/DOCX/XLSX/TXT/图片OCR/ZIP）
-│   ├── text_splitter.py    # 语义分块（Markdown → 中文段落 → RecursiveCharacter）
-│   ├── vector_store.py     # ChromaDB 封装（懒加载单例，owner 过滤）
-│   ├── retriever.py        # 两阶段检索（语义搜索 → gte-rerank 重排）
-│   ├── bm25_search.py      # BM25 关键词 + RRF 混合检索，中文分词
-│   └── search_cache.py     # 线程安全 TTL 缓存（1h，128 条 FIFO）
-│
-├── frontend/               # Vue 3 前端
-│   └── src/
-│       ├── views/          # ChatView（对话+推理时间线）/ EvalView / KnowledgeView
-│       ├── api/            # HTTP 客户端（SSE 流式解析、JWT 自动注入、401 拦截）
-│       ├── components/     # LoginBar / TokenStats
-│       └── stores/         # Pinia 登录态
-│
-├── config/
-│   ├── settings.py         # pydantic-settings 全局配置
-│   └── .env                # API Key（不入 git）
-│
-├── tests/
-│   └── test_all.py         # pytest 全链路（7 TestClass，配置→DB→RAG→API→SSE→集成）
-│
-├── assets/                 # 运行时数据（chroma_db / upload_docs / test_data）
-├── logs/                   # Loguru 日志（10MB 轮转，30 天保留）
-├── Dockerfile              # 多阶段构建
-├── docker-compose.yml      # 一键部署
+├── agent/                LangGraph 多智能体（graph_workflow / tools / prompts）
+├── api/                  FastAPI 接口层（routes + SSE 流式 + 中间件）
+├── core/                 核心模块（auth / database / audit / circuit_breaker / session / scheduler）
+├── rag/                  RAG 检索链路（loader / splitter / vector_store / retriever / bm25 / cache）
+├── config/               配置（settings + .env + prometheus + grafana）
+├── frontend/             Vue 3 前端（Vite 构建，纯 CSS 响应式）
+├── scripts/              运维脚本（rollback / health_check）
+├── nginx/                Nginx 配置（反向代理 + HTTPS 模板）
+├── .github/workflows/    CI/CD 流水线（GitHub Actions）
+├── assets/               运行时数据（chroma_db / upload_docs / backups）
+├── logs/                 日志（Loguru 轮转）
+├── Dockerfile            多阶段构建
+├── docker-compose.yml    编排文件（app + nginx + redis + prometheus + grafana）
 └── requirements.txt
 ```
-
----
-
-## 核心架构
-
-### Agent 工作流（LangGraph 状态图）
-
-```
-用户发送消息
-      ↓
-  router 节点 ──→ agent_mode?
-      │
-      ├── "chat" → retrieve ─→ chat_agent ─→ 要调工具? ──YES→ tools ─→ chat_agent（最多 5 轮）
-      │                                                │
-      │                                               NO
-      │                                                ↓
-      │                                             END（返回最终回答）
-      │
-      ├── "manage" → manage_agent ─→ END（处理上传/删除/重建）
-      │
-      └── "eval" → eval_agent ─→ END（批量评测 + 幻觉检测）
-```
-
-### ReAct 工具集
-
-| 工具 | 功能 | 调用时机 |
-|------|------|---------|
-| `search_knowledge_base` | ChromaDB 语义检索 | 用户问任何知识性问题 |
-| `get_kb_summary` | 知识库内容全貌 | 宽泛问题（"介绍一下你自己"） |
-| `list_my_files` | 已上传文件列表 | 用户问"有哪些资料" |
-| `get_chat_context` | 历史对话记录 | 多轮对话上下文 |
-| `verify_answer_against_kb` | 自我校验防幻觉 | 不确定时自检 |
-
-### 数据隔离
-
-所有数据层都携带 `owner_id`：
-- **ChromaDB**：`metadata={"owner_id": N}` + 查询 `filter={"owner_id": owner_id}`
-- **SQLite**：`WHERE owner_id = ?` 全表查询
-- **JWT**：payload 含 `sub` → FastAPI `get_current_user` 依赖注入
-- 多租户就绪，当前单管理员使用
-
-### 两阶段 RAG 检索
-
-```
-用户问题 → ChromaDB embedding 搜索 topK=10
-         → [可选] BM25 RRF 混合
-         → DashScope gte-rerank 重排 topK=5
-         → 注入 System Prompt
-         → LLM 生成
-```
-
-- Rerank 失败 → 自动回退 ChromaDB 原始排序（优雅降级）
-- 检索为空 → 强制回复"知识库中暂无相关信息"（防幻觉）
-
----
-
-## 自动评测体系
-
-上传 JSON 评测集 → 并发执行问答 + 幻觉检测 → 生成多维报告：
-
-| 指标 | 说明 |
-|------|------|
-| 准确率 | 非幻觉题 / 总题数 |
-| 幻觉率 | LLM 检测出的无中生有比例 |
-| 平均匹配度 | 回答与知识库的语义匹配分数 (0-100) |
-| 检索质量 | good / partial / poor 三档 |
-
-评测报告自动存入 SQLite，支持导出 Markdown。评测集自带 5 道幻觉检测题（知识库无此信息），验证兜底机制。
-
----
-
-## 防幻觉策略
-
-1. **System Prompt 约束** — "只能基于知识库内容回答，禁止编造"
-2. **检索结果为空兜底** — "抱歉，我的知识库中暂时没有这方面的信息"
-3. **verify_answer_against_kb 工具** — 自我校验，匹配度 < 0.5 → 标记不可用
-4. **评测集幻觉题** — 故意问知识库没有的问题，验证系统诚实度
-
----
-
-## 优雅降级
-
-| 场景 | 降级策略 |
-|------|---------|
-| DashScope Rerank API 失败 | 回退 ChromaDB 原始排序（score=1.0） |
-| LangGraph astream_events 不可用 | 回退 ainvoke + 模拟打字机流式 |
-| Tesseract OCR 未安装 | 跳过图片 OCR，仅输出警告 |
-| JWT Token 无效 | 公开接口降级为 owner_id=0（无知识库权限） |
-
----
-
-## 本地开发
-
-```bash
-# 前端热重载开发
-cd frontend && npm run dev
-
-# 后端
-python main.py
-
-# 跑测试（跳过需要在线 API 的慢测试）
-python -m pytest tests/test_all.py -v
-
-# 全量测试（需要 API Key）
-python -m pytest tests/test_all.py -v -k "not slow"
-```
-
----
-
-## 许可证
-
-MIT

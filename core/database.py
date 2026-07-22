@@ -52,8 +52,32 @@ def init_database():
             filepath TEXT NOT NULL,
             file_size INTEGER DEFAULT 0,
             chunk_count INTEGER DEFAULT 0,
+            file_hash TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (owner_id) REFERENCES users(id)
+        )
+    """)
+    # 兼容：旧数据库添加 file_hash 列
+    try:
+        cursor.execute("SELECT file_hash FROM files LIMIT 1")
+    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE files ADD COLUMN file_hash TEXT DEFAULT ''")
+        logger.info("数据库迁移：files 表添加 file_hash 列")
+
+    # 上传任务状态表（用于异步进度追踪）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS upload_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL UNIQUE,
+            owner_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            file_size INTEGER DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            progress INTEGER DEFAULT 0,
+            chunk_count INTEGER DEFAULT 0,
+            error TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 

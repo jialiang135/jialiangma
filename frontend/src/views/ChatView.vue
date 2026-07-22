@@ -140,10 +140,10 @@ import { useAuthStore } from '../stores/auth.js'
 import TokenStats from '../components/TokenStats.vue'
 import { marked } from 'marked'
 
-// 配置 marked：安全的 markdown 渲染
-marked.setOptions({
+// 配置 marked：安全的 markdown 渲染（marked v18 使用 .use() 替代废弃的 .setOptions()）
+marked.use({
   breaks: true,      // 单个换行也转 <br>
-  gfm: true,         // GitHub Flavored Markdown
+  gfm: true,         // GitHub Flavored Markdown（表格、任务列表、删除线等）
 })
 
 const auth = useAuthStore()
@@ -187,7 +187,9 @@ function askQuick(text) {
 
 function renderMarkdown(text) {
   if (!text) return ''
-  return marked(text)
+  // GFM 表格要求表头行前有空行，LLM 输出经常缺少，自动补齐
+  const fixed = text.replace(/([^\n])\n(\|[^\n]+\|\s*\n\|[-| :]+\|)/g, '$1\n\n$2')
+  return marked(fixed)
 }
 
 
@@ -345,11 +347,12 @@ async function loadHistory() {
 }
 
 async function loadConversation(c) {
-  // c 是 ConversationSummary: { group_id, first_log_id, turn_count, last_at, first_question }
   const gid = c.group_id
   if (!gid) return
 
-  // 加载完整对话上下文
+  // 手机端选择对话后自动关闭侧边栏
+  if (isMobile.value) showHistory.value = false
+
   try {
     const res = await getConversation(gid)
     const ctx = res.messages || []
@@ -382,36 +385,7 @@ const isMobile = ref(window.innerWidth <= 768)
 
 function onResize() {
   isMobile.value = window.innerWidth <= 768
-  // 手机端默认收起侧边栏
   if (isMobile.value) showHistory.value = false
-}
-
-async function loadConversation(c) {
-  const gid = c.group_id
-  if (!gid) return
-
-  // 手机端选择对话后自动关闭侧边栏
-  if (isMobile.value) showHistory.value = false
-
-  try {
-    const res = await getConversation(gid)
-    const ctx = res.messages || []
-    if (ctx.length > 0) {
-      clearChat()
-      for (const m of ctx) {
-        messages.value.push({
-          role: m.role,
-          content: m.content,
-          reasoning: m.role === 'assistant' ? m.reasoning : undefined,
-        })
-      }
-      currentConversationId.value = gid.startsWith('__single_') ? null : gid
-      activeHistoryId.value = gid
-      scrollBottom()
-    }
-  } catch {
-    // 接口不可用，忽略
-  }
 }
 
 onMounted(() => {
