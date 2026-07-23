@@ -197,5 +197,6 @@ class SessionManager:
         return [k for k in self._fallback if fnmatch.fnmatch(k, pattern)]
 
 
-# 全局单例
-session_manager = SessionManager()
+# 全局单例（使用 settings 中的 Redis URL，Docker 中自动指向 redis 服务）
+from config.settings import settings as _settings
+session_manager = SessionManager(redis_url=_settings.redis_url)

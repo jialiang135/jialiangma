@@ -78,5 +78,6 @@ class AsyncQueue:
         return True  # 线程池始终可用
 
 
-# 全局单例
-async_queue = AsyncQueue()
+# 全局单例（使用 settings 中的 Redis URL，Docker 中自动指向 redis 服务）
+from config.settings import settings as _settings
+async_queue = AsyncQueue(redis_url=_settings.redis_url)

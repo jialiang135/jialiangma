@@ -141,9 +141,7 @@ def delete_by_file(filename: str, owner_id: int) -> int:
     删除某个文件的所有向量块（需 owner_id 校验）。
     返回删除数量。
     """
-    vector_store = get_vector_store()
-    client = _get_chroma_client()
-    collection = client.get_collection(COLLECTION_NAME)
+    collection = _get_or_create_collection()
 
     try:
         # 查找匹配的文档ID
@@ -160,7 +158,7 @@ def delete_by_file(filename: str, owner_id: int) -> int:
             return count
         return 0
     except Exception as e:
-        logger.error(f"向量库删除失败: {e}")
+        logger.warning(f"向量库删除失败: {e}")
         return 0
 
 
@@ -169,8 +167,7 @@ def delete_all_by_owner(owner_id: int) -> int:
     清空某个用户的所有向量数据。
     返回删除数量。
     """
-    client = _get_chroma_client()
-    collection = client.get_collection(COLLECTION_NAME)
+    collection = _get_or_create_collection()
 
     try:
         existing = collection.get(
@@ -183,15 +180,20 @@ def delete_all_by_owner(owner_id: int) -> int:
             return count
         return 0
     except Exception as e:
-        logger.error(f"向量库清空失败: {e}")
+        logger.warning(f"向量库清空失败: {e}")
         return 0
+
+
+def _get_or_create_collection():
+    """获取或创建 ChromaDB collection（不存在时自动创建，避免启动报错）"""
+    client = _get_chroma_client()
+    return client.get_or_create_collection(COLLECTION_NAME)
 
 
 def get_collection_stats(owner_id: int) -> dict:
     """获取某用户的向量库统计信息"""
     try:
-        client = _get_chroma_client()
-        collection = client.get_collection(COLLECTION_NAME)
+        collection = _get_or_create_collection()
         existing = collection.get(
             where={"owner_id": owner_id},
             include=["metadatas"],
@@ -210,5 +212,5 @@ def get_collection_stats(owner_id: int) -> dict:
             "files": sorted(sources),
         }
     except Exception as e:
-        logger.error(f"获取向量库统计失败: {e}")
+        logger.warning(f"获取向量库统计失败: {e}")
         return {"total_chunks": 0, "unique_files": 0, "files": []}
