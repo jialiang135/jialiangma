@@ -46,22 +46,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy to ECS
-        env:
-          ECS_HOST: ${{ secrets.ECS_HOST }}
-          ECS_USER: ${{ secrets.ECS_USER }}
-          ECS_SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
-        run: |
-          set -e
-          # 配置 SSH
-          install -m 700 -d $HOME/.ssh
-          echo "$ECS_SSH_KEY" > $HOME/.ssh/deploy_key
-          chmod 600 $HOME/.ssh/deploy_key
-          ssh-keyscan -H "$ECS_HOST" >> $HOME/.ssh/known_hosts 2>/dev/null
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.ECS_SSH_KEY }}
 
-          # 打包源码
+      - name: Pack and deploy
+        run: |
           cd ${{ github.workspace }}
-          tar czf deploy.tar.gz \
+          tar czf /tmp/deploy.tar.gz \
             --exclude='config/.env' \
             --exclude='node_modules' \
             --exclude='__pycache__' \
@@ -75,9 +67,9 @@ jobs:
             scripts/ nginx/ .github/ \
             requirements.txt Dockerfile docker-compose.yml main.py
 
-          # 上传 + 部署
-          scp -i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no deploy.tar.gz "$ECS_USER@$ECS_HOST:/tmp/deploy.tar.gz"
-          ssh -i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no "$ECS_USER@$ECS_HOST" "
+          scp -o StrictHostKeyChecking=no /tmp/deploy.tar.gz ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }}:/tmp/deploy.tar.gz
+
+          ssh -o StrictHostKeyChecking=no ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} "
             cd /opt/personal-agent
             tar xzf /tmp/deploy.tar.gz
             rm /tmp/deploy.tar.gz
