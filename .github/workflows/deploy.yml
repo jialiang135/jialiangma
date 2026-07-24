@@ -1,24 +1,17 @@
 # ═══════════════════════════════════════════
-# CI/CD 流水线（渐进式启用）
-# 当前：Lint + Test 自动运行
-# 后续：配置 GitHub Secrets 后启用 ACR 推送 + 自动部署
+# CI/CD 流水线 — 简化版（个人轻量服务器）
+# 流程：Lint → Test → tar+SSH 部署到阿里云
 # ═══════════════════════════════════════════
 name: CI/CD
 
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
     branches: [main]
 
-env:
-  REGISTRY: registry.cn-hangzhou.aliyuncs.com
-  NAMESPACE: personal-agent
-  IMAGE_NAME: personal-agent
-
 jobs:
-  # ─── 代码质量检查（非阻塞，容忍失败） ───
+  # ─── 代码质量检查 ───
   lint:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -30,7 +23,7 @@ jobs:
       - run: pip install ruff
       - run: ruff check . --ignore=E501,E402,F401,F841 || true
 
-  # ─── 测试（当前测试较少，容忍失败） ───
+  # ─── 自动化测试 ───
   test:
     runs-on: ubuntu-latest
     needs: lint
@@ -44,80 +37,37 @@ jobs:
       - run: pip install pytest pytest-cov pytest-asyncio httpx
       - run: pytest tests/ -v --tb=short || true
 
-  # ─── 构建推送 ACR（需配置 ACR_USERNAME + ACR_PASSWORD） ───
-  build:
+  # ─── 自动部署到阿里云轻量服务器 ───
+  deploy:
     runs-on: ubuntu-latest
     needs: test
-    if: |
-      github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main'
+    environment: production
     steps:
       - uses: actions/checkout@v4
 
       - name: Check secrets
         id: check
         run: |
-          if [ -z "${{ secrets.ACR_USERNAME }}" ]; then
-            echo "skipped=true" >> $GITHUB_OUTPUT
-            echo "⚠️ ACR secrets 未配置，跳过镜像构建"
-          else
-            echo "skipped=false" >> $GITHUB_OUTPUT
-          fi
-
-      - uses: docker/setup-buildx-action@v3
-        if: steps.check.outputs.skipped != 'true'
-
-      - uses: docker/login-action@v3
-        if: steps.check.outputs.skipped != 'true'
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
-
-      - uses: docker/metadata-action@v5
-        if: steps.check.outputs.skipped != 'true'
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=sha,prefix=,format=short
-
-      - uses: docker/build-push-action@v6
-        if: steps.check.outputs.skipped != 'true'
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ─── 自动部署（需配置 ECS_HOST + ECS_USER + ECS_SSH_KEY） ───
-  deploy:
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    environment: production
-    steps:
-      - name: Check secrets
-        id: check
-        run: |
           if [ -z "${{ secrets.ECS_HOST }}" ]; then
-            echo "⚠️ ECS secrets 未配置，跳过自动部署"
             echo "skipped=true" >> $GITHUB_OUTPUT
+            echo "⚠️ ECS secrets 未配置，跳过自动部署"
           else
             echo "skipped=false" >> $GITHUB_OUTPUT
           fi
 
-      - uses: appleboy/ssh-action@v1
+      - name: Deploy to ECS
         if: steps.check.outputs.skipped != 'true'
+        uses: easingthemes/ssh-deploy@v5.1.0
         with:
-          host: ${{ secrets.ECS_HOST }}
-          username: ${{ secrets.ECS_USER }}
-          key: ${{ secrets.ECS_SSH_KEY }}
-          script: |
+          SSH_PRIVATE_KEY: ${{ secrets.ECS_SSH_KEY }}
+          REMOTE_HOST: ${{ secrets.ECS_HOST }}
+          REMOTE_USER: ${{ secrets.ECS_USER }}
+          SOURCE: ""
+          TARGET: "/opt/personal-agent"
+          EXCLUDE: "config/.env, node_modules, __pycache__, *.pyc, .git, assets, logs, frontend/node_modules, frontend/dist"
+          SCRIPT_AFTER: |
             cd /opt/personal-agent
-            git pull
-            docker compose up -d --build
+            docker compose up -d --build app
             docker image prune -f
+            echo "deploy done ✓"
