@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════
-# CI/CD 流水线 — 简化版（个人轻量服务器）
-# 流程：Lint → Test → tar+SSH 部署到阿里云
+# CI/CD 流水线 — 轻量服务器版（tar+SSH 直推）
+# 流程：Lint → Test → 打包源码 → scp 上传 → docker compose 重建
 # ═══════════════════════════════════════════
 name: CI/CD
 
@@ -37,7 +37,7 @@ jobs:
       - run: pip install pytest pytest-cov pytest-asyncio httpx
       - run: pytest tests/ -v --tb=short || true
 
-  # ─── 自动部署到阿里云轻量服务器 ───
+  # ─── 自动部署到阿里云 ───
   deploy:
     runs-on: ubuntu-latest
     needs: test
@@ -46,28 +46,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check secrets
-        id: check
+      - name: Setup SSH
         run: |
-          if [ -z "${{ secrets.ECS_HOST }}" ]; then
-            echo "skipped=true" >> $GITHUB_OUTPUT
-            echo "⚠️ ECS secrets 未配置，跳过自动部署"
-          else
-            echo "skipped=false" >> $GITHUB_OUTPUT
-          fi
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ECS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.ECS_HOST }} >> ~/.ssh/known_hosts
 
       - name: Deploy to ECS
-        if: steps.check.outputs.skipped != 'true'
-        uses: easingthemes/ssh-deploy@v5.1.0
-        with:
-          SSH_PRIVATE_KEY: ${{ secrets.ECS_SSH_KEY }}
-          REMOTE_HOST: ${{ secrets.ECS_HOST }}
-          REMOTE_USER: ${{ secrets.ECS_USER }}
-          SOURCE: ""
-          TARGET: "/opt/personal-agent"
-          EXCLUDE: "config/.env, node_modules, __pycache__, *.pyc, .git, assets, logs, frontend/node_modules, frontend/dist"
-          SCRIPT_AFTER: |
+        run: |
+          cd ${{ github.workspace }}
+          tar czf deploy.tar.gz \
+            --exclude='config/.env' \
+            --exclude='node_modules' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.git' \
+            --exclude='assets' \
+            --exclude='logs' \
+            --exclude='frontend/node_modules' \
+            --exclude='frontend/dist' \
+            api/ core/ config/ agent/ rag/ frontend/ \
+            scripts/ nginx/ .github/ \
+            requirements.txt Dockerfile docker-compose.yml main.py
+
+          scp -i ~/.ssh/deploy_key deploy.tar.gz ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }}:/tmp/deploy.tar.gz
+
+          ssh -i ~/.ssh/deploy_key ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} "
             cd /opt/personal-agent
+            tar xzf /tmp/deploy.tar.gz
+            rm /tmp/deploy.tar.gz
             docker compose up -d --build app
             docker image prune -f
-            echo "deploy done ✓"
+            echo 'deploy done ✓'
+          "
