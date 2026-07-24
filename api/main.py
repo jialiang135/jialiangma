@@ -136,7 +136,7 @@ def create_app() -> FastAPI:
     # --- 健康检查 ---
     @app.get("/api/health")
     async def health_check():
-        return {"status": "ok", "version": "1.0.2-tar-scp-deploy"}
+        return {"status": "ok", "version": "1.0.3-cicd-fix"}
 
     # Prometheus 指标监控（可选，未安装则跳过）
     try:

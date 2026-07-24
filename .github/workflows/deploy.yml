@@ -46,15 +46,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.ECS_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.ECS_HOST }} >> ~/.ssh/known_hosts
-
       - name: Deploy to ECS
+        env:
+          ECS_HOST: ${{ secrets.ECS_HOST }}
+          ECS_USER: ${{ secrets.ECS_USER }}
+          ECS_SSH_KEY: ${{ secrets.ECS_SSH_KEY }}
         run: |
+          set -e
+          # 配置 SSH
+          install -m 700 -d $HOME/.ssh
+          echo "$ECS_SSH_KEY" > $HOME/.ssh/deploy_key
+          chmod 600 $HOME/.ssh/deploy_key
+          ssh-keyscan -H "$ECS_HOST" >> $HOME/.ssh/known_hosts 2>/dev/null
+
+          # 打包源码
           cd ${{ github.workspace }}
           tar czf deploy.tar.gz \
             --exclude='config/.env' \
@@ -70,9 +75,9 @@ jobs:
             scripts/ nginx/ .github/ \
             requirements.txt Dockerfile docker-compose.yml main.py
 
-          scp -i ~/.ssh/deploy_key deploy.tar.gz ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }}:/tmp/deploy.tar.gz
-
-          ssh -i ~/.ssh/deploy_key ${{ secrets.ECS_USER }}@${{ secrets.ECS_HOST }} "
+          # 上传 + 部署
+          scp -i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no deploy.tar.gz "$ECS_USER@$ECS_HOST:/tmp/deploy.tar.gz"
+          ssh -i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=no "$ECS_USER@$ECS_HOST" "
             cd /opt/personal-agent
             tar xzf /tmp/deploy.tar.gz
             rm /tmp/deploy.tar.gz
