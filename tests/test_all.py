@@ -17,13 +17,21 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture(scope="module")
 def client():
-    """创建 FastAPI TestClient"""
+    """创建 FastAPI TestClient。
+
+    数据库/上传目录/向量库路径由 tests/conftest.py 指向临时目录，
+    不再触碰真实的 assets 数据。
+    """
     from api.main import app
     from core.database import init_database, create_admin_user
     from core.auth import hash_password
     from config.settings import settings
-    init_database()
-    create_admin_user(settings.admin_username, hash_password(settings.admin_password))
+    from tests.conftest import run_async
+
+    run_async(init_database())
+    run_async(create_admin_user(
+        settings.admin_username, hash_password(settings.admin_password)
+    ))
     with TestClient(app) as c:
         yield c
 
@@ -92,33 +100,44 @@ class TestConfig:
 class TestDatabase:
     def test_init(self):
         from core.database import init_database, get_db_path
-        init_database()
+        from tests.conftest import run_async
+        run_async(init_database())
         assert os.path.exists(get_db_path())
 
-    def test_admin_exists(self):
+    def test_admin_exists(self, client):
+        """
+        管理员由启动流程创建，因此这里依赖 client fixture
+        （它负责初始化库并建管理员）。
+
+        注：测试改用独立临时库后，这个顺序依赖才暴露出来 ——
+        以前它"通过"只是因为真实库里早就有管理员了。
+        """
         from core.database import get_user_by_username
         from config.settings import settings
-        user = get_user_by_username(settings.admin_username)
+        from tests.conftest import run_async
+        user = run_async(get_user_by_username(settings.admin_username))
         assert user is not None
         assert user["username"] == settings.admin_username
 
     def test_file_crud(self):
         from core.database import (insert_file_record, get_files_by_owner,
                                     get_file_by_id, delete_file_record)
-        fid = insert_file_record(1, "test.txt", "/tmp/test.txt", 1024, 5)
+        from tests.conftest import run_async
+        fid = run_async(insert_file_record(1, "test.txt", "/tmp/test.txt", 1024, 5))
         assert fid > 0
-        files = get_files_by_owner(1)
+        files = run_async(get_files_by_owner(1))
         assert any(f["id"] == fid for f in files)
-        record = get_file_by_id(fid)
+        record = run_async(get_file_by_id(fid))
         assert record["filename"] == "test.txt"
-        assert delete_file_record(fid, 1)
+        assert run_async(delete_file_record(fid, 1))
 
     def test_chat_log(self):
-        from core.database import insert_chat_log, get_chat_history, get_chat_history_count
-        before = get_chat_history_count(1)
-        lid = insert_chat_log(1, "chat", "测试问题", "测试回答", "推理过程", '["test.txt"]')
+        from core.database import insert_chat_log, get_chat_history_count
+        from tests.conftest import run_async
+        before = run_async(get_chat_history_count(1))
+        lid = run_async(insert_chat_log(1, "chat", "测试问题", "测试回答", "推理过程", '["test.txt"]'))
         assert lid > 0
-        after = get_chat_history_count(1)
+        after = run_async(get_chat_history_count(1))
         assert after == before + 1
 
 
@@ -277,12 +296,15 @@ class TestAgentTools:
         for t in [search_knowledge_base, list_my_files, get_kb_summary,
                   get_chat_context, verify_answer_against_kb]:
             assert hasattr(t, "name")
-            assert hasattr(t, "invoke"), f"{t.name} 缺少 invoke 方法"
+            # 工具是 async 的（内部要 await 数据层 / 把重活丢线程池），
+            # 因此对应的是 ainvoke 而不是 invoke
+            assert hasattr(t, "ainvoke"), f"{t.name} 缺少 ainvoke 方法"
 
     def test_list_files_empty(self):
         """测试空知识库下的 list_my_files"""
         from agent.tools import list_my_files
-        result = list_my_files.invoke({"owner_id": 99999})
+        from tests.conftest import run_async
+        result = run_async(list_my_files.ainvoke({"owner_id": 99999}))
         assert "为空" in result or "没有" in result
 
 

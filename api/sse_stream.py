@@ -40,6 +40,7 @@ from loguru import logger
 from agent.graph_workflow import get_agent_graph
 from agent.state import AgentState
 from config.settings import settings
+from core.database import run_async_blocking
 from core.llm import extract_reasoning_delta, extract_usage
 
 # 落库时思考文本的截断上限，避免单轮对话把 reasoning 列撑爆
@@ -95,49 +96,51 @@ def _persist_turn(
     sources: list[str],
     conversation_id: str | None,
     usage: dict,
-) -> None:
-    """落库 + 计费。同步函数，调用方用 ``asyncio.to_thread`` 执行。"""
+):
+    """落库 + 计费（协程工厂）。调用方决定是 await 还是跨线程跑。"""
     from core.database import insert_chat_log
+    from core.token_tracker import track_usage
 
-    # 没有有效答案就不写对话记录：否则历史里会出现一条空的助手消息。
-    # 常见于用户在模型还在思考时就点了"停止"。
-    if answer.strip():
-        try:
-            insert_chat_log(
-                owner_id=owner_id,
-                agent_mode=agent_mode,
-                question=question,
-                answer=answer,
-                reasoning=json.dumps(
-                    {
-                        "steps": steps,
-                        "thinking": thinking[:MAX_STORED_THINKING],
-                    },
-                    ensure_ascii=False,
-                ),
-                sources=json.dumps(sources, ensure_ascii=False),
-                conversation_id=conversation_id,
-            )
-        except Exception as e:
-            logger.error("[SSE] 保存对话日志失败: {}", e)
-    else:
-        logger.info("[SSE] 无有效答案（可能是客户端提前中断），不写对话记录")
+    async def _run() -> None:
+        # 没有有效答案就不写对话记录：否则历史里会出现一条空的助手消息。
+        # 常见于用户在模型还在思考时就点了"停止"。
+        if answer.strip():
+            try:
+                await insert_chat_log(
+                    owner_id=owner_id,
+                    agent_mode=agent_mode,
+                    question=question,
+                    answer=answer,
+                    reasoning=json.dumps(
+                        {
+                            "steps": steps,
+                            "thinking": thinking[:MAX_STORED_THINKING],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    sources=json.dumps(sources, ensure_ascii=False),
+                    conversation_id=conversation_id,
+                )
+            except Exception as e:
+                logger.error("[SSE] 保存对话日志失败: {}", e)
+        else:
+            logger.info("[SSE] 无有效答案（可能是客户端提前中断），不写对话记录")
 
-    # 计费无论如何都要记：token 已经真实消耗掉了
-    if usage.get("total_tokens"):
-        try:
-            from core.token_tracker import track_usage
+        # 计费无论如何都要记：token 已经真实消耗掉了
+        if usage.get("total_tokens"):
+            try:
+                await track_usage(
+                    owner_id=owner_id,
+                    model=settings.deepseek_model,
+                    prompt_tokens=usage.get("input_tokens", 0),
+                    completion_tokens=usage.get("output_tokens", 0),
+                    reasoning_tokens=usage.get("reasoning_tokens", 0),
+                    cached_tokens=usage.get("cached_tokens", 0),
+                )
+            except Exception as e:
+                logger.error("[SSE] Token 记录失败: {}", e)
 
-            track_usage(
-                owner_id=owner_id,
-                model=settings.deepseek_model,
-                prompt_tokens=usage.get("input_tokens", 0),
-                completion_tokens=usage.get("output_tokens", 0),
-                reasoning_tokens=usage.get("reasoning_tokens", 0),
-                cached_tokens=usage.get("cached_tokens", 0),
-            )
-        except Exception as e:
-            logger.error("[SSE] Token 记录失败: {}", e)
+    return _run()
 
 
 async def sse_chat_generator(
@@ -162,7 +165,13 @@ async def sse_chat_generator(
     usage: dict = {}
     authoritative_answer = ""
 
-    def persist() -> None:
+    def persist():
+        """
+        生成一次落库操作。
+
+        每次调用都要产生**新的协程对象**（协程只能被 await 一次），
+        因此这里是个工厂而不是预先建好的协程。
+        """
         return _persist_turn(
             owner_id=owner_id,
             agent_mode=agent_mode,
@@ -233,9 +242,9 @@ async def sse_chat_generator(
         # 都会立刻再抛 CancelledError（且它继承自 BaseException，except Exception
         # 接不住），导致持久化根本没执行。SQLite 本地写入是毫秒级，此时请求已
         # 结束，短暂阻塞是划算的 —— 换来的是"已生成的答案不会丢"。
-        logger.info("[SSE] 客户端中断，同步保存已生成内容")
+        logger.info("[SSE] 客户端中断，保存已生成内容")
         try:
-            persist()
+            run_async_blocking(persist())
         except BaseException as e:  # noqa: BLE001 - 取消路径下要吞掉一切，不能向上抛
             logger.error("[SSE] 中断后保存失败: {}", e)
         raise
@@ -271,7 +280,7 @@ async def sse_chat_generator(
         yield _sse_event("usage", json.dumps(usage, ensure_ascii=False))
 
     try:
-        await asyncio.to_thread(persist)
+        await persist()
     except Exception as e:
         logger.error("[SSE] 保存失败: {}", e)
 

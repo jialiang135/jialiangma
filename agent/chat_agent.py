@@ -1,6 +1,8 @@
 """
 问答对话 Agent —— ReAct 推理循环节点
 """
+import asyncio
+
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from loguru import logger
 
@@ -185,7 +187,13 @@ async def retrieve_before_chat(state: AgentState) -> dict:
         return {"knowledge_context": "", "retrieved_docs": []}
 
     # 所有用户共享同一份知识库（管理员的知识库），检索时固定查 owner_id=1
-    result = retrieve(query=user_query, owner_id=1, top_k_rerank=5)
+    #
+    # retrieve 内部是同步的：一次 Chroma 向量扫描 + 两次 DashScope 同步 HTTP
+    # （查询向量化 + rerank）。直接在 async 节点里调用会**卡住整个事件循环**，
+    # 同进程的所有请求一起排队 —— 这是全系统最主要的阻塞源，必须丢线程池。
+    result = await asyncio.to_thread(
+        retrieve, query=user_query, owner_id=1, top_k_rerank=5
+    )
 
     if not result["documents"]:
         logger.info("[ChatAgent] 知识库检索为空，将使用兜底回复")

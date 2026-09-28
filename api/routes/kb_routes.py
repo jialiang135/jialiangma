@@ -1,32 +1,47 @@
 """
 知识库管理路由（文件去重 + 异步处理 + 进度查询）
+
+线程模型说明
+------------
+两条路径的性能特征不同，处理方式也不同：
+
+1. **请求路径**（本文件的 ``@router`` 函数）跑在事件循环里，所以：
+   - 数据库调用直接 ``await``（数据层已是 async）
+   - Chroma 操作、文件 IO 这类同步调用用 ``asyncio.to_thread`` 挪出去
+2. **后台任务**（``core/kb_tasks`` 里的函数）跑在线程池的工作线程里，那里
+   **没有 event loop**，而这正是我们要的"重活离开事件循环"。它们保持同步，
+   内部的数据库调用通过 ``run_async_from_thread`` 提交回主循环执行。
 """
+import asyncio
 import os
-import shutil
 import tempfile
-import hashlib
 import uuid
-import sqlite3
 from pathlib import Path
+
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from loguru import logger
 
-from core.schemas import FileUploadResponse, KnowledgeBaseStats, FileMetaOut, APIResponse
+from core.schemas import KnowledgeBaseStats, FileMetaOut, APIResponse
 from core.auth import get_current_user, require_admin
 from core.database import (
     get_files_by_owner,
     get_file_by_id,
     delete_file_record,
     delete_all_file_records,
-    insert_file_record,
-    update_file_chunk_count,
+    find_file_by_hash_or_name,
+    create_upload_task,
+    update_upload_task,
+    get_upload_task,
+)
+from core.kb_tasks import (
+    compute_file_hash,
+    process_file_task,
+    rebuild_task,
 )
 from core.paths import safe_filename, safe_join, remove_within
 from core.async_queue import async_queue
-from config.settings import settings, PROJECT_ROOT
+from config.settings import settings
 from rag.document_loader import SUPPORTED_EXTENSIONS
-
-DB_PATH = PROJECT_ROOT / "assets" / "personal_agent.db"
 
 router = APIRouter(prefix="/api/kb", tags=["知识库"])
 
@@ -44,14 +59,11 @@ _MIME_BY_EXT = {
     ".tiff": "image/",
 }
 
+# 重建任务在 upload_tasks 里的占位文件名（前端据此区分上传任务与重建任务）
+REBUILD_TASK_FILENAME = "__rebuild__"
 
-# ─── 辅助函数 ───
 
-def _get_conn():
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    return conn
-
+# ─── 校验 ───
 
 def _validate_upload(file: UploadFile) -> tuple[str | None, str | None]:
     """
@@ -97,9 +109,7 @@ def _warn_on_mime_mismatch(filename: str, content_type: str | None) -> None:
     if expected and not content_type.lower().startswith(expected):
         logger.warning(
             "上传 Content-Type 与扩展名不符: {} 声明={} 预期前缀={}",
-            filename,
-            content_type,
-            expected,
+            filename, content_type, expected,
         )
 
 
@@ -138,127 +148,16 @@ async def _spool_to_temp(file: UploadFile, suffix: str, max_bytes: int) -> tuple
         raise
 
 
-def _compute_file_hash(filepath: str) -> str:
-    """计算文件 MD5"""
-    h = hashlib.md5()
-    with open(filepath, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _check_file_exists(owner_id: int, file_hash: str, filename: str) -> dict | None:
-    """检查是否已有相同文件（hash 或 文件名 匹配）"""
-    conn = _get_conn()
-    row = conn.execute(
-        "SELECT * FROM files WHERE owner_id = ? AND (file_hash = ? OR filename = ?)",
-        (owner_id, file_hash, filename),
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
-
-
-def _process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
-    """同步处理单个文件：解析 → 分块 → 入库。返回结果字典。"""
-    from rag.document_loader import load_documents_from_paths
-    from rag.text_splitter import process_documents_batch
-    from rag.vector_store import add_documents
-
-    file_size = os.path.getsize(file_path)
-    upload_dir = str(settings.resolve_path(settings.upload_dir))
-
-    # 解析
-    docs = load_documents_from_paths([file_path], upload_dir)
-    if not docs or not docs[0].get("content", "").strip():
-        return {"success": False, "error": "无法解析文件内容"}
-
-    # 分块
-    processed = process_documents_batch(docs)
-    if not processed or not processed[0].get("chunks"):
-        return {"success": False, "error": "内容为空"}
-
-    chunks = processed[0]["chunks"]
-
-    # 持久化：文件名已在入口净化过，这里再用 safe_join 做一次纵深防御
-    dest_path = str(safe_join(upload_dir, filename))
-    shutil.copy2(file_path, dest_path)
-
-    # 去重检查
-    file_hash = _compute_file_hash(dest_path)
-    existing = _check_file_exists(owner_id, file_hash, filename)
-    if existing:
-        os.unlink(dest_path)
-        return {
-            "success": True,
-            "skipped": True,
-            "message": f"文件已存在（# {existing['id']}），跳过重复上传",
-            "existing_id": existing["id"],
-        }
-
-    # 向量化
-    metadatas = [
-        {"owner_id": owner_id, "source": filename, "chunk_idx": i, "filepath": dest_path}
-        for i in range(len(chunks))
-    ]
-    add_documents(chunks, metadatas)
-
-    # 数据库记录
-    file_id = insert_file_record(
-        owner_id=owner_id,
-        filename=filename,
-        filepath=dest_path,
-        file_size=file_size,
-        chunk_count=len(chunks),
-    )
-    update_file_chunk_count(file_id, len(chunks))
-    # 更新 hash
-    conn = _get_conn()
-    conn.execute("UPDATE files SET file_hash = ? WHERE id = ?", (file_hash, file_id))
-    conn.commit()
-    conn.close()
-
-    return {"success": True, "filename": filename, "chunks": len(chunks), "file_id": file_id}
-
-
-def _process_file_async(task_id: str, tmp_path: str, filename: str, owner_id: int):
-    """异步处理文件，更新 upload_tasks 表状态"""
-    conn = _get_conn()
-    try:
-        conn.execute(
-            "UPDATE upload_tasks SET status='processing', progress=30, updated_at=CURRENT_TIMESTAMP WHERE task_id=?",
-            (task_id,),
-        )
-        conn.commit()
-        result = _process_file_sync(tmp_path, filename, owner_id)
-        if result.get("success"):
-            if result.get("skipped"):
-                conn.execute(
-                    "UPDATE upload_tasks SET status='skipped', progress=100, error=?, updated_at=CURRENT_TIMESTAMP WHERE task_id=?",
-                    (result.get("message", "跳过"), task_id),
-                )
-            else:
-                conn.execute(
-                    "UPDATE upload_tasks SET status='done', progress=100, chunk_count=?, updated_at=CURRENT_TIMESTAMP WHERE task_id=?",
-                    (result.get("chunks", 0), task_id),
-                )
-        else:
-            conn.execute(
-                "UPDATE upload_tasks SET status='failed', progress=100, error=?, updated_at=CURRENT_TIMESTAMP WHERE task_id=?",
-                (result.get("error", "未知错误"), task_id),
-            )
-        conn.commit()
-    except Exception as e:
-        conn.execute(
-            "UPDATE upload_tasks SET status='failed', progress=100, error=?, updated_at=CURRENT_TIMESTAMP WHERE task_id=?",
-            (str(e)[:500], task_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+def _clear_upload_dir(upload_dir: Path) -> None:
+    """清空上传目录（同步，跑在线程池）。"""
+    if not upload_dir.exists():
+        return
+    for entry in upload_dir.iterdir():
+        if entry.is_file():
+            try:
+                entry.unlink()
+            except OSError as e:
+                logger.warning("清理文件失败: {} - {}", entry, e)
 
 
 # ─── 路由 ───
@@ -267,9 +166,9 @@ def _process_file_async(task_id: str, tmp_path: str, filename: str, owner_id: in
 async def list_files(user: dict = Depends(get_current_user)):
     """列出知识库文件"""
     KB_OWNER_ID = 1
-    files = get_files_by_owner(KB_OWNER_ID)
+    files = await get_files_by_owner(KB_OWNER_ID)
     from rag.vector_store import get_collection_stats
-    stats = get_collection_stats(KB_OWNER_ID)
+    stats = await asyncio.to_thread(get_collection_stats, KB_OWNER_ID)
 
     return KnowledgeBaseStats(
         total_files=len(files),
@@ -302,89 +201,79 @@ async def upload_files(
     内容能否解析交给异步任务的 status 字段。
     """
     if not files:
-        raise HTTPException(status_code=400, detail="请选择要勾选的文件")
+        raise HTTPException(status_code=400, detail="请选择要上传的文件")
 
     owner_id = user["owner_id"]
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
-    conn = _get_conn()
     task_ids = []
     skipped_already = []
     rejected = []
 
-    try:
-        for file in files:
-            # ── 1. 入口校验：不合规的文件直接记录原因，不落盘、不建任务 ──
-            filename, err = _validate_upload(file)
-            if err:
-                rejected.append({"filename": file.filename, "reason": err})
-                logger.warning("[KB] 拒绝上传: {} - {}", file.filename, err)
+    for file in files:
+        # ── 1. 入口校验：不合规的文件直接记录原因，不落盘、不建任务 ──
+        filename, err = _validate_upload(file)
+        if err:
+            rejected.append({"filename": file.filename, "reason": err})
+            logger.warning("[KB] 拒绝上传: {} - {}", file.filename, err)
+            continue
+
+        tmp_path = ""
+        task_id = None
+        try:
+            # ── 2. 分块落盘（带超限硬拦截） ──
+            tmp_path, file_size = await _spool_to_temp(
+                file, Path(filename).suffix, max_bytes
+            )
+
+            # ── 3. 快速 hash 去重 ──
+            file_hash = await asyncio.to_thread(compute_file_hash, tmp_path)
+            existing = await find_file_by_hash_or_name(owner_id, file_hash, filename)
+            if existing:
+                skipped_already.append(f"{filename}（已存在 # {existing['id']}）")
+                os.unlink(tmp_path)
                 continue
 
-            tmp_path = ""
-            task_id = None
-            try:
-                # ── 2. 分块落盘（带超限硬拦截） ──
-                tmp_path, file_size = await _spool_to_temp(
-                    file, Path(filename).suffix, max_bytes
-                )
+            # ── 4. 建任务记录 ──
+            task_id = str(uuid.uuid4())[:12]
+            await create_upload_task(task_id, owner_id, filename, file_size)
 
-                # ── 3. 快速 hash 去重 ──
-                file_hash = _compute_file_hash(tmp_path)
-                existing = _check_file_exists(owner_id, file_hash, filename)
-                if existing:
-                    skipped_already.append(f"{filename}（已存在 # {existing['id']}）")
+            # ── 5. 提交异步处理 ──
+            # 必须先确认提交成功再计入 task_ids。反过来的话，入队失败时
+            # 同一个文件会同时出现在 task_ids 和 rejected 里（自相矛盾），
+            # 前端还会去轮询一个永远不会推进的任务。
+            async_queue.enqueue(
+                process_file_task,
+                task_id, tmp_path, filename, owner_id,
+            )
+            task_ids.append(task_id)
+
+        except HTTPException as e:
+            # 超限等客户端错误：清理临时文件后记为 rejected，而不是 500
+            if tmp_path:
+                try:
                     os.unlink(tmp_path)
-                    continue
-
-                # ── 4. 建任务记录 ──
-                task_id = str(uuid.uuid4())[:12]
-                conn.execute(
-                    "INSERT INTO upload_tasks (task_id, owner_id, filename, file_size, status) VALUES (?, ?, ?, ?, 'pending')",
-                    (task_id, owner_id, filename, file_size),
-                )
-                conn.commit()
-
-                # ── 5. 提交异步处理 ──
-                # 必须先确认提交成功再计入 task_ids。反过来的话，入队失败时
-                # 同一个文件会同时出现在 task_ids 和 rejected 里（自相矛盾），
-                # 前端还会去轮询一个永远不会推进的任务。
-                async_queue.enqueue(
-                    _process_file_async,
-                    task_id, tmp_path, filename, owner_id,
-                )
-                task_ids.append(task_id)
-
-            except HTTPException as e:
-                # 超限等客户端错误：清理临时文件后记为 rejected，而不是 500
-                if tmp_path:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                rejected.append({"filename": filename, "reason": str(e.detail)})
-                logger.warning("[KB] 拒绝上传: {} - {}", filename, e.detail)
-            except Exception as e:
-                if tmp_path:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                # 已经把任务行写进库了，但没能提交给队列 —— 标记为失败，
-                # 否则前端会一直轮询到一个永久 pending 的任务
-                if task_id:
-                    try:
-                        conn.execute(
-                            "UPDATE upload_tasks SET status='failed', progress=100, error=?, "
-                            "updated_at=CURRENT_TIMESTAMP WHERE task_id=?",
-                            (f"任务提交失败: {str(e)[:200]}", task_id),
-                        )
-                        conn.commit()
-                    except Exception as db_err:
-                        logger.error("[KB] 标记任务失败也失败了: {}", db_err)
-                rejected.append({"filename": filename, "reason": f"提交失败: {str(e)[:100]}"})
-                logger.error(f"[KB] 文件提交失败: {filename} - {e}")
-    finally:
-        conn.close()
+                except OSError:
+                    pass
+            rejected.append({"filename": filename, "reason": str(e.detail)})
+            logger.warning("[KB] 拒绝上传: {} - {}", filename, e.detail)
+        except Exception as e:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            # 已经把任务行写进库了，但没能提交给队列 —— 标记为失败，
+            # 否则前端会一直轮询到一个永久 pending 的任务
+            if task_id:
+                try:
+                    await update_upload_task(
+                        task_id, status="failed", progress=100,
+                        error=f"任务提交失败: {str(e)[:200]}",
+                    )
+                except Exception as db_err:
+                    logger.error("[KB] 标记任务失败也失败了: {}", db_err)
+            rejected.append({"filename": filename, "reason": f"提交失败: {str(e)[:100]}"})
+            logger.error(f"[KB] 文件提交失败: {filename} - {e}")
 
     msg = f"已提交 {len(task_ids)} 个文件异步处理"
     if skipped_already:
@@ -410,26 +299,21 @@ async def upload_files(
 
 @router.get("/upload-status/{task_id}")
 async def get_upload_status(task_id: str, user: dict = Depends(get_current_user)):
-    """查询上传任务进度"""
-    conn = _get_conn()
-    row = conn.execute(
-        "SELECT * FROM upload_tasks WHERE task_id = ? AND owner_id = ?",
-        (task_id, user["owner_id"]),
-    ).fetchone()
-    conn.close()
-
-    if not row:
+    """查询上传/重建任务进度"""
+    task = await get_upload_task(task_id, user["owner_id"])
+    if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
     return {
         "success": True,
-        "task_id": row["task_id"],
-        "filename": row["filename"],
-        "status": row["status"],       # pending / processing / done / failed / skipped
-        "progress": row["progress"],    # 0-100
-        "chunk_count": row["chunk_count"],
-        "error": row["error"],
-        "created_at": row["created_at"],
+        "task_id": task["task_id"],
+        "filename": task["filename"],
+        "status": task["status"],       # pending / processing / done / failed / skipped
+        "progress": task["progress"],    # 0-100
+        "chunk_count": task["chunk_count"],
+        "error": task["error"],
+        "is_rebuild": task["filename"] == REBUILD_TASK_FILENAME,
+        "created_at": task["created_at"],
     }
 
 
@@ -438,7 +322,7 @@ async def delete_file(file_id: int, user: dict = Depends(require_admin)):
     """删除指定文件（仅管理员）"""
     owner_id = user["owner_id"]
     from rag.vector_store import delete_by_file
-    file_record = get_file_by_id(file_id)
+    file_record = await get_file_by_id(file_id)
     if not file_record:
         raise HTTPException(status_code=404, detail="文件不存在")
     if file_record["owner_id"] != owner_id:
@@ -447,7 +331,7 @@ async def delete_file(file_id: int, user: dict = Depends(require_admin)):
     filename = file_record["filename"]
     filepath = file_record["filepath"]
 
-    deleted_chunks = delete_by_file(filename, owner_id)
+    deleted_chunks = await asyncio.to_thread(delete_by_file, filename, owner_id)
 
     # 走 remove_within 而非直接 os.remove：库里可能存在早期版本写入的
     # 穿越路径（那时文件名没净化），直接删就是任意文件删除。
@@ -455,7 +339,7 @@ async def delete_file(file_id: int, user: dict = Depends(require_admin)):
     if not remove_within(upload_dir, filepath):
         logger.warning("[KB] 磁盘文件未删除（越界或不存在）: {}", filepath)
 
-    delete_file_record(file_id, owner_id)
+    await delete_file_record(file_id, owner_id)
     logger.info(f"[KB] 删除文件: {filename}, {deleted_chunks} 块")
 
     return APIResponse(success=True, message=f"已删除 {filename}（{deleted_chunks} 个向量块）")
@@ -466,53 +350,43 @@ async def clear_knowledge_base(user: dict = Depends(require_admin)):
     """清空知识库（仅管理员）"""
     owner_id = user["owner_id"]
     from rag.vector_store import delete_all_by_owner, reset_vector_store
-    deleted_chunks = delete_all_by_owner(owner_id)
-    deleted_files = delete_all_file_records(owner_id)
-    upload_dir = str(settings.resolve_path(settings.upload_dir))
-    for f in os.listdir(upload_dir):
-        fpath = os.path.join(upload_dir, f)
-        if os.path.isfile(fpath):
-            os.remove(fpath)
-    reset_vector_store()
+
+    deleted_chunks = await asyncio.to_thread(delete_all_by_owner, owner_id)
+    deleted_files = await delete_all_file_records(owner_id)
+
+    upload_dir = settings.resolve_path(settings.upload_dir)
+    await asyncio.to_thread(_clear_upload_dir, upload_dir)
+    await asyncio.to_thread(reset_vector_store)
+
     logger.info(f"[KB] 清空: {deleted_chunks} 块, {deleted_files} 文件")
     return APIResponse(success=True, message=f"已清空（{deleted_chunks} 块, {deleted_files} 文件）")
 
 
 @router.post("/rebuild", response_model=APIResponse)
 async def rebuild_knowledge_base(user: dict = Depends(require_admin)):
-    """重建知识库（仅管理员）"""
+    """
+    重建知识库（仅管理员）。
+
+    这是个可能耗时数分钟到数小时的操作（PDF 解析 + OCR + 逐块向量化），
+    因此**提交为后台任务并立刻返回 task_id**，由前端轮询
+    ``GET /api/kb/upload-status/{task_id}`` 获取进度。
+    原实现是在请求里同步跑完整个循环 —— 期间整个进程的所有请求都会被卡住。
+    """
     owner_id = user["owner_id"]
-    from rag.vector_store import delete_all_by_owner, reset_vector_store, add_documents
-    from rag.document_loader import load_documents_from_paths
-    from rag.text_splitter import process_documents_batch
-    delete_all_by_owner(owner_id)
-    reset_vector_store()
+    task_id = str(uuid.uuid4())[:12]
+    await create_upload_task(task_id, owner_id, REBUILD_TASK_FILENAME, 0)
 
-    files = get_files_by_owner(owner_id)
-    upload_dir = str(settings.resolve_path(settings.upload_dir))
-    total_chunks = 0
+    try:
+        async_queue.enqueue(rebuild_task, task_id, owner_id)
+    except Exception as e:
+        await update_upload_task(
+            task_id, status="failed", progress=100, error=f"任务提交失败: {str(e)[:200]}"
+        )
+        raise HTTPException(status_code=503, detail=f"重建任务提交失败: {str(e)[:200]}")
 
-    for file_record in files:
-        filepath = file_record["filepath"]
-        if not os.path.exists(filepath):
-            continue
-        try:
-            docs = load_documents_from_paths([filepath], upload_dir)
-            if not docs:
-                continue
-            processed = process_documents_batch(docs)
-            if not processed or not processed[0].get("chunks"):
-                continue
-            chunks = processed[0]["chunks"]
-            metadatas = [
-                {"owner_id": owner_id, "source": file_record["filename"], "chunk_idx": i, "filepath": filepath}
-                for i in range(len(chunks))
-            ]
-            add_documents(chunks, metadatas)
-            update_file_chunk_count(file_record["id"], len(chunks))
-            total_chunks += len(chunks)
-        except Exception as e:
-            logger.error(f"[KB] 重建失败: {file_record['filename']} - {e}")
-
-    logger.info(f"[KB] 重建完成: {len(files)} 文件, {total_chunks} 块")
-    return APIResponse(success=True, message=f"重建完成（{len(files)} 文件, {total_chunks} 块）")
+    logger.info(f"[KB] 重建任务已提交: task_id={task_id}")
+    return APIResponse(
+        success=True,
+        message="重建任务已提交，可通过任务状态查询进度",
+        data={"task_id": task_id},
+    )

@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
+import asyncio
 import time
 import uuid
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -29,13 +30,20 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info("个人数字分身 · 多Agent私有RAG系统 启动中...")
     logger.info("=" * 60)
-    init_database()
-    create_admin_user(settings.admin_username, hash_password(settings.admin_password))
+
+    # 记录主事件循环：APScheduler 的后台线程需要把异步 DB 操作提交回来执行
+    from core.database import bind_main_loop, dispose_engine, init_database
+
+    bind_main_loop(asyncio.get_running_loop())
+
+    await init_database()
+    await create_admin_user(settings.admin_username, hash_password(settings.admin_password))
     logger.info(f"DeepSeek 模型: {settings.deepseek_model}")
     logger.info(f"Embedding 模型: {settings.embedding_model}")
     logger.info(f"Rerank 模型: {settings.rerank_model}")
     logger.info(f"ChromaDB 路径: {settings.chroma_persist_dir}")
     logger.info(f"上传文件路径: {settings.upload_dir}")
+    logger.info(f"数据库路径: {settings.db_path}")
 
     # 初始化会话管理器
     from core.session_manager import session_manager
@@ -55,6 +63,7 @@ async def lifespan(app: FastAPI):
     # 不等待长时间任务跑完（比如正在做 OCR 的文档），避免关闭卡住；
     # 未完成的任务会留在 upload_tasks 里，下次启动可见
     async_queue.shutdown(wait=False)
+    await dispose_engine()
     # 注意：不要在这里 asyncio.all_tasks() 后逐个 cancel —— 那是把所有任务
     # （含 ASGI 框架自身的门户任务、连接处理任务）都取消掉，会让 TestClient
     # 退出和 uvicorn 优雅关闭抛 CancelledError。未完成的请求交给 uvicorn
@@ -122,8 +131,9 @@ def create_app() -> FastAPI:
         return response
 
     # --- 审计日志中间件 ---
-    from core.audit import AuditMiddleware, init_audit_table
-    init_audit_table()
+    # 审计表由 core/database.init_database 用模型统一建好，这里不再单独建表
+    from core.audit import AuditMiddleware
+
     app.add_middleware(AuditMiddleware)
 
     # --- 全局异常处理 ---

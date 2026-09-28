@@ -1,11 +1,14 @@
 """
 定时任务管理
-日志清理、数据备份、健康巡检、Token 用量统计
+日志清理、数据备份、健康巡检、审计日志清理
+
+注意线程模型：APScheduler 的 BackgroundScheduler 在**自己的线程**里执行任务，
+那里没有 event loop。而数据层是 async 的，因此所有 DB 操作都要通过
+``core.database.run_async_from_thread`` 提交到主循环执行。
 """
-import os
 import time
-import sqlite3
 from pathlib import Path
+
 from loguru import logger
 
 try:
@@ -16,21 +19,14 @@ except ImportError:
 
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-DB_PATH = PROJECT_ROOT / "assets" / "personal_agent.db"
 LOG_DIR = PROJECT_ROOT / "logs"
 ASSETS_DIR = PROJECT_ROOT / "assets"
-
-
-def _get_conn():
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 # ─── 定时任务函数 ───
 
 def cleanup_old_logs(retention_days: int = 30):
-    """清理过期日志文件"""
+    """清理过期日志文件（纯文件操作，不涉及事件循环）"""
     cutoff = time.time() - retention_days * 86400
     count = 0
     for f in LOG_DIR.glob("*.log*"):
@@ -46,14 +42,11 @@ def cleanup_old_logs(retention_days: int = 30):
 
 def cleanup_old_audit_logs(retention_days: int = 90):
     """清理过期审计日志"""
+    from core.database import cleanup_old_audit_logs as _cleanup
+    from core.database import run_async_from_thread
+
     try:
-        conn = _get_conn()
-        conn.execute(
-            "DELETE FROM audit_log WHERE created_at < datetime('now', '-{} days')".format(retention_days)
-        )
-        deleted = conn.rowcount
-        conn.commit()
-        conn.close()
+        deleted = run_async_from_thread(_cleanup(retention_days))
         if deleted:
             logger.info(f"🗑 清理了 {deleted} 条过期审计日志")
     except Exception as e:
@@ -61,16 +54,23 @@ def cleanup_old_audit_logs(retention_days: int = 90):
 
 
 def backup_database():
-    """SQLite 数据库备份"""
+    """
+    SQLite 数据库备份。
+
+    走 ``VACUUM INTO``（见 core/database.backup_database），**不能用
+    shutil.copy2**：启用 WAL 后主库文件可能缺少尚未 checkpoint 的事务，
+    裸拷贝会得到不一致的副本。
+    """
+    from core.database import backup_database as _backup
+    from core.database import run_async_from_thread
+
     backup_dir = ASSETS_DIR / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     backup_path = backup_dir / f"personal_agent_{timestamp}.db"
 
     try:
-        import shutil
-        shutil.copy2(DB_PATH, backup_path)
-        # 只保留最近 7 天的备份
+        run_async_from_thread(_backup(backup_path))
+        # 只保留最近 7 份
         backups = sorted(backup_dir.glob("personal_agent_*.db"))
         for old in backups[:-7]:
             old.unlink()

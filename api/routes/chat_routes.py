@@ -15,7 +15,7 @@ from core.auth import get_current_user, get_optional_user
 from core.database import (
     get_chat_history, get_chat_history_count,
     get_chat_by_conversation_id, get_conversations,
-    delete_conversation,
+    delete_conversation, get_chat_log_by_id,
 )
 from api.sse_stream import sse_chat_generator
 
@@ -107,8 +107,8 @@ async def get_history(
     user: dict = Depends(get_current_user),
 ):
     """获取当前用户的对话历史"""
-    logs = get_chat_history(user["owner_id"], limit=limit, offset=offset)
-    total = get_chat_history_count(user["owner_id"])
+    logs = await get_chat_history(user["owner_id"], limit=limit, offset=offset)
+    total = await get_chat_history_count(user["owner_id"])
 
     return ChatHistoryResponse(
         conversations=[
@@ -143,27 +143,22 @@ async def get_conversation(
     # 旧记录（无 conversation_id）：group_id 格式为 '__single_<id>'
     if conversation_id.startswith("__single_"):
         log_id = int(conversation_id.replace("__single_", ""))
-        from core.database import get_db
-        with get_db() as conn:
-            row = conn.execute(
-                "SELECT * FROM chat_logs WHERE id = ? AND owner_id = ?",
-                (log_id, owner_id),
-            ).fetchone()
-        if not row:
+        log = await get_chat_log_by_id(owner_id, log_id)
+        if not log:
             return {"conversation_id": conversation_id, "messages": [], "owner_id": owner_id}
-        log = dict(row)
         return {
             "conversation_id": conversation_id,
             "owner_id": owner_id,
             "messages": [
                 {"role": "user", "content": log["question"], "created_at": log["created_at"]},
-                {"role": "assistant", "content": log["answer"], "reasoning": log.get("reasoning"), "sources": log.get("sources"), "created_at": log["created_at"]},
+                {"role": "assistant", "content": log["answer"], "reasoning": log.get("reasoning"),
+                 "sources": log.get("sources"), "created_at": log["created_at"]},
             ],
             "total_turns": 1,
         }
 
     # 正常对话
-    logs = get_chat_by_conversation_id(owner_id, conversation_id)
+    logs = await get_chat_by_conversation_id(owner_id, conversation_id)
     if not logs:
         return {"conversation_id": conversation_id, "messages": [], "owner_id": owner_id}
 
@@ -199,7 +194,7 @@ async def list_conversations(
     获取按对话分组的摘要列表（侧边栏用）。
     每个条目代表一个独立对话，含轮数、标题、最后活跃时间。
     """
-    groups = get_conversations(user["owner_id"], limit=limit)
+    groups = await get_conversations(user["owner_id"], limit=limit)
     return ConversationListResponse(
         conversations=[
             ConversationSummary(
@@ -224,7 +219,7 @@ async def remove_conversation(
     删除指定对话组（含该组内所有轮次的消息）。
     group_id 可以是 UUID（真实对话）或 __single_<id>（旧记录）。
     """
-    deleted = delete_conversation(user["owner_id"], group_id)
+    deleted = await delete_conversation(user["owner_id"], group_id)
     if deleted == 0:
         return {"success": False, "message": "对话不存在或无权删除"}
     logger.info(

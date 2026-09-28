@@ -190,9 +190,36 @@ async function doRebuild() {
   if (!auth.isLoggedIn) { showMsg('请先登录', 'error'); return }
   rebuilding.value = true
   try {
+    // 后端已把重建改为后台任务（可能耗时数分钟到数小时），
+    // 因此这里拿到 task_id 后轮询进度，而不是等一个长请求返回
     const res = await rebuildKb()
-    showMsg(res.success ? `✅ ${res.message}` : `❌ ${res.error || res.message}`, res.success ? 'success' : 'error')
-    await refreshFiles()
+    const taskId = res?.data?.task_id
+    if (!res.success || !taskId) {
+      showMsg(`❌ ${res.error || res.message || '重建任务提交失败'}`, 'error')
+      return
+    }
+    showMsg('🔧 重建任务已提交，正在处理…', 'info')
+
+    const maxAttempts = 1200  // 最多轮询 30 分钟（1.5s 一次）
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(r => setTimeout(r, 1500))
+      let st
+      try {
+        st = await getUploadStatus(taskId)
+      } catch {
+        continue
+      }
+      if (st.status === 'done') {
+        showMsg(`✅ 重建完成（${st.chunk_count} 个向量块）`, 'success')
+        await refreshFiles()
+        return
+      }
+      if (st.status === 'failed') {
+        showMsg(`❌ 重建失败: ${st.error || '未知错误'}`, 'error')
+        return
+      }
+    }
+    showMsg('⚠️ 重建仍在进行中，可稍后刷新页面查看结果', 'info')
   } catch (e) {
     showMsg(`❌ ${e.message}`, 'error')
   } finally {

@@ -1,7 +1,15 @@
 """
 共享工具集：LangChain @tool 封装
 供 LangGraph Agent 在 ReAct 循环中调用
+
+为什么这些工具是 async 的
+-------------------------
+它们要访问数据库（数据层已是 async）与检索链路。检索链路（Chroma 查询 +
+DashScope 的同步 HTTP）本身没有 async 版本，用 ``asyncio.to_thread`` 把它
+挪出事件循环 —— 否则一次检索就会卡住整个进程的其它请求。
 """
+import asyncio
+
 from langchain_core.tools import tool
 from loguru import logger
 
@@ -15,7 +23,7 @@ from core.database import get_files_by_owner, get_chat_history
 # ========================================
 
 @tool
-def search_knowledge_base(
+async def search_knowledge_base(
     query: str,
     owner_id: int,
     top_k: int = 5,
@@ -41,7 +49,10 @@ def search_knowledge_base(
     """
     logger.info(f"[Tool] search_knowledge_base: query='{query[:80]}...', owner_id={owner_id}")
 
-    result = retrieve(query=query, owner_id=owner_id, top_k_rerank=top_k)
+    # retrieve 内部是同步的（Chroma 查询 + DashScope 同步 HTTP），丢线程池执行
+    result = await asyncio.to_thread(
+        retrieve, query=query, owner_id=owner_id, top_k_rerank=top_k
+    )
 
     if not result["documents"]:
         return "【检索结果】知识库中未找到相关内容。请如实告知用户，不要编造信息。"
@@ -60,7 +71,7 @@ def search_knowledge_base(
 # ========================================
 
 @tool
-def list_my_files(owner_id: int) -> str:
+async def list_my_files(owner_id: int) -> str:
     """
     查询当前用户已上传的所有文件列表及知识库概况。
     当用户问"知识库有哪些文件"或"你有哪些资料"时使用。
@@ -73,8 +84,8 @@ def list_my_files(owner_id: int) -> str:
     """
     logger.info(f"[Tool] list_my_files: owner_id={owner_id}")
 
-    files = get_files_by_owner(owner_id)
-    stats = get_collection_stats(owner_id)
+    files = await get_files_by_owner(owner_id)
+    stats = await asyncio.to_thread(get_collection_stats, owner_id)
 
     if not files:
         return "知识库为空，还没有上传任何文件。建议用户先上传个人简历和项目文档。"
@@ -102,7 +113,7 @@ def list_my_files(owner_id: int) -> str:
 # ========================================
 
 @tool
-def get_kb_summary(owner_id: int) -> str:
+async def get_kb_summary(owner_id: int) -> str:
     """
     获取知识库的整体内容摘要——对所有文档做一个全貌概览。
     当用户问"你的知识库大概包含什么内容"或"介绍一下你自己"等宽泛问题时，
@@ -116,8 +127,8 @@ def get_kb_summary(owner_id: int) -> str:
     """
     logger.info(f"[Tool] get_kb_summary: owner_id={owner_id}")
 
-    files = get_files_by_owner(owner_id)
-    stats = get_collection_stats(owner_id)
+    files = await get_files_by_owner(owner_id)
+    stats = await asyncio.to_thread(get_collection_stats, owner_id)
 
     if not files:
         return "知识库为空，无法生成摘要。请先上传文档。"
@@ -127,7 +138,8 @@ def get_kb_summary(owner_id: int) -> str:
     for f in files:
         filename = f["filename"]
         # 用文件名作为查询词，检索该文件最具代表性的片段
-        result = retrieve(
+        result = await asyncio.to_thread(
+            retrieve,
             query=f"摘要 概述 主要内容 {filename.replace('.pdf','').replace('.docx','').replace('.txt','')}",
             owner_id=owner_id,
             top_k_rerank=3,
@@ -154,7 +166,7 @@ def get_kb_summary(owner_id: int) -> str:
 # ========================================
 
 @tool
-def get_chat_context(owner_id: int, limit: int = 10) -> str:
+async def get_chat_context(owner_id: int, limit: int = 10) -> str:
     """
     获取最近的对话历史记录。当用户问"我们刚才聊了什么"或需要结合对话上下文回答时使用。
 
@@ -167,7 +179,7 @@ def get_chat_context(owner_id: int, limit: int = 10) -> str:
     """
     logger.info(f"[Tool] get_chat_context: owner_id={owner_id}")
 
-    logs = get_chat_history(owner_id, limit=limit, offset=0)
+    logs = await get_chat_history(owner_id, limit=limit, offset=0)
 
     if not logs:
         return "没有历史对话记录。"
@@ -187,7 +199,7 @@ def get_chat_context(owner_id: int, limit: int = 10) -> str:
 # ========================================
 
 @tool
-def verify_answer_against_kb(
+async def verify_answer_against_kb(
     claim: str,
     owner_id: int,
 ) -> str:
@@ -204,7 +216,9 @@ def verify_answer_against_kb(
     """
     logger.info(f"[Tool] verify_answer_against_kb: claim='{claim[:100]}...'")
 
-    result = retrieve(query=claim, owner_id=owner_id, top_k_rerank=3)
+    result = await asyncio.to_thread(
+        retrieve, query=claim, owner_id=owner_id, top_k_rerank=3
+    )
 
     if not result["documents"]:
         return (

@@ -39,6 +39,12 @@ dashscope>=1.20.0
 # --- 向量库 ---
 chromadb>=1.0.0,<2
 
+# --- 数据层（SQLAlchemy 2.0 async + aiosqlite）---
+# 原实现是同步 sqlite3，却在 async 端点里直接调用 —— 一次查询阻塞整个事件循环。
+# aiosqlite 内部用独立线程执行，配合 WAL + busy_timeout（见 core/database.py）。
+sqlalchemy>=2.0.36,<3
+aiosqlite>=0.20.0
+
 # --- 文档解析 ---
 # 注: 已移除 unstructured —— 全项目未引用，且会拖入大量传递依赖
 python-docx>=1.0.0

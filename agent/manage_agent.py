@@ -1,32 +1,26 @@
 """
 知识库管理 Agent —— 文档上传、知识库维护、向量库管理
+
+这些节点是 async 的（由 LangGraph 调用），但底下的解析/分块/向量化都是
+CPU/IO 密集的同步工作 —— 统一丢到线程池（``asyncio.to_thread``）执行，
+避免阻塞事件循环。重活的具体实现收在 ``core/kb_tasks``，与上传接口共用一份。
 """
+import asyncio
 import os
-import shutil
 from pathlib import Path
 from langchain_core.messages import AIMessage
 from loguru import logger
 
 from agent.state import AgentState
 from config.settings import settings
-from rag.document_loader import load_documents_from_paths
-from rag.text_splitter import process_documents_batch
-from rag.vector_store import (
-    add_documents,
-    delete_by_file,
-    delete_all_by_owner,
-    get_collection_stats,
-    reset_vector_store,
-)
+from core.kb_tasks import process_file_sync, rebuild_knowledge_base
 from core.database import (
-    insert_file_record,
     get_files_by_owner,
     get_file_by_id,
     delete_file_record,
     delete_all_file_records,
-    update_file_chunk_count,
 )
-from core.paths import safe_join, remove_within
+from core.paths import remove_within
 
 
 async def manage_agent_node(state: AgentState) -> dict:
@@ -80,8 +74,6 @@ async def _handle_upload(state: AgentState, owner_id: int) -> tuple[str, list]:
     total_chunks = 0
     success_files = []
 
-    upload_dir = str(settings.resolve_path(settings.upload_dir))
-
     for filepath in upload_files:
         if not os.path.exists(filepath):
             reasoning.append(f"⚠️ 文件不存在: {filepath}")
@@ -92,53 +84,21 @@ async def _handle_upload(state: AgentState, owner_id: int) -> tuple[str, list]:
         reasoning.append(f"📄 处理文件: {filename} ({file_size/1024:.1f}KB)")
 
         try:
-            # Step 1: 解析文档
-            docs = load_documents_from_paths([filepath], upload_dir)
-            if not docs:
-                reasoning.append(f"⚠️ 无法解析文件内容: {filename}")
-                continue
-
-            # Step 2: 文本分块
-            processed = process_documents_batch(docs)
-            if not processed or not processed[0].get("chunks"):
-                reasoning.append(f"⚠️ 文件内容为空: {filename}")
-                continue
-
-            chunks = processed[0]["chunks"]
-            reasoning.append(f"✂️ 文本分块: {len(chunks)} 块")
-
-            # Step 3: 复制文件到持久化目录
-            # 用 safe_join 而非裸 os.path.join：Path(filepath).name 在 Linux 上
-            # 不把反斜杠当分隔符，"..\\..\\x" 会被原样拼进目标路径
-            dest_path = str(safe_join(upload_dir, filename))
-            if filepath != dest_path:
-                shutil.copy2(filepath, dest_path)
-
-            # Step 4: 向量化入库
-            metadatas = [
-                {
-                    "owner_id": owner_id,
-                    "source": filename,
-                    "chunk_idx": i,
-                    "filepath": dest_path,
-                }
-                for i in range(len(chunks))
-            ]
-            add_documents(chunks, metadatas)
-
-            # Step 5: 写数据库记录
-            file_id = insert_file_record(
-                owner_id=owner_id,
-                filename=filename,
-                filepath=dest_path,
-                file_size=file_size,
-                chunk_count=len(chunks),
+            # 解析 → 分块 → 向量化 → 落库：复用 core/kb_tasks 的同一份实现，
+            # 丢线程池执行（CPU/IO 密集；其内部 DB 调用会提交回主循环）
+            result = await asyncio.to_thread(
+                process_file_sync, filepath, filename, owner_id
             )
-            update_file_chunk_count(file_id, len(chunks))
-
-            total_chunks += len(chunks)
-            success_files.append(filename)
-            reasoning.append(f"✅ {filename} 入库完成 ({len(chunks)} 块)")
+            if result.get("success"):
+                if result.get("skipped"):
+                    reasoning.append(f"⏭️ {result.get('message', '已存在，跳过')}")
+                else:
+                    chunk_n = result.get("chunks", 0)
+                    total_chunks += chunk_n
+                    success_files.append(filename)
+                    reasoning.append(f"✅ {filename} 入库完成 ({chunk_n} 块)")
+            else:
+                reasoning.append(f"❌ {filename} 处理失败: {result.get('error')}")
 
         except Exception as e:
             reasoning.append(f"❌ {filename} 处理失败: {str(e)[:200]}")
@@ -156,8 +116,9 @@ async def _handle_upload(state: AgentState, owner_id: int) -> tuple[str, list]:
 
 async def _handle_list(owner_id: int) -> tuple[str, list]:
     """列出当前用户的所有文件"""
-    files = get_files_by_owner(owner_id)
-    stats = get_collection_stats(owner_id)
+    files = await get_files_by_owner(owner_id)
+    from rag.vector_store import get_collection_stats
+    stats = await asyncio.to_thread(get_collection_stats, owner_id)
 
     if not files:
         return (
@@ -210,7 +171,7 @@ async def _handle_delete(state: AgentState, owner_id: int) -> tuple[str, list]:
     except (ValueError, IndexError):
         return "无法解析文件ID，请使用「删除文件 ID=XXX」格式。", ["⚠️ 无法解析文件ID"]
 
-    file_record = get_file_by_id(file_id)
+    file_record = await get_file_by_id(file_id)
     if not file_record:
         return f"文件 ID={file_id} 不存在。", [f"⚠️ 文件 ID={file_id} 不存在"]
 
@@ -219,8 +180,9 @@ async def _handle_delete(state: AgentState, owner_id: int) -> tuple[str, list]:
 
     filename = file_record["filename"]
 
-    # 从向量库删除
-    deleted_chunks = delete_by_file(filename, owner_id)
+    # 从向量库删除（Chroma 是同步的，丢线程池）
+    from rag.vector_store import delete_by_file
+    deleted_chunks = await asyncio.to_thread(delete_by_file, filename, owner_id)
 
     # 从文件系统删除（走 remove_within，库里的历史路径可能越界）
     upload_dir = str(settings.resolve_path(settings.upload_dir))
@@ -229,7 +191,7 @@ async def _handle_delete(state: AgentState, owner_id: int) -> tuple[str, list]:
         logger.warning("[ManageAgent] 磁盘文件未删除（越界或不存在）: {}", filepath)
 
     # 从数据库删除
-    delete_file_record(file_id, owner_id)
+    await delete_file_record(file_id, owner_id)
 
     reasoning.append(f"🗑️ 已删除: {filename} ({deleted_chunks} 个向量块)")
 
@@ -244,17 +206,26 @@ async def _handle_delete(state: AgentState, owner_id: int) -> tuple[str, list]:
 
 async def _handle_clear(owner_id: int) -> tuple[str, list]:
     """清空知识库"""
-    deleted = delete_all_by_owner(owner_id)
-    count = delete_all_file_records(owner_id)
+    from rag.vector_store import delete_all_by_owner, reset_vector_store
 
-    # 清理上传文件目录
-    upload_dir = str(settings.resolve_path(settings.upload_dir))
-    for f in os.listdir(upload_dir):
-        fpath = os.path.join(upload_dir, f)
-        if os.path.isfile(fpath):
-            os.remove(fpath)
+    deleted = await asyncio.to_thread(delete_all_by_owner, owner_id)
+    count = await delete_all_file_records(owner_id)
 
-    reset_vector_store()
+    # 清理上传文件目录（同步文件 IO，丢线程池）
+    upload_dir = settings.resolve_path(settings.upload_dir)
+
+    def _clear_dir() -> None:
+        if not upload_dir.exists():
+            return
+        for entry in upload_dir.iterdir():
+            if entry.is_file():
+                try:
+                    entry.unlink()
+                except OSError as e:
+                    logger.warning("清理文件失败: {} - {}", entry, e)
+
+    await asyncio.to_thread(_clear_dir)
+    await asyncio.to_thread(reset_vector_store)
 
     return (
         f"## 知识库已清空\n\n"
@@ -268,58 +239,18 @@ async def _handle_clear(owner_id: int) -> tuple[str, list]:
 
 async def _handle_rebuild(state: AgentState, owner_id: int) -> tuple[str, list]:
     """
-    重建知识库：重新处理所有已上传文件。
-    先清空向量库，再从数据库中的文件记录重新入库。
+    重建知识库：先清空向量库，再按数据库中的文件记录重新入库。
+
+    整个重建过程（可能数分钟到数小时）丢线程池执行 —— 绝不能出现在事件循环里。
+    具体实现在 core/kb_tasks，与 /api/kb/rebuild 共用同一份。
     """
-    reasoning = ["🔄 开始重建知识库..."]
-
-    # 清空向量库
-    delete_all_by_owner(owner_id)
-    reset_vector_store()
-
-    # 获取所有文件记录
-    files = get_files_by_owner(owner_id)
+    files = await get_files_by_owner(owner_id)
     if not files:
         return "知识库中没有文件，无需重建。请先上传文档。", ["📭 知识库为空，无需重建"]
 
-    total_chunks = 0
-    upload_dir = str(settings.resolve_path(settings.upload_dir))
-
-    for file_record in files:
-        filepath = file_record["filepath"]
-        filename = file_record["filename"]
-
-        if not os.path.exists(filepath):
-            reasoning.append(f"⚠️ 文件不存在，跳过: {filename}")
-            continue
-
-        try:
-            docs = load_documents_from_paths([filepath], upload_dir)
-            if not docs:
-                continue
-
-            processed = process_documents_batch(docs)
-            if not processed or not processed[0].get("chunks"):
-                continue
-
-            chunks = processed[0]["chunks"]
-            metadatas = [
-                {
-                    "owner_id": owner_id,
-                    "source": filename,
-                    "chunk_idx": i,
-                    "filepath": filepath,
-                }
-                for i in range(len(chunks))
-            ]
-            add_documents(chunks, metadatas)
-
-            update_file_chunk_count(file_record["id"], len(chunks))
-            total_chunks += len(chunks)
-            reasoning.append(f"✅ {filename}: {len(chunks)} 块")
-
-        except Exception as e:
-            reasoning.append(f"❌ {filename}: {str(e)[:100]}")
+    reasoning = ["🔄 开始重建知识库...", f"📁 待处理文件: {len(files)} 个"]
+    total_chunks = await asyncio.to_thread(rebuild_knowledge_base, owner_id)
+    reasoning.append(f"✅ 重建完成: {total_chunks} 个向量块")
 
     return (
         f"## 知识库重建完成\n\n"

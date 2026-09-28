@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     test_data_dir: str = "./assets/test_data"
     log_dir: str = "./logs"
     log_level: str = "INFO"
+    # 数据库文件。原先是硬编码在 core/database.py 里的常量，
+    # 导致测试无法隔离、只能操作真实库（跑一次测试就污染一次）。
+    # 改为配置项后，测试可以指向临时目录。
+    db_path: str = "./assets/personal_agent.db"
 
     # --- 服务 ---
     host: str = "0.0.0.0"

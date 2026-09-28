@@ -4,7 +4,11 @@ Token 使用统计与费用估算
 """
 from datetime import datetime, timedelta
 from typing import Optional
+
 from loguru import logger
+from sqlalchemy import func, select
+
+from core.database import TokenUsage, session_scope, utcnow
 
 # Cost rates per 1M tokens (USD)。
 # 只填**确知**的费率：表里没有的模型不会套用"默认费率"编一个数字，
@@ -18,12 +22,6 @@ COST_RATES = {
 
 # 每个未知模型只告警一次，避免刷日志
 _warned_unknown_models: set[str] = set()
-
-# SQLite 的 created_at 由 CURRENT_TIMESTAMP 写入，格式为 'YYYY-MM-DD HH:MM:SS'。
-# 用它做字符串比较时绑定值必须是同一格式：isoformat() 产生的
-# 'YYYY-MM-DDTHH:MM:SS' 里 'T'(0x54) > ' '(0x20)，会让**同一天的记录
-# 全部被误判为"晚于起点"**。
-_SQLITE_DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 def estimate_tokens(text: str) -> int:
@@ -65,16 +63,16 @@ def calculate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> fl
     return round(input_cost + output_cost, 8)
 
 
-def track_usage(
+async def track_usage(
     owner_id: int,
     model: str,
     prompt_tokens: int,
     completion_tokens: int,
     reasoning_tokens: int = 0,
     cached_tokens: int = 0,
-):
+) -> None:
     """
-    记录一次 token 使用到 SQLite。
+    记录一次 token 使用。
 
     Args:
         prompt_tokens:     输入 token（含命中 prompt 缓存的部分）。
@@ -85,17 +83,13 @@ def track_usage(
     """
     cost = calculate_cost(model, prompt_tokens, completion_tokens)
     try:
-        from core.database import get_db
-        with get_db() as conn:
-            conn.execute(
-                "INSERT INTO token_usage "
-                "(owner_id, model, prompt_tokens, completion_tokens, "
-                " reasoning_tokens, cached_tokens, cost_estimate) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (owner_id, model, prompt_tokens, completion_tokens,
-                 reasoning_tokens, cached_tokens, cost),
-            )
-            conn.commit()
+        async with session_scope() as session:
+            session.add(TokenUsage(
+                owner_id=owner_id, model=model,
+                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                reasoning_tokens=reasoning_tokens, cached_tokens=cached_tokens,
+                cost_estimate=cost,
+            ))
         logger.debug(
             "Token usage tracked: owner={}, model={}, prompt={}, completion={} "
             "(reasoning={}, cached={}), cost=${:.6f}",
@@ -106,71 +100,69 @@ def track_usage(
         logger.error(f"Failed to track token usage: {e}")
 
 
-def get_usage_stats(owner_id: int, days: int = 7) -> dict:
+async def get_usage_stats(owner_id: int, days: int = 7) -> dict:
     """
-    获取用户 token 使用统计。
-    返回每日分解、模型分解、总费用等。
+    获取用户 token 使用统计：每日分解、模型分解、总计。
+
+    时间过滤交给数据库比较（用 UTC，与库中写入一致），
+    不再手工拼字符串 —— 原实现用 ``isoformat()`` 生成带 'T' 的值去比
+    库中 'YYYY-MM-DD HH:MM:SS' 的文本，ASCII 里 'T' > ' '，
+    会让**同一天的记录全被误判为晚于起点**。
     """
-    from core.database import get_db
+    since = utcnow() - timedelta(days=days)
+    day_col = func.date(TokenUsage.created_at).label("day")
+    total_expr = TokenUsage.prompt_tokens + TokenUsage.completion_tokens
 
-    # 用与 SQLite CURRENT_TIMESTAMP 一致的格式，避免 isoformat 的 'T' 比较问题
-    since = (datetime.now() - timedelta(days=days)).strftime(_SQLITE_DATETIME_FMT)
+    async with session_scope() as session:
+        daily = [
+            dict(r) for r in (await session.execute(
+                select(
+                    day_col,
+                    func.sum(TokenUsage.prompt_tokens).label("prompt_tokens"),
+                    func.sum(TokenUsage.completion_tokens).label("completion_tokens"),
+                    func.sum(total_expr).label("total_tokens"),
+                    func.sum(TokenUsage.reasoning_tokens).label("reasoning_tokens"),
+                    func.sum(TokenUsage.cost_estimate).label("cost"),
+                )
+                .where(TokenUsage.owner_id == owner_id, TokenUsage.created_at >= since)
+                .group_by(day_col)
+                .order_by(day_col.asc())
+            )).mappings().all()
+        ]
 
-    with get_db() as conn:
-        # 每日汇总
-        rows = conn.execute(
-            """SELECT DATE(created_at) as day,
-                      SUM(prompt_tokens) as prompt_tokens,
-                      SUM(completion_tokens) as completion_tokens,
-                      SUM(prompt_tokens + completion_tokens) as total_tokens,
-                      SUM(reasoning_tokens) as reasoning_tokens,
-                      SUM(cost_estimate) as cost
-               FROM token_usage
-               WHERE owner_id = ? AND created_at >= ?
-               GROUP BY DATE(created_at)
-               ORDER BY day ASC""",
-            (owner_id, since),
-        ).fetchall()
+        model_breakdown = [
+            dict(r) for r in (await session.execute(
+                select(
+                    TokenUsage.model.label("model"),
+                    func.sum(TokenUsage.prompt_tokens).label("prompt_tokens"),
+                    func.sum(TokenUsage.completion_tokens).label("completion_tokens"),
+                    func.sum(total_expr).label("total_tokens"),
+                    func.sum(TokenUsage.reasoning_tokens).label("reasoning_tokens"),
+                    func.sum(TokenUsage.cost_estimate).label("cost"),
+                    func.count().label("call_count"),
+                )
+                .where(TokenUsage.owner_id == owner_id, TokenUsage.created_at >= since)
+                .group_by(TokenUsage.model)
+                .order_by(func.sum(TokenUsage.cost_estimate).desc())
+            )).mappings().all()
+        ]
 
-        daily = [dict(r) for r in rows]
-
-        # 模型分解
-        model_rows = conn.execute(
-            """SELECT model,
-                      SUM(prompt_tokens) as prompt_tokens,
-                      SUM(completion_tokens) as completion_tokens,
-                      SUM(prompt_tokens + completion_tokens) as total_tokens,
-                      SUM(reasoning_tokens) as reasoning_tokens,
-                      SUM(cost_estimate) as cost,
-                      COUNT(*) as call_count
-               FROM token_usage
-               WHERE owner_id = ? AND created_at >= ?
-               GROUP BY model
-               ORDER BY cost DESC""",
-            (owner_id, since),
-        ).fetchall()
-
-        model_breakdown = [dict(r) for r in model_rows]
-
-        # 总计
-        total_row = conn.execute(
-            """SELECT COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
-                      COALESCE(SUM(completion_tokens), 0) as completion_tokens,
-                      COALESCE(SUM(prompt_tokens + completion_tokens), 0) as total_tokens,
-                      COALESCE(SUM(reasoning_tokens), 0) as reasoning_tokens,
-                      COALESCE(SUM(cached_tokens), 0) as cached_tokens,
-                      COALESCE(SUM(cost_estimate), 0) as total_cost,
-                      COUNT(*) as total_calls
-               FROM token_usage
-               WHERE owner_id = ? AND created_at >= ?""",
-            (owner_id, since),
-        ).fetchone()
-
-        totals = dict(total_row) if total_row else {}
+        totals_row = (await session.execute(
+            select(
+                func.coalesce(func.sum(TokenUsage.prompt_tokens), 0).label("prompt_tokens"),
+                func.coalesce(func.sum(TokenUsage.completion_tokens), 0).label("completion_tokens"),
+                func.coalesce(func.sum(total_expr), 0).label("total_tokens"),
+                func.coalesce(func.sum(TokenUsage.reasoning_tokens), 0).label("reasoning_tokens"),
+                func.coalesce(func.sum(TokenUsage.cached_tokens), 0).label("cached_tokens"),
+                func.coalesce(func.sum(TokenUsage.cost_estimate), 0.0).label("total_cost"),
+                func.count().label("total_calls"),
+            )
+            .where(TokenUsage.owner_id == owner_id, TokenUsage.created_at >= since)
+        )).mappings().one()
 
     return {
         "daily": daily,
         "model_breakdown": model_breakdown,
-        "totals": totals,
+        "totals": dict(totals_row),
         "period_days": days,
     }

@@ -1,7 +1,7 @@
 """
 管理员运维接口 — 用户管理 / 仪表盘 / 审计日志 / 熔断状态 / 队列状态
 """
-import sqlite3
+import asyncio
 import os
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,22 +15,15 @@ from core.schemas import (
     ChatLogAdminOut, FileAdminOut, APIResponse,
 )
 from core.database import (
-    get_all_users, update_user_role, delete_user_cascade,
+    get_users_with_counts, update_user_role, delete_user_cascade,
     get_all_chat_logs, get_all_files, get_global_stats,
-    get_user_by_id,
+    get_user_by_id, get_files_by_owner,
+    # 别名：本模块的路由函数也叫 get_audit_logs，直接同名导入会被它覆盖
+    get_audit_logs as db_get_audit_logs,
 )
 from core.paths import remove_within
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
-DB_PATH = PROJECT_ROOT / "assets" / "personal_agent.db"
-
 router = APIRouter(prefix="/api/admin", tags=["运维"])
-
-
-def _get_conn():
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 # ═══════════════════════════════════════════
@@ -43,27 +36,12 @@ async def list_users(current_user: dict = Depends(require_admin)):
     列出所有用户（含文件数、对话数统计）。
     仅管理员可调用。
     """
-    users = get_all_users()
-    result = []
-    for u in users:
-        uid = u["id"]
-        conn = _get_conn()
-        file_cnt = conn.execute(
-            "SELECT COUNT(*) as cnt FROM files WHERE owner_id = ?", (uid,)
-        ).fetchone()["cnt"]
-        chat_cnt = conn.execute(
-            "SELECT COUNT(*) as cnt FROM chat_logs WHERE owner_id = ?", (uid,)
-        ).fetchone()["cnt"]
-        conn.close()
-        result.append({
-            **u,
-            "file_count": file_cnt,
-            "chat_count": chat_cnt,
-        })
+    # 单次聚合查询（原实现是每用户各开两次连接统计的 N+1）
+    users = await get_users_with_counts()
     return {
         "success": True,
-        "total": len(result),
-        "users": result,
+        "total": len(users),
+        "users": users,
     }
 
 
@@ -77,11 +55,11 @@ async def change_user_role(
     if user_id == current_user["owner_id"]:
         raise HTTPException(status_code=400, detail="不能修改自己的角色")
 
-    user = get_user_by_id(user_id)
+    user = await get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    updated = update_user_role(user_id, body.role)
+    updated = await update_user_role(user_id, body.role)
     if not updated:
         raise HTTPException(status_code=500, detail="更新失败")
 
@@ -104,31 +82,26 @@ async def remove_user(
     if user_id == current_user["owner_id"]:
         raise HTTPException(status_code=400, detail="不能删除自己")
 
-    user = get_user_by_id(user_id)
+    user = await get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    # 清理向量库数据
+    # 清理向量库数据（Chroma 是同步的，丢线程池）
     try:
         from rag.vector_store import delete_all_by_owner
-        delete_all_by_owner(user_id)
+        await asyncio.to_thread(delete_all_by_owner, user_id)
     except Exception as e:
         logger.warning(f"[Admin] 清理用户 {user_id} 向量库失败: {e}")
 
     # 清理上传文件
     from config.settings import settings
     upload_dir = settings.resolve_path(settings.upload_dir)
-    conn = _get_conn()
-    file_rows = conn.execute(
-        "SELECT filepath FROM files WHERE owner_id = ?", (user_id,)
-    ).fetchall()
-    for row in file_rows:
+    for record in await get_files_by_owner(user_id):
         # remove_within 保证只删 upload_dir 内的文件：
         # files.filepath 可能存着早期版本未净化文件名时写入的越界路径
-        remove_within(upload_dir, row["filepath"])
-    conn.close()
+        remove_within(upload_dir, record["filepath"])
 
-    counts = delete_user_cascade(user_id)
+    counts = await delete_user_cascade(user_id)
 
     logger.info(
         f"[Admin] 用户删除: {current_user['username']} 删除了 {user['username']} "
@@ -151,7 +124,7 @@ async def get_dashboard(current_user: dict = Depends(require_admin)):
     全局数据总览仪表盘。
     返回用户数、文件数、今日对话、Token 消耗、磁盘用量等关键指标。
     """
-    return get_global_stats()
+    return await get_global_stats()
 
 
 # ═══════════════════════════════════════════
@@ -166,7 +139,7 @@ async def list_chat_logs(
     current_user: dict = Depends(require_admin),
 ):
     """跨用户查询对话记录（可按用户名筛选）"""
-    logs = get_all_chat_logs(limit=limit, offset=offset, username=username)
+    logs = await get_all_chat_logs(limit=limit, offset=offset, username=username)
     return {
         "success": True,
         "total": len(logs),
@@ -199,7 +172,7 @@ async def list_all_files(
     current_user: dict = Depends(require_admin),
 ):
     """跨用户查询文件列表（可按用户名筛选）"""
-    files = get_all_files(limit=limit, offset=offset, username=username)
+    files = await get_all_files(limit=limit, offset=offset, username=username)
     return {
         "success": True,
         "total": len(files),
@@ -230,23 +203,11 @@ async def get_audit_logs(
     current_user: dict = Depends(require_admin),
 ):
     """查询审计日志（管理员）"""
-    conn = _get_conn()
-    query = "SELECT * FROM audit_log WHERE 1=1"
-    params = []
-    if action:
-        query += " AND action LIKE ?"
-        params.append(f"%{action}%")
-    if username:
-        query += " AND username = ?"
-        params.append(username)
-    query += " ORDER BY created_at DESC LIMIT ?"
-    params.append(limit)
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
+    rows = await db_get_audit_logs(limit=limit, action=action, username=username)
     return {
         "success": True,
         "total": len(rows),
-        "logs": [dict(r) for r in rows],
+        "logs": rows,
     }
 
 
