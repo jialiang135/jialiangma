@@ -394,8 +394,11 @@ docker compose up -d --build
 ## 本地开发
 
 ```bash
-# 依赖
+# 运行时依赖（生产镜像只装这份）
 pip install -r requirements.txt
+
+# 开发依赖（含测试与 lint 工具）
+pip install -r requirements-dev.txt
 
 # 质量门禁（与 CI 完全一致）
 ruff check .                      # 规则集与豁免项见 pyproject.toml
@@ -411,7 +414,9 @@ pip install pre-commit && pre-commit install
 - **配置是启动时快照**：改了 `config/.env` 必须重启进程才生效
 - **测试用独立临时库**：`tests/conftest.py` 在导入应用前把 db/上传目录/向量库
   指向临时目录，跑测试不会碰真实数据
-- **langchain 系列必须成组安装**：混代会静默丢功能（见 requirements.txt 顶部说明）
+- **依赖全部钉死版本**：这既防"langchain 世代混装导致静默丢功能"，
+  也防"本地验证过的栈与容器里的不一致"。升级时整组升并重跑验证
+- **运行时与开发依赖已分开**：`ruff`/`pytest`/`pre-commit` 不再进生产镜像
 - **推理模型的 `max_tokens` 是思考+答案共享预算**：给太小会把答案挤空
 
 ---

@@ -59,8 +59,8 @@ jobs:
         run: |
           set -o pipefail
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-cov
+          # dev 依赖里 -r requirements.txt，一次装齐运行时 + 测试工具
+          pip install -r requirements-dev.txt
       - name: Run tests with coverage
         # 覆盖率门槛在 pyproject.toml 的 [tool.coverage.report] fail_under。
         # 慢测试（真实调用 LLM/Embedding）由 addopts = -m 'not slow' 默认跳过 ——

@@ -1,0 +1,22 @@
+# ============================================
+# 开发/测试依赖
+# 安装: pip install -r requirements-dev.txt
+#
+# 与运行时依赖分开的原因：这些工具**不该进生产镜像**。
+# 原先把 ruff / pytest / pre-commit 写进 requirements.txt，
+# Docker 构建时会一并装进最终镜像，白占几十 MB 且扩大攻击面。
+# ============================================
+
+-r requirements.txt
+
+# --- 测试 ---
+# 不钉死 pytest：本地环境装到的是 dev 构建（9.2.0.dev），钉死反而装不上
+pytest>=9.0.0,<10
+pytest-cov>=6.0.0
+httpx>=0.25.0                     # TestClient 依赖 + 写验证脚本用
+
+# --- Lint / 格式化（规则集见 pyproject.toml 的 [tool.ruff]）---
+ruff>=0.16.0
+
+# --- 本地提交门禁（配置见 .pre-commit-config.yaml）---
+pre-commit>=4.0.0
