@@ -33,9 +33,22 @@
     <div class="chat-main">
       <div class="chat-messages" ref="msgContainer">
         <div v-if="messages.length === 0 && !currentConversationId" class="empty-chat">
-          <div class="empty-icon">🤖</div>
+          <div class="empty-badge">🤖</div>
           <h3>个人数字分身 · AI 面试助手</h3>
-          <p>基于私有知识库的智能问答系统，输入你的问题开始对话</p>
+          <p>基于私有知识库的智能问答系统。直接提问，或从下面挑一个开始。</p>
+          <!-- 快捷问题做成卡片放进空状态：原先它们在框外，与「开始对话」是脱开的 -->
+          <div class="quick-start">
+            <button v-for="q in quickQuestions" :key="q.label"
+                    class="quick-card"
+                    :disabled="streaming"
+                    @click="askQuick(q.text)">
+              <span class="quick-card-icon">{{ q.icon }}</span>
+              <span class="quick-card-text">
+                <span class="quick-card-label">{{ q.label }}</span>
+                <span class="quick-card-hint">{{ q.hint }}</span>
+              </span>
+            </button>
+          </div>
         </div>
 
         <!-- 续接对话提示条 -->
@@ -94,8 +107,9 @@
         <div ref="msgEnd"></div>
       </div>
 
-      <!-- 快捷问题 -->
-      <div class="quick-questions">
+      <!-- 快捷问题（紧凑条）：空状态里已有卡片，这里只在已有对话时出现，
+           作为「换个问题试试」的入口 -->
+      <div v-if="messages.length > 0" class="quick-questions compact">
         <button v-for="q in quickQuestions" :key="q.label"
                 class="quick-q-btn"
                 :disabled="streaming"
@@ -204,9 +218,9 @@ const pendingDelete = ref(null)  // 待删的 conversation 对象
 
 // —— 快捷问题 ——
 const quickQuestions = [
-  { icon: '👋', label: '介绍一下你自己', text: '介绍一下你自己' },
-  { icon: '💻', label: '你熟悉哪些技术栈', text: '你熟悉哪些技术栈？' },
-  { icon: '🚀', label: '你做过哪些项目', text: '你做过哪些项目？' },
+  { icon: '👋', label: '介绍一下你自己', text: '介绍一下你自己', hint: '个人信息与背景' },
+  { icon: '💻', label: '你熟悉哪些技术栈', text: '你熟悉哪些技术栈？', hint: '技能清单' },
+  { icon: '🚀', label: '你做过哪些项目', text: '你做过哪些项目？', hint: '项目经验' },
 ]
 
 function askQuick(text) {
@@ -330,6 +344,8 @@ async function send() {
     abortController = null
     scrollBottom()
     loadHistory()
+    // 通知 Token 统计刷新：服务端在 done 之前已把用量落库，这里正好拿到新数字
+    window.dispatchEvent(new CustomEvent('token-usage-updated'))
   }
 
   abortController = streamChat(text, {

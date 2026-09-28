@@ -4,10 +4,10 @@
       <span class="ts-title">📊 Token 统计</span>
       <span class="ts-summary">
         <span class="stat-item">
-          今日: <strong>{{ todayTokens }}</strong> tokens
+          今日 <strong>{{ formatTokens(todayTokens) }}</strong> tokens
         </span>
         <span class="stat-item">
-          费用: <strong>${{ todayCost }}</strong>
+          · $<strong>{{ todayCost }}</strong>
         </span>
       </span>
       <span class="ts-toggle">{{ expanded ? '收起 ▲' : '展开 ▼' }}</span>
@@ -33,7 +33,7 @@
           </div>
           <div class="ts-total-card">
             <span class="total-label">总费用</span>
-            <span class="total-value cost">${{ totals.total_cost?.toFixed(5) || '0' }}</span>
+            <span class="total-value cost">${{ formatCost(totals.total_cost) }}</span>
           </div>
           <div class="ts-total-card">
             <span class="total-label">调用次数</span>
@@ -84,7 +84,7 @@
                 <td><strong>{{ m.model }}</strong></td>
                 <td>{{ m.call_count }}</td>
                 <td>{{ m.total_tokens?.toLocaleString() || 0 }}</td>
-                <td>${{ m.cost?.toFixed(5) || '0' }}</td>
+                <td>${{ formatCost(m.cost) }}</td>
               </tr>
             </tbody>
           </table>
@@ -95,9 +95,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { getTokenStats } from '../api/token.js'
 import { useAuthStore } from '../stores/auth.js'
+import { formatCost, formatTokens } from '../utils/format.js'
 
 const auth = useAuthStore()
 const expanded = ref(false)
@@ -120,7 +121,7 @@ const todayTokens = computed(() => {
 const todayCost = computed(() => {
   if (daily.value.length === 0) return '0'
   const today = daily.value[daily.value.length - 1]
-  return today.cost?.toFixed(5) || '0'
+  return formatCost(today.cost)
 })
 
 async function fetchStats() {
@@ -156,8 +157,23 @@ function formatDay(dayStr) {
   return dayStr.slice(5)
 }
 
+/**
+ * 每轮问答结束后由 ChatView 派发此事件。
+ *
+ * 不加这个监听的话，统计一直停在进入页面时的数字 ——
+ * 用户刚问完一轮、明明消耗了 token，底部却还显示「今日 0 tokens」。
+ */
+function onUsageUpdated() {
+  if (auth.isLoggedIn) fetchStats()
+}
+
 onMounted(() => {
   if (auth.isLoggedIn) fetchStats()
+  window.addEventListener('token-usage-updated', onUsageUpdated)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('token-usage-updated', onUsageUpdated)
 })
 
 watch(() => auth.isLoggedIn, (loggedIn) => {
@@ -167,20 +183,22 @@ watch(() => auth.isLoggedIn, (loggedIn) => {
 
 <style scoped>
 .token-stats {
-  border: 1px solid #e0e0e0;
-  border-radius: 10px;
+  /* 改用全局设计令牌：原先硬编码 #e0e0e0/#fafafa，与其它卡片的边框色不一致 */
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   overflow: hidden;
-  margin-top: 8px;
-  background: #fff;
+  margin-top: 6px;
+  background: var(--card);
 }
 .ts-header {
   display: flex;
   align-items: center;
-  padding: 10px 14px;
+  /* 压扁：它是状态条，不该和内容卡一样重 */
+  padding: 7px 12px;
   cursor: pointer;
   user-select: none;
   gap: 12px;
-  background: #fafafa;
+  background: transparent;
   transition: background 0.2s;
 }
 .ts-header:hover {
@@ -188,7 +206,8 @@ watch(() => auth.isLoggedIn, (loggedIn) => {
 }
 .ts-title {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 .ts-summary {

@@ -4,17 +4,35 @@
    ═══════════════════════════════════════════ */
 
 :root {
+  /* 主色与语义色 */
   --primary: #4f46e5;
   --primary-hover: #4338ca;
+  --primary-soft: #eef2ff;      /* 主色浅底，用于选中/高亮 */
+  --primary-border: #c7d2fe;
   --danger: #dc2626;
   --danger-hover: #b91c1c;
-  --bg: #f8fafc;
+  --success: #16a34a;
+  --warning: #d97706;
+
+  /* 中性色：文字三级 + 边框两级，避免各处随意取灰 */
+  --bg: #f6f7fb;
   --card: #ffffff;
-  --border: #e2e8f0;
-  --text: #1e293b;
-  --text-secondary: #64748b;
-  --radius: 8px;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --text: #111827;
+  --text-secondary: #6b7280;
+  --text-tertiary: #9ca3af;
+
+  /* 圆角与阴影分级（原先前只有一个 --radius 和一个 --shadow，
+     导致卡片、按钮、气泡全用同一个视觉重量，缺少层次） */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow: 0 1px 3px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.12);
+
   --touch-min: 44px;  /* Apple HIG 最小触控目标 */
 }
 
@@ -37,10 +55,14 @@ body {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 10px 24px;
-  background: var(--card);
+  /* 固定高度 + 禁止换行：原先是 padding 撑高，移动端用户区一换行
+     就把头部顶到 130px（截图里那个三行高的用户块就是这个原因） */
+  height: 56px;
+  padding: 0 20px;
+  flex-wrap: nowrap;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: saturate(180%) blur(8px);
   border-bottom: 1px solid var(--border);
-  box-shadow: var(--shadow);
   position: sticky;
   top: 0;
   z-index: 100;
@@ -139,10 +161,12 @@ body {
 
 /* ═══ Login Bar ═══ */
 .login-bar {
+  /* 横排单行：原先是 column + align-items:flex-end，
+     移动端窄屏下"用户名 / 角色标签 / 退出按钮"会各占一行 */
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
 }
 .login-row {
   display: flex;
@@ -252,7 +276,9 @@ body {
 .chat-view {
   display: flex;
   gap: 16px;
-  height: calc(100vh - 140px);
+  /* dvh 而非 vh：移动端浏览器地址栏收缩时 vh 不变，会导致输入框被顶出屏幕。
+     减去的是 头部(56) + main 上下内边距(40) + 一点余量 */
+  height: calc(100dvh - 112px);
   position: relative;
 }
 
@@ -358,24 +384,25 @@ body {
 
 /* ═══ Sidebar Expand Button (collapsed state) ═══ */
 .sidebar-expand-btn {
+  /* 原先是贴左边缘、80px 高的「标签」（border-left:none + 只有右侧圆角），
+     在窄屏上看起来像个白色故障块。改成右下角的圆形浮动按钮 ——
+     一眼能认出是「打开历史」 */
   position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 36px;
-  height: 80px;
+  left: 12px;
+  bottom: 104px;
+  width: 44px;
+  height: 44px;
   border: 1px solid var(--border);
-  border-left: none;
-  border-radius: 0 8px 8px 0;
+  border-radius: 50%;
   background: var(--card);
   font-size: 18px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.15s;
+  transition: background 0.15s, box-shadow 0.15s, transform 0.15s;
   z-index: 10;
-  box-shadow: 2px 0 6px rgba(0,0,0,0.06);
+  box-shadow: var(--shadow-md);
 }
 .sidebar-expand-btn:hover { background: #eef2ff; color: var(--primary); }
 
@@ -831,17 +858,9 @@ tr:hover td { background: #f8fafc; }
   .sidebar-header { padding: 12px 16px; }
   .sidebar-toggle { font-size: 22px; padding: 4px 12px; }
 
-  .sidebar-expand-btn {
-    position: fixed;
-    left: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 40px;
-    height: 60px;
-    border-radius: 0 12px 12px 0;
-    z-index: 150;
-    font-size: 20px;
-  }
+  /* 侧栏展开按钮的样式统一在基础层定义（圆形浮动按钮），
+     这里不再覆盖 —— 原先这里用 position:fixed + 贴边圆角把它变成了
+     一个贴在视口左缘的白色长条 */
 
   /* 消息区域 */
   .chat-messages { max-height: none; flex: 1; border-radius: 0; border: none; padding: 10px; }
@@ -910,7 +929,14 @@ tr:hover td { background: #f8fafc; }
   .col-q, .col-d { max-width: none; white-space: normal; }
 
   /* 登录栏 */
-  .login-bar { align-items: stretch; width: 100%; }
+  /* 只作用于侧滑导航里的登录区；头部那一份要保持横排，
+     否则「退出」按钮会被 align-items:stretch 竖向拉伸成满高 */
+  .mobile-nav-panel .login-bar {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    gap: 6px;
+  }
   .login-row { flex-wrap: wrap; }
   .input-xs { width: 100%; min-height: var(--touch-min); font-size: 14px; }
   .btn-xs { min-height: var(--touch-min); font-size: 13px; padding: 6px 14px; }
@@ -953,7 +979,7 @@ tr:hover td { background: #f8fafc; }
     text-align: center;
   }
 
-  .empty-chat .empty-icon { font-size: 40px; }
+  /* .empty-icon 已由 .empty-badge 取代，此规则失效，移除 */
   .empty-chat h3 { font-size: 16px; }
   .empty-chat p { font-size: 13px; }
 
@@ -965,7 +991,8 @@ tr:hover td { background: #f8fafc; }
   .file-item { flex-direction: column; align-items: flex-start; gap: 6px; }
   .file-item .btn { width: 100%; justify-content: center; }
 
-  .sidebar-expand-btn { width: 32px; height: 50px; font-size: 16px; }
+  /* 保持 44px：Apple HIG 的最小触控目标，原先缩到 32x50 不好点 */
+  .sidebar-expand-btn { width: 44px; height: 44px; font-size: 18px; }
 }
 
 /* ─── 刘海屏安全区域适配 ─── */
@@ -1003,7 +1030,7 @@ tr:hover td { background: #f8fafc; }
 /* ═══════════════════════════════════════════
    📊 评测页
    ═══════════════════════════════════════════ */
-.eval-view { padding: 16px; max-width: 1100px; margin: 0 auto; }
+.eval-view { padding: 16px; width: 100%; }  /* 宽度交给 .app-main 统一控制 */
 
 .eval-panel {
   background: #fff;
@@ -1118,4 +1145,292 @@ tr:hover td { background: #f8fafc; }
   .eval-view { padding: 10px; }
   .eval-form { flex-direction: column; align-items: stretch; }
   .cell-q, .cell-a { max-width: none; }
+}
+
+
+/* ═══════════════════════════════════════════
+   对话页视觉改进
+   ───────────────────────────────────────────
+   本段后置，覆盖上方同类规则（同优先级下后者生效）。做四件事：
+
+   1. 空状态从「一个大 emoji + 两行小字」改成有主次的引导页，并把快捷问题
+      做成卡片放进去 —— 原先它们在框外，和「开始对话」是脱开的两个东西；
+   2. 推理过程从「一行小折叠链接」改成有边框标识的卡片 —— 展示模型真实思考
+      是本项目的差异化能力，不该被埋在折叠行里；
+   3. 消息气泡区分助手/用户（助手＝带边框白卡，用户＝主色实底），
+      统一圆角与行高，长文更好读；
+   4. Token 统计压扁成状态条，不再独占一行的高度与视觉重量。
+   ═══════════════════════════════════════════ */
+
+/* ── 空状态 ── */
+.empty-chat { gap: 4px; padding: 28px 24px; }
+
+.empty-badge {
+  width: 76px;
+  height: 76px;
+  border-radius: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 38px;
+  background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
+  box-shadow: inset 0 0 0 1px var(--primary-border), var(--shadow-xs);
+  margin-bottom: 14px;
+}
+
+.empty-chat h3 {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.empty-chat p { font-size: 14px; max-width: 460px; line-height: 1.7; }
+
+/* ── 快捷问题卡（空状态内） ── */
+.quick-start {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: 10px;
+  width: 100%;
+  max-width: 640px;
+  margin-top: 26px;
+}
+
+.quick-card {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 15px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.quick-card:hover:not(:disabled) {
+  border-color: var(--primary-border);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+.quick-card:disabled { opacity: .5; cursor: not-allowed; }
+
+.quick-card-icon {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--primary-soft);
+  font-size: 17px;
+}
+.quick-card-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.quick-card-label { font-size: 13.5px; font-weight: 600; }
+/* 副文字原用 --text-tertiary(#9ca3af)，实测对比度仅 2.54:1，低于正文 3:1 下限。
+   它承载的是「这张卡片能问什么」的信息，属于有意义文本，改用二级色（4.83:1） */
+.quick-card-hint { font-size: 11.5px; color: var(--text-secondary); }
+
+/* ── 消息气泡 ── */
+.msg { max-width: 88%; gap: 12px; }
+
+.msg-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  font-size: 16px;
+  background: #f3f4f6;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.msg.user .msg-avatar {
+  background: var(--primary-soft);
+  box-shadow: inset 0 0 0 1px var(--primary-border);
+}
+
+.msg-text {
+  padding: 12px 16px;
+  border-radius: var(--radius-lg);
+  font-size: 14.5px;
+  line-height: 1.72;
+}
+.msg.assistant .msg-text {
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-xs);
+}
+.msg.user .msg-text { border: 1px solid var(--primary); }
+
+/* ── 推理卡 ── */
+.msg-reasoning { margin-top: 10px; }
+.msg-reasoning details {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary-border);
+  border-radius: var(--radius);
+  background: #fbfcfe;
+  overflow: hidden;
+}
+.msg-reasoning details[open] { border-left-color: var(--primary); }
+
+.msg-reasoning summary {
+  padding: 9px 13px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  list-style: none;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.msg-reasoning summary::-webkit-details-marker { display: none; }
+.msg-reasoning summary::after {
+  content: "▾";
+  margin-left: auto;
+  opacity: .45;
+  transition: transform .2s ease;
+}
+.msg-reasoning details[open] summary::after { transform: rotate(180deg); }
+.msg-reasoning summary:hover { background: var(--primary-soft); color: var(--primary); }
+
+/* 流式中的推理卡：呼吸点表示「正在思考」 */
+.streaming-reasoning details[open] summary { color: var(--primary); }
+.streaming-reasoning details[open] summary::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+  flex-shrink: 0;
+  animation: thinkingPulse 1.2s ease-in-out infinite;
+}
+@keyframes thinkingPulse {
+  0%, 100% { opacity: .3; transform: scale(.8); }
+  50%      { opacity: 1;  transform: scale(1); }
+}
+
+/* ── Token 统计：状态条，不抢内容卡的视觉重量 ── */
+.token-stats { box-shadow: none; }
+
+/* ── 紧凑快捷条（有对话后才出现） ── */
+.quick-questions.compact { padding: 6px 0 2px; gap: 6px; }
+.quick-questions.compact .quick-q-btn {
+  padding: 4px 11px;
+  font-size: 12.5px;
+  min-height: 30px;
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+.quick-questions.compact .quick-q-btn:hover {
+  background: var(--primary-soft);
+  border-color: var(--primary-border);
+  color: var(--primary);
+}
+
+/* ── 移动端 ── */
+@media (max-width: 768px) {
+  /* 头部只留必要信息：原先前是用户区换行把头部顶到 130px */
+  .app-header { padding: 0 12px; gap: 8px; height: 52px; }
+  .header-left .subtitle { display: none; }
+  .header-left h1 { font-size: 16px; }
+
+  .chat-view { height: calc(100dvh - 104px); gap: 0; }
+  .chat-messages { padding: 12px; border-radius: var(--radius-sm); }
+
+  /* 空状态卡片改单列，两列会把文字挤断 */
+  .quick-start { grid-template-columns: 1fr; margin-top: 18px; }
+  .empty-badge { width: 64px; height: 64px; font-size: 32px; border-radius: 20px; }
+  .empty-chat h3 { font-size: 17px; }
+
+  .msg { max-width: 94%; gap: 8px; }
+  .msg-avatar { width: 28px; height: 28px; font-size: 14px; border-radius: 9px; }
+  .msg-text { padding: 10px 13px; font-size: 14px; }
+
+  /* 快捷条横向滚动，不再堆成三行 */
+  .quick-questions.compact {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .quick-questions.compact::-webkit-scrollbar { display: none; }
+
+  .chat-input-area { padding: 8px 0; gap: 6px; }
+}
+
+
+/* ── 阅读行宽 ──
+   助手消息原先在宽屏上会拉到约 95 个字符/行，远超舒适阅读区间（50~75）。
+   限制行宽后长回答明显更好读。 */
+.msg.assistant .msg-text { max-width: 74ch; }
+.msg.user .msg-text { max-width: 60ch; }
+
+
+/* ═══════════════════════════════════════════
+   超小屏（≤480px）的确定值
+   ───────────────────────────────────────────
+   上面早先的 @480 规则会被后续的 @768 规则覆盖（同优先级下后者生效），
+   导致 375px 宽下反而用了平板尺寸。这里显式给出小屏该有的值。
+   ═══════════════════════════════════════════ */
+@media (max-width: 480px) {
+  .msg-text { font-size: 13.5px; padding: 9px 12px; }
+  .msg-avatar { width: 26px; height: 26px; font-size: 13px; }
+  .msg.assistant .msg-text { max-width: 100%; }
+  .empty-chat { padding: 20px 14px; }
+  .empty-chat p { font-size: 13px; }
+  .quick-card { padding: 11px 13px; }
+  .sidebar-expand-btn { left: 10px; bottom: 92px; }
+}
+
+/* 平板竖屏：容器高度用 dvh 与基础层保持一致 */
+@media (max-width: 1024px) {
+  .chat-view { height: calc(100dvh - 112px); }
+}
+
+
+/* ═══════════════════════════════════════════
+   全站一致性修正
+   ═══════════════════════════════════════════ */
+
+/* ── 文件选择框 ──
+   原先用的是浏览器原生控件（整个页面里唯一没被样式化的元素），
+   和旁边的「上传并入库」按钮风格完全脱节。 */
+.kb-upload-area input[type="file"] {
+  font-size: 13px;
+  color: var(--text-secondary);
+  max-width: 100%;
+}
+.kb-upload-area input[type="file"]::file-selector-button {
+  padding: 7px 14px;
+  margin-right: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.kb-upload-area input[type="file"]::file-selector-button:hover {
+  background: var(--primary-soft);
+  border-color: var(--primary-border);
+  color: var(--primary);
+}
+
+/* ── 工具栏里的破坏性操作改用描边 ──
+   实底红按钮会成为整页最抢眼的元素，把真正的主操作（上传并入库）压下去，
+   操作层级反了。描边红既有警示性，又不抢主操作。 */
+.kb-toolbar .btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border-color: #fecaca;
+}
+.kb-toolbar .btn-danger:hover {
+  background: #fef2f2;
+  border-color: var(--danger);
 }

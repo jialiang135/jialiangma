@@ -21,7 +21,7 @@
         <div class="stat-card"><span class="stat-num">{{ dash.today_chats }}</span><span class="stat-label">今日对话</span></div>
         <div class="stat-card"><span class="stat-num">{{ dash.total_chats }}</span><span class="stat-label">总对话数</span></div>
         <div class="stat-card"><span class="stat-num">{{ (dash.total_tokens || 0).toLocaleString() }}</span><span class="stat-label">总 Token</span></div>
-        <div class="stat-card"><span class="stat-num">${{ (dash.total_cost || 0).toFixed(4) }}</span><span class="stat-label">总费用</span></div>
+        <div class="stat-card"><span class="stat-num">${{ formatCost(dash.total_cost) }}</span><span class="stat-label">总费用</span></div>
         <div class="stat-card"><span class="stat-num">{{ dash.disk_used_mb }} MB</span><span class="stat-label">上传文件</span></div>
         <div class="stat-card"><span class="stat-num">{{ dash.chroma_db_mb }} MB</span><span class="stat-label">向量库</span></div>
       </div>
@@ -167,6 +167,7 @@
 <script setup>
 import { ref, onMounted, watch } from 'vue'
 import { useAuthStore } from '../stores/auth.js'
+import { formatCost } from '../utils/format.js'
 import {
   getDashboard, getUsers, updateUserRole, deleteUser,
   getChatLogs, getFiles, getAuditLogs,
@@ -329,7 +330,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.admin-view { max-width: 1100px; margin: 0 auto; padding: 16px; }
+.admin-view { width: 100%; }  /* 宽度交给 .app-main 统一控制 */
 .admin-header { margin-bottom: 16px; }
 .admin-header h2 { margin: 0 0 12px; }
 .admin-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
