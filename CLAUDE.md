@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Personal digital-twin RAG system for AI Agent job interview demos. A single-admin private knowledge base that ingests résumés, project docs, and tech notes, then answers interview questions as the candidate via a ReAct+LangGraph multi-agent architecture.
 
-**Stack:** FastAPI (server) + Vue 3 (frontend) + LangGraph (agent orchestration) + ChromaDB (local vector store) + SQLite (metadata) + DeepSeek V4 Pro (LLM) + Alibaba DashScope (embedding + rerank).
+**Stack:** FastAPI (server) + Vue 3 (frontend) + LangGraph 1.x (agent orchestration) + SQLAlchemy 2.0 async + aiosqlite (metadata) + ChromaDB (local vector store) + DeepSeek reasoning model (LLM) + Alibaba DashScope (embedding + rerank) + RAGAS (evaluation).
 
 **Deployment:** Alibaba Cloud ECS at http://39.106.191.98:8080, Docker Compose multi-container (app + nginx + redis + prometheus + grafana).
 
@@ -28,7 +28,14 @@ cd frontend && npm ci && npm run build && cd ..
 docker compose up -d --build
 ```
 
-**Configuration:** Copy/update `config/.env` with real API keys before starting. `pydantic-settings` auto-loads it.
+```bash
+# Run tests (slow tests make real API calls and are skipped by default)
+python -m pytest tests/ -q -m "not slow"
+```
+
+**Configuration:** Copy/update `config/.env` with real API keys before starting. `pydantic-settings` auto-loads it. Startup **refuses to boot** with the repo's default secrets unless `ALLOW_INSECURE_DEFAULTS=true` (tests set this in `tests/conftest.py`).
+
+**Test isolation:** `tests/conftest.py` redirects `db_path` / `upload_dir` / `chroma_persist_dir` to a temp dir *before* any app module is imported — tests never touch real `assets/` data.
 
 ## Architecture
 
@@ -37,21 +44,21 @@ docker compose up -d --build
 ```
 Browser → Nginx (:8080) → FastAPI SSE → LangGraph ReAct Agent
   → ChromaDB (vector search) + DashScope (rerank)
-  → DeepSeek V4 Pro (LLM)
+  → DeepSeek reasoning model (LLM)
   → SSE events: reasoning → answer → done
 ```
 
 ### LangGraph state machine (agent/graph_workflow.py)
 
-Seven nodes: `router`, `retrieve`, `chat_agent`, `tools`, `manage_agent`, `eval_agent`.
+Six nodes: `router`, `retrieve`, `chat_agent`, `tools`, `manage_agent`, `eval_agent`.
 Chat mode uses a ReAct loop: `retrieve → chat_agent ⇄ tools → END` (max 5 iterations).
 
 ### RAG pipeline (rag/)
 
 1. `rag/document_loader.py` — 15 format handlers (PDF, DOCX, XLSX, TXT/MD/code, images via pytesseract OCR, ZIP recursive)
-2. `rag/text_splitter.py` — `RecursiveCharacterTextSplitter` with Chinese-aware separators, chunk_size=1000, overlap=200
+2. `rag/text_splitter.py` — `SemanticTextSplitter` (Markdown headings → Chinese numbered sections → paragraphs → recursive fallback), chunk_size=1000, overlap=200. Toggle via `USE_SEMANTIC_SPLITTER`.
 3. `rag/vector_store.py` — ChromaDB PersistentClient, collection `knowledge_base`
-4. `rag/retriever.py` — Two-stage: ChromaDB semantic search topK=10 → DashScope gte-rerank topK=5, with graceful degradation
+4. `rag/retriever.py` — Hybrid (BM25 + vector, RRF fusion) topK=10 → DashScope gte-rerank topK=5, with TTL cache and graceful degradation. Cache invalidation is hooked into `rag/vector_store.py` write ops.
 
 ### Three agents (agent/)
 

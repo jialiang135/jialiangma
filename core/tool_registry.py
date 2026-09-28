@@ -69,7 +69,3 @@ class ToolRegistry:
 tool_registry = ToolRegistry()
 register_tool = tool_registry.register
 
-
-# ═══════════════════════════════════════════
-# 工具注册示例（实际工具在 agent/tools.py 中注册）
-# ═══════════════════════════════════════════

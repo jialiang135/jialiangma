@@ -156,7 +156,8 @@
         <button class="btn btn-sm" @click="loadQueueStatus">刷新</button>
         <div v-if="queueStatus" class="mt-8">
           <div>队列积压: <strong>{{ queueStatus.queue_size }}</strong></div>
-          <div>Redis: {{ queueStatus.redis_available ? '✅ 可用' : '❌ 不可用' }}</div>
+          <div>后端: <strong>{{ backendLabel(queueStatus.backend) }}</strong></div>
+          <div>健康: {{ queueStatus.healthy ? '✅ 正常' : '❌ 异常' }}</div>
         </div>
       </div>
     </div>
@@ -295,6 +296,14 @@ async function loadQueueStatus() {
   try {
     queueStatus.value = await getQueueStatus()
   } catch (e) { /* ignore */ }
+}
+
+/** 队列后端名称：进程内线程池 / Redis(RQ) */
+function backendLabel(backend) {
+  return {
+    thread_pool: '进程内线程池',
+    rq: 'Redis (RQ)',
+  }[backend] || backend || '未知'
 }
 
 function fmtDate(d) {

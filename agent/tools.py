@@ -241,3 +241,49 @@ async def verify_answer_against_kb(
             f"最相关内容: {top_doc['content'][:500]}\n"
             "判定: 该陈述可能部分偏离知识库，建议谨慎使用。"
         )
+
+
+# ========================================
+# 登记到工具注册中心
+# ========================================
+#
+# 原先 tool_registry 从未被任何代码调用 —— /api/tools 恒返回空列表，
+# 而这个注册中心存在的意义就是让工具可被列举（前端可视化编排面板要读它）。
+# 这里做一次性登记：从 LangChain 工具对象上取 name/description/参数 schema，
+# 交给注册中心，接口就有真实数据了。
+def _register_all_tools() -> None:
+    from core.tool_registry import tool_registry
+
+    # (工具对象, 类别)
+    specs = [
+        (search_knowledge_base, "知识库检索"),
+        (get_kb_summary, "知识库检索"),
+        (list_my_files, "知识库管理"),
+        (get_chat_context, "对话上下文"),
+        (verify_answer_against_kb, "防幻觉校验"),
+    ]
+
+    for tool_obj, category in specs:
+        parameters: dict = {}
+        try:
+            schema = getattr(tool_obj, "args_schema", None)
+            if schema is not None and hasattr(schema, "model_json_schema"):
+                parameters = schema.model_json_schema()
+        except Exception as e:  # noqa: BLE001 - schema 取不到不影响登记
+            logger.debug("工具 {} 参数 schema 提取失败: {}", tool_obj.name, e)
+
+        # 注册表记录的是可调用实现：async 工具用 coroutine，同步工具用 func
+        impl = getattr(tool_obj, "coroutine", None) or getattr(tool_obj, "func", None)
+        if impl is None:
+            logger.warning("工具 {} 没有可调用的实现，跳过登记", tool_obj.name)
+            continue
+
+        tool_registry.register(
+            name=tool_obj.name,
+            description=tool_obj.description,
+            category=category,
+            parameters=parameters,
+        )(impl)
+
+
+_register_all_tools()

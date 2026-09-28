@@ -63,7 +63,19 @@ class DashScopeEmbeddings(Embeddings):
     # ── 内部 ──
 
     def _call_batch(self, texts: list[str]) -> list[list[float]]:
-        """向量化一批文本，按 text_index 还原顺序。"""
+        """
+        向量化一批文本，按 text_index 还原顺序。
+
+        外面套了熔断器：DashScope 挂掉时快速失败，而不是每个请求都去撞一遍。
+        注意这里熔断层**不做重试**（``max_retries=0``）—— 重试由 tenacity 负责，
+        两层各管一件事：tenacity 管"这一次调用要不要再试"，熔断器管
+        "这个服务整体还能不能用"。
+        """
+        from core.circuit_breaker import embedding_circuit_breaker
+
+        return embedding_circuit_breaker.call_sync(self._call_batch_once, texts)
+
+    def _call_batch_once(self, texts: list[str]) -> list[list[float]]:
         import dashscope
 
         resp = dashscope.TextEmbedding.call(

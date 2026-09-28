@@ -5,7 +5,7 @@
 [![Vue](https://img.shields.io/badge/Vue-3-green)](https://vuejs.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue)](https://docker.com)
 
-> 基于 LangGraph + DeepSeek V4 Pro 的企业级多 Agent 私有知识库问答系统
+> 基于 LangGraph + DeepSeek 推理模型的多 Agent 私有知识库问答系统
 
 **🌐 在线地址：http://39.106.191.98:8080**
 
@@ -22,19 +22,19 @@
       ↓
   Nginx (:8080, 反向代理 + 限流 + HTTPS)
       ↓
-  FastAPI (SSE 流式, 12 组 REST 路由)
+  FastAPI (SSE 真实流式, 32 个业务接口)
       ↓
-  LangGraph StateGraph (7 节点有向图)
+  LangGraph StateGraph (6 节点有向图)
       ├── Router 路由节点
       ├── Retrieve 检索节点
       ├── Chat Agent (ReAct 循环, 最多 5 轮)
       ├── Tool Executor (5 个 ReAct 工具)
       ├── Manage Agent (知识库管理)
-      └── Eval Agent (自动评测)
+      └── Eval Agent (RAGAS 自动评测)
       ↓
   ┌───────────┬────────────┬──────────────┐
-  ChromaDB    SQLite       Redis          DeepSeek V4 Pro
-  (向量存储)  (元数据+审计) (缓存+会话+队列) (LLM)
+  ChromaDB    SQLite       Redis          DeepSeek
+  (向量存储)  (元数据+审计) (缓存)         (LLM)
   └───────────┴────────────┴──────────────┘
       ↓
   DashScope (Embedding + Rerank)
@@ -57,10 +57,23 @@
 ```
 
 **核心设计决策：**
-- Router 根据 `agent_mode` 路由到不同 Agent 节点（条件边）
+- Router 根据 `agent_mode` 路由到不同 Agent 节点（条件边），未知模式回退 chat
 - Chat 模式采用标准 ReAct 循环：思考 → 调工具 → 观察 → 再思考
 - `should_continue_chat()` 检查 `needs_tool_call` 和 `iteration_count < 5`，防止无限循环
 - 每个节点都是纯函数，状态通过 `AgentState` TypedDict 传递
+- **多轮对话记忆**：按 `conversation_id` 取回最近 6 轮问答注入提示词，
+  使"那它呢？"这类追问有上下文（默认带轮数上限，避免吃满上下文预算）
+
+### 数据层（SQLAlchemy 2.0 async）
+
+- 6 张表 + 审计表统一为 `DeclarativeBase` 模型，表结构只有一个来源
+- `create_async_engine` + `aiosqlite`，**DB 操作不再阻塞事件循环**
+- 连接级 PRAGMA：`journal_mode=WAL`（读写不互斥）+ `busy_timeout=5000`
+  （写锁冲突时等待而非立刻报错）+ `synchronous=NORMAL`
+- 时间统一按 **UTC** 存取（SQLite `CURRENT_TIMESTAMP` 即 UTC，
+  混入本地时间会让登录锁定窗口与"今日统计"错 8 小时）
+- 无法 async 的阻塞操作（Chroma 查询、DashScope 同步 HTTP、文档解析）
+  统一用 `asyncio.to_thread` 移出事件循环
 
 ### 数据隔离（多租户就绪）
 
@@ -73,14 +86,42 @@
 
 ```
 用户问题
-    → ChromaDB 语义搜索 topK=10
-    → [可选] BM25 关键词 + RRF 融合
+    → 结构感知分块入库（Markdown 标题 / 中文编号章节 / 段落 → 定长兜底）
+    → BM25 关键词 + ChromaDB 语义检索，RRF 加权融合 topK=10
     → DashScope gte-rerank 重排 topK=5
     → 注入 System Prompt
     → LLM 生成回答
 ```
 
-优雅降级：Rerank API 失败 → 自动回退 ChromaDB 原始排序（score=1.0）
+**几个容易忽略的点：**
+
+- **结构感知分块**：简历、项目文档这类有层级的材料，按章节切块能保住
+  "这一块在讲什么"，而不是被定长切分拦腰截断（实测同一份文档：
+  结构分块 4 块各自带标题 vs 定长分块 1 块）
+- **混合检索**：BM25 补足向量检索对专有名词/编号不敏感的问题
+- **缓存失效**：BM25 索引与检索结果缓存挂在向量库的**写操作**上统一失效 ——
+  上传、删除、清空、重建任何路径都会自动清，不会出现"删了文件还检索得到"
+- 优雅降级：Rerank API 失败 → 自动回退原始排序；Embedding 服务熔断 →
+  快速失败而不是每个请求都去撞一遍
+
+### 自动评测（RAGAS）
+
+`POST /api/eval/run` 提交后台评测任务，`GET /api/eval/reports/{id}` 轮询进度。
+
+| 指标 | 含义 |
+|---|---|
+| faithfulness | 回答是否忠于检索到的上下文（防幻觉核心指标） |
+| answer_relevancy | 回答与问题的相关度 |
+| context_precision | 检索回来的内容里有多少真正有用 |
+| context_recall | 期望答案的信息是否被检索到 |
+| **honesty_rate**（自建） | 知识库外的问题，是否如实回答"没有相关信息" |
+
+两个设计细节：
+
+- 评测是**后台任务** —— 每条问题要跑一次完整问答，再让 LLM 逐条判定，
+  单条约 10~30 秒，放进请求里会把整个进程拖死
+- 样本**按分类轮询抽取**：直接取前 N 条会让"幻觉检测"类（排在评测集最后）
+  永远测不到，而诚实度恰恰是最该看的指标
 
 ---
 
@@ -114,7 +155,11 @@
 | 1 | System Prompt 硬约束 —— "禁止编造" | `agent/prompts.py` |
 | 2 | 检索为空兜底 —— "我的知识库中没有这方面的信息" | `agent/chat_agent.py` |
 | 3 | verify_answer_against_kb 工具 —— LLM 自我校验，匹配度 < 0.5 标记不可信 | `agent/tools.py` |
-| 4 | 评测集验证 —— 故意问知识库外的问题，验证系统诚实度 | `assets/test_data/` |
+| 4 | **RAGAS 评测 + 诚实度量化** —— 用知识库外的"幻觉检测"类问题验证系统是否如实说不知道 | `core/eval_runner.py` |
+
+第 4 层是**可量化**的：评测集里有 5 道知识库中本就没有答案的题
+（"马佳良的期望薪资是多少？"），系统如实回答"没有相关信息"才算通过，
+汇总成 `honesty_rate`。指标低于 1 时会直接给出改进建议。
 
 ### Vibe Coding / AI 辅助开发实践
 
@@ -142,20 +187,42 @@
 POST /api/chat/stream (Authorization: Bearer <JWT>)
 Content-Type: text/event-stream
     ↓
-后端起 LangGraph graph.ainvoke(initial_state)
+后端起 LangGraph graph.astream_events(state, version="v2")
     ↓
 SSE 事件流：
-  data: {"type":"reasoning","content":"🔍 正在检索知识库..."}
-  data: {"type":"reasoning","content":"🤔 分析检索结果..."}
-  data: {"type":"answer","content":"根据知识库记录，我参与过..."}
-  data: {"type":"done","content":"","conversation_id":"xxx"}
+  data: {"type":"reasoning","content":"🔍 调用工具: search_knowledge_base","icon":"🔍"}
+  data: {"type":"reasoning_delta","content":"我需要先看看知识库里……"}
+  data: {"type":"answer","content":"根据知识库记录，我参与过"}
+  data: {"type":"usage","content":"{\"input_tokens\":4083,\"reasoning_tokens\":108,...}"}
+  data: {"type":"done","content":"{\"conversation_id\":\"xxx\",\"answer\":\"（权威全文）\"}"}
 ```
 
+**事件类型：**
+
+| type | 含义 |
+|---|---|
+| `reasoning` | 一整行"步骤"（工具调用/检索结果），行首带 emoji，另附 `icon` 字段 |
+| `reasoning_delta` | 模型**真实思考**的 token 增量（推理模型） |
+| `answer` | 答案 token 增量 |
+| `usage` | 真实 token 用量（含 reasoning / 缓存命中明细） |
+| `done` | 流结束，携带 conversation_id 与**权威全文** |
+| `error` | 错误 |
+
 **关键实现细节：**
-- 单次连接，多次推送（reasoning → answer → done）
-- `Cache-Control: no-cache`，`X-Accel-Buffering: no`（禁用 Nginx 缓冲）
-- AbortController 支持客户端中断（点"停止"按钮）
-- 流式结束后自动保存对话日志到 SQLite
+
+- **真实流式**：走 `astream_events`。实测首字节 **1.1s**、思考流 **3.0s** 开始，
+  总耗时 9~12s —— 换成"先跑完再假打字机"就是全程白屏
+- **思考与答案分流**：推理模型先输出 `reasoning_content`（思考）再输出
+  `content`（答案），两者必须分开推送，否则思考阶段前端收到的全是空串
+- **`done` 带权威全文**：ReAct 循环中间轮次也可能吐正文（"我先查一下……"），
+  这些增量已实时下发给前端；结束时以 agent 节点的 `final_answer` 为准替换显示
+  并落库，保证"界面看到的" = "存进数据库的"
+- `max_tokens` 对推理模型是"思考 + 答案"的**共享预算**：给太小会把答案挤空
+  （实测 `max_tokens=32` 时 `content` 直接是空串），因此默认给到 8192
+- AbortController 支持客户端中断（点"停止"）；中断时**已生成的内容照样落库**
+  —— 取消路径下不能 await，因此在一个新线程+新事件循环里同步完成写入
+- 真实 token 用量取自 `usage_metadata`（含 reasoning_tokens 与缓存命中），
+  不再靠字符数估算
 
 ### Function Calling / 工具绑定
 
@@ -188,16 +255,16 @@ llm_with_tools = llm.bind_tools([search_knowledge_base, list_my_files,
 ### OpenAI 兼容接口调用
 
 ```python
-# 通过 langchain_deepseek 调用 DeepSeek V4 Pro
+# 通过 langchain_deepseek 调用（模型/端点/base_url 全部来自 config/.env）
 from langchain_deepseek import ChatDeepSeek
 
 llm = ChatDeepSeek(
-    model="deepseek-v4-pro",
+    model=settings.deepseek_model,      # 推理模型：先输出思考再输出答案
     api_key=settings.deepseek_api_key,
-    api_base="https://api.deepseek.com",
-    temperature=0.3,      # 低温度，减少幻觉
-    streaming=True,        # 启用流式
-    max_tokens=4096,
+    api_base=settings.deepseek_base_url,
+    temperature=0.3,                    # 低温度，减少幻觉
+    streaming=True,                     # 启用流式
+    max_tokens=settings.llm_max_tokens, # 注意：思考与答案**共享**这个预算
 )
 ```
 
@@ -321,11 +388,14 @@ docker compose up -d --build
 
 | 层 | 技术 |
 |------|------|
-| 前端 | Vue 3, Vite, Vue Router, Pinia, 纯 CSS 响应式 |
-| 后端 | FastAPI, LangGraph 1.x, LangChain, SSE 流式 |
-| AI | DeepSeek V4 Pro, DashScope Embedding, Rerank |
-| 存储 | ChromaDB, SQLite, Redis |
-| 安全 | JWT + bcrypt, slowapi 限流, 审计日志, 熔断降级 |
+| 前端 | Vue 3, Vite, Vue Router, Pinia, 纯 CSS 响应式, DOMPurify（Markdown 净化） |
+| 后端 | FastAPI, LangGraph 1.x, LangChain 1.x, SSE 真实流式 |
+| AI | DeepSeek（推理模型）, DashScope Embedding + Rerank |
+| 数据 | SQLAlchemy 2.0 async + aiosqlite（WAL）, ChromaDB, Redis |
+| 检索 | 结构感知分块, BM25 + 向量混合检索（RRF）, Rerank 重排, TTL 缓存 |
+| 评测 | RAGAS（faithfulness / relevancy / context precision & recall）+ 自建诚实度 |
+| 安全 | JWT + bcrypt, slowapi 限流, 路径穿越防护, 上传校验, 审计日志 |
+| 可靠性 | 熔断器（指数退避）, 优雅降级, 有界任务线程池 |
 | 运维 | Docker Compose, Nginx, Prometheus, Grafana |
 
 ## 项目结构
@@ -333,7 +403,7 @@ docker compose up -d --build
 ```
 personal_agent/
 ├── agent/                LangGraph 多智能体（graph_workflow / tools / prompts）
-├── api/                  FastAPI 接口层（12 组路由 + SSE 流式 + 中间件）
+├── api/                  FastAPI 接口层（32 个业务接口 + SSE 流式 + 中间件）
 ├── core/                 核心模块（auth / audit / circuit_breaker / session / scheduler）
 ├── rag/                  RAG 检索链路（loader / splitter / vector_store / retriever / bm25）
 ├── config/               配置（settings + .env + prometheus + grafana）

@@ -47,10 +47,6 @@ async def lifespan(app: FastAPI):
     logger.info(f"上传文件路径: {settings.upload_dir}")
     logger.info(f"数据库路径: {settings.db_path}")
 
-    # 初始化会话管理器
-    from core.session_manager import session_manager
-    logger.info(f"会话管理器: {'Redis' if session_manager._redis else '内存'} 模式")
-
     # 启动定时任务调度器
     from core.scheduler import start_scheduler
     start_scheduler()

@@ -15,7 +15,7 @@ Embedding 向量化 → ChromaDB 语义检索（owner_id 过滤）
 """
 from loguru import logger
 
-from config.settings import rerank_with_dashscope
+from config.settings import rerank_with_dashscope, settings
 from rag.vector_store import search_by_owner
 
 
@@ -24,9 +24,9 @@ def retrieve(
     owner_id: int,
     top_k_search: int = 10,
     top_k_rerank: int = 5,
-    use_hybrid: bool = False,
+    use_hybrid: bool | None = None,
     bm25_weight: float = 0.3,
-    use_cache: bool = False,
+    use_cache: bool | None = None,
 ) -> dict:
     """
     完整的 RAG 检索链路。
@@ -36,9 +36,11 @@ def retrieve(
         owner_id:      用户 ID（数据隔离过滤）。
         top_k_search:  检索阶段候选数（传给向量库或混合检索）。
         top_k_rerank:  重排后保留的结果数。
-        use_hybrid:    是否使用 BM25 + 向量混合检索。
+        use_hybrid:    是否使用 BM25 + 向量混合检索。``None`` 时取
+                       ``settings.use_hybrid_search``（默认开启）。
         bm25_weight:   混合检索时 BM25 的权重 (0~1)，仅 use_hybrid=True 时有效。
-        use_cache:     是否启用结果缓存（TTL 1 小时）。
+        use_cache:     是否启用结果缓存。``None`` 时取
+                       ``settings.use_search_cache``（默认开启）。
 
     Returns:
         ``{
@@ -47,7 +49,16 @@ def retrieve(
             "context": str,   # 拼接后的上下文字符串
             "count": int,
         }``
+
+    注：混合检索与缓存原先默认关闭，且全仓库没有任何调用点传过参数 ——
+    等于两套实现（BM25+RRF 融合、TTL 缓存）从未生效过。现在默认开启，
+    缓存失效挂在向量库的写操作上（见 rag/vector_store.py）。
     """
+    # 默认值取配置：None 表示"没指定，用配置"
+    if use_hybrid is None:
+        use_hybrid = settings.use_hybrid_search
+    if use_cache is None:
+        use_cache = settings.use_search_cache
     # ── 缓存处理（在最外层，避免重复计算） ──
     if use_cache:
         from rag.search_cache import _cache, _make_cache_key

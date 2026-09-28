@@ -217,22 +217,12 @@ async def get_audit_logs(
 
 @router.get("/circuit-status")
 async def get_circuit_status(current_user: dict = Depends(require_admin)):
-    """查看所有熔断器状态"""
+    """查看所有熔断器状态（现在这些熔断器是真的接在调用链上的）"""
     return {
         "success": True,
         "circuits": [
-            {
-                "name": llm_circuit_breaker.name,
-                "state": llm_circuit_breaker.state.value,
-                "failure_count": llm_circuit_breaker._failure_count,
-                "can_pass": llm_circuit_breaker.can_pass(),
-            },
-            {
-                "name": embedding_circuit_breaker.name,
-                "state": embedding_circuit_breaker.state.value,
-                "failure_count": embedding_circuit_breaker._failure_count,
-                "can_pass": embedding_circuit_breaker.can_pass(),
-            },
+            llm_circuit_breaker.snapshot(),
+            embedding_circuit_breaker.snapshot(),
         ],
     }
 
@@ -252,16 +242,7 @@ async def get_queue_status(current_user: dict = Depends(require_admin)):
     }
 
 
-# ═══════════════════════════════════════════
-# 会话统计
-# ═══════════════════════════════════════════
-
-@router.get("/session-stats")
-async def get_session_stats(current_user: dict = Depends(require_admin)):
-    """会话统计（需 Redis 连接）"""
-    from core.session_manager import session_manager
-    return {
-        "success": True,
-        "mode": "Redis" if session_manager._redis else "内存",
-        "fallback_size": len(session_manager._fallback) if not session_manager._redis else 0,
-    }
+# 说明：原有一个 /session-stats 接口，返回 core.session_manager 的状态。
+# 该模块是一个从未被调用的会话存储（create_session/add_message/get_session
+# 零调用），会话上下文实际由 chat_logs + conversation_id 承担，
+# 因此连模块带接口一并移除，避免"日志里声称有 Redis 会话管理、实际什么也没做"。

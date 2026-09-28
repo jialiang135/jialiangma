@@ -18,6 +18,10 @@ class AgentState(TypedDict):
     # 当前选择的 Agent 模式: chat / manage / eval
     agent_mode: str
 
+    # 当前对话 ID。
+    # 用于把**历史轮次**喂给模型 —— 原实现不带历史，导致追问（"那它呢"）没有上下文。
+    conversation_id: Optional[str]
+
     # 当前用户输入的原始问题
     user_query: str
 

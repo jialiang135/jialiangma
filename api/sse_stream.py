@@ -55,12 +55,14 @@ def _initial_state(
     owner_id: int,
     username: str,
     agent_mode: str,
+    conversation_id: str | None = None,
 ) -> AgentState:
     return {
         "messages": [HumanMessage(content=user_query)],
         "owner_id": owner_id,
         "username": username,
         "agent_mode": agent_mode,
+        "conversation_id": conversation_id,
         "user_query": user_query,
         "retrieved_docs": [],
         "knowledge_context": "",
@@ -156,7 +158,7 @@ async def sse_chat_generator(
     首字延迟由"完整生成时间"降到"首个 token 到达时间"。
     """
     graph = get_agent_graph()
-    state = _initial_state(user_query, owner_id, username, agent_mode)
+    state = _initial_state(user_query, owner_id, username, agent_mode, conversation_id)
 
     answer_parts: list[str] = []
     thinking_parts: list[str] = []

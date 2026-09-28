@@ -28,7 +28,9 @@ echo "📦 拉取镜像 $IMAGE:$VERSION ..."
 docker pull "$IMAGE:$VERSION"
 
 # 2. 标记为当前使用版本
-CURRENT_TAG=$(docker inspect personal-agent-app --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null || echo "unknown")
+#    容器名取自 docker-compose.yml 的 container_name: personal-agent
+#    （原先写的是 personal-agent-app，与实际不符，导致这里永远取不到版本号、只显示 unknown）
+CURRENT_TAG=$(docker inspect personal-agent --format '{{index .Config.Labels "org.opencontainers.image.version"}}' 2>/dev/null || echo "unknown")
 echo "📋 当前版本: $CURRENT_TAG"
 
 # 3. 切换到指定版本

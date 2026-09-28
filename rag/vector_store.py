@@ -55,6 +55,37 @@ def reset_vector_store():
 
 
 # ========================================
+# 缓存失效
+# ========================================
+
+def _invalidate_retrieval_caches(owner_id: int) -> None:
+    """
+    文档变更后清掉检索侧缓存。
+
+    **两处缓存必须一起清**，否则检索会读到旧数据：
+
+    - BM25 索引：``rag/bm25_search.py`` 按 owner_id 惰性缓存整个语料
+    - 检索结果缓存：``rag/search_cache.py`` 的 TTL 缓存
+
+    之所以挂在向量库的写操作里（而不是各调用点），是为了让上传、删除、
+    清空、重建**所有路径**都自动失效 —— 漏一处就会出现"删了文件还检索得到"。
+    """
+    try:
+        from rag.bm25_search import invalidate_bm25_cache
+
+        invalidate_bm25_cache(owner_id)
+    except Exception as e:  # noqa: BLE001 - 缓存失效失败不该让写操作失败
+        logger.warning("BM25 缓存失效失败 (owner_id={}): {}", owner_id, e)
+
+    try:
+        from rag.search_cache import clear_cache
+
+        clear_cache()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("检索结果缓存清理失败: {}", e)
+
+
+# ========================================
 # 向量库 CRUD
 # ========================================
 
@@ -102,6 +133,12 @@ def add_documents(
             raise
 
     logger.info(f"向量库入库完成: {len(all_ids)} 条")
+
+    # 文档变了 → 检索侧缓存必须失效，否则新增内容检索不到
+    owner_ids = {m.get("owner_id") for m in metadatas if m.get("owner_id") is not None}
+    for oid in owner_ids:
+        _invalidate_retrieval_caches(oid)
+
     return all_ids
 
 
@@ -143,6 +180,7 @@ def delete_by_file(filename: str, owner_id: int) -> int:
     """
     collection = _get_or_create_collection()
 
+    count = 0
     try:
         # 查找匹配的文档ID
         existing = collection.get(
@@ -155,11 +193,12 @@ def delete_by_file(filename: str, owner_id: int) -> int:
             collection.delete(ids=existing["ids"])
             count = len(existing["ids"])
             logger.info(f"从向量库删除文件: {filename}, {count} 条")
-            return count
-        return 0
     except Exception as e:
         logger.warning(f"向量库删除失败: {e}")
-        return 0
+
+    # 无论是否删到东西都失效缓存：宁可多清一次，也不要留下旧结果
+    _invalidate_retrieval_caches(owner_id)
+    return count
 
 
 def delete_all_by_owner(owner_id: int) -> int:
@@ -169,6 +208,7 @@ def delete_all_by_owner(owner_id: int) -> int:
     """
     collection = _get_or_create_collection()
 
+    count = 0
     try:
         existing = collection.get(
             where={"owner_id": owner_id}
@@ -177,11 +217,11 @@ def delete_all_by_owner(owner_id: int) -> int:
             collection.delete(ids=existing["ids"])
             count = len(existing["ids"])
             logger.info(f"清空用户向量库: owner_id={owner_id}, {count} 条")
-            return count
-        return 0
     except Exception as e:
         logger.warning(f"向量库清空失败: {e}")
-        return 0
+
+    _invalidate_retrieval_caches(owner_id)
+    return count
 
 
 def _get_or_create_collection():

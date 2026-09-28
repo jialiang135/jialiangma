@@ -58,7 +58,9 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
     if not docs or not docs[0].get("content", "").strip():
         return {"success": False, "error": "无法解析文件内容"}
 
-    processed = process_documents_batch(docs)
+    processed = process_documents_batch(
+        docs, use_semantic_splitter=settings.use_semantic_splitter
+    )
     if not processed or not processed[0].get("chunks"):
         return {"success": False, "error": "内容为空"}
 
@@ -162,7 +164,9 @@ def rebuild_knowledge_base(owner_id: int) -> int:
             docs = load_documents_from_paths([filepath], upload_dir)
             if not docs:
                 continue
-            processed = process_documents_batch(docs)
+            processed = process_documents_batch(
+                docs, use_semantic_splitter=settings.use_semantic_splitter
+            )
             if not processed or not processed[0].get("chunks"):
                 continue
             chunks = processed[0]["chunks"]

@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     # --- 文档处理 ---
     chunk_size: int = 1000
     chunk_overlap: int = 200
+    # 是否用结构感知分块（Markdown 标题 / 中文编号章节 / 段落 → 定长兜底）。
+    # 简历、项目文档这类有层级的材料，按结构切块能保住"章节语义"，
+    # 检索命中率明显好于纯定长切分。原实现里这个分块器从未被启用过。
+    use_semantic_splitter: bool = True
+    # 检索是否启用 BM25+向量混合检索（RRF 融合）与结果缓存。
+    # 原实现两者都写好了，但默认关闭且没有任何调用点传过参数 —— 等于死代码。
+    use_hybrid_search: bool = True
+    use_search_cache: bool = True
 
     model_config = {
         "env_file": os.path.join(os.path.dirname(__file__), ".env"),
