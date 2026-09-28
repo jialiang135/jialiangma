@@ -48,11 +48,16 @@
           <div class="msg-avatar">{{ msg.role === 'user' ? '👤' : '🤖' }}</div>
           <div class="msg-content">
             <div class="msg-text" v-html="renderMarkdown(msg.content)"></div>
-            <div v-if="msg.role === 'assistant' && msg.reasoning" class="msg-reasoning">
+            <div v-if="msg.role === 'assistant' && (msg.steps?.length || msg.thinking)"
+                 class="msg-reasoning">
               <details>
-                <summary>🧠 查看完整推理过程（{{ parseSteps(msg.reasoning).length }} 步）</summary>
+                <summary>🧠 查看完整推理过程（{{ msg.steps?.length || 0 }} 步）</summary>
+                <div v-if="msg.thinking" class="thinking-stream">
+                  <div class="thinking-label">💭 模型思考</div>
+                  <div class="thinking-text">{{ msg.thinking }}</div>
+                </div>
                 <div class="reasoning-timeline inline-timeline">
-                  <div v-for="(step, si) in parseSteps(msg.reasoning)" :key="si" class="timeline-step">
+                  <div v-for="(step, si) in (msg.steps || [])" :key="si" class="timeline-step">
                     <span class="step-icon">{{ step.icon }}</span>
                     <span class="step-text">{{ step.text }}</span>
                   </div>
@@ -64,12 +69,19 @@
         <div v-if="streaming" class="msg assistant streaming">
           <div class="msg-avatar">🤖</div>
           <div class="msg-content">
-            <div v-if="streamingReasoning" class="msg-reasoning streaming-reasoning">
+            <div v-if="liveSteps.length || thinkingText" class="msg-reasoning streaming-reasoning">
               <details open>
-                <summary>🧠 推理中...（{{ parseSteps(streamingReasoning).length }} 步）</summary>
+                <summary>
+                  🧠 {{ thinkingText ? '思考中' : '推理中' }}…（{{ liveSteps.length }} 步{{ thinkingText ? ` · 思考 ${thinkingText.length} 字` : '' }}）
+                </summary>
+                <!-- 模型真实思考流：推理模型的"内心独白"，与下面的流程步骤是两类信息 -->
+                <div v-if="thinkingText" class="thinking-stream">
+                  <div class="thinking-label">💭 模型思考</div>
+                  <div class="thinking-text">{{ thinkingText }}</div>
+                </div>
                 <div class="reasoning-timeline inline-timeline">
-                  <div v-for="(step, si) in parseSteps(streamingReasoning)" :key="si"
-                       :class="['timeline-step', { latest: si === parseSteps(streamingReasoning).length - 1 }]">
+                  <div v-for="(step, si) in liveSteps" :key="si"
+                       :class="['timeline-step', { latest: si === liveSteps.length - 1 }]">
                     <span class="step-icon">{{ step.icon }}</span>
                     <span class="step-text">{{ step.text }}</span>
                   </div>
@@ -134,7 +146,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { streamChat, getConversations, getConversation, deleteConversation } from '../api/chat.js'
 import { useAuthStore } from '../stores/auth.js'
 import TokenStats from '../components/TokenStats.vue'
@@ -168,7 +180,11 @@ const messages = ref([])
 const input = ref('')
 const streaming = ref(false)
 const streamingText = ref('')
-const reasoningLog = ref('')
+// 推理步骤：直接累积"已解析好的对象"，而不是每次渲染都重新解析整段文本
+// （原实现每帧调用 3 次 parseSteps，逐 token 更新时是 O(n²) 的重复解析）
+const liveSteps = ref([])
+// 模型真实思考流（推理模型）。与 liveSteps 是两类信息：这是模型的内心独白
+const thinkingText = ref('')
 const msgContainer = ref(null)
 const msgEnd = ref(null)
 let abortController = null
@@ -181,9 +197,6 @@ const loadingHistory = ref(false)
 // 当前对话 ID（续接已有对话时设置，新对话为 null，由后端返回）
 const currentConversationId = ref(null)
 const activeHistoryId = ref(null)  // 高亮当前活跃的历史记录
-
-// 流式推理文本（实时显示用）
-const streamingReasoning = ref('')
 
 // 删除确认弹窗
 const showDeleteConfirm = ref(false)
@@ -212,36 +225,59 @@ function renderMarkdown(text) {
 
 
 // —— 推理步骤解析 ——
-// 后端已经给每行带了 emoji 前缀，直接提取；不匹配的自动分配
+// 后端下发的 reasoning 事件已经是"一整行"步骤，且行首带 emoji；
+// 同时会附一个 icon 字段作为结构化元信息。
 const EMOJI_RE = /^([\u{1F300}-\u{1FAFF}\u{2700}-\u{27BF}\u{2600}-\u{26FF}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{1F100}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{200D}\u{FE0F}\u{20E3}\u{2000}-\u{206F}🛠️➕➖➡️〰️*️⃣#️⃣0️⃣1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣\u{1F7E0}-\u{1F7FF}]|⚠️|✅|❌|📚|📋|📝|📊|📭|💾|💬|🔍|🔀|🔧|🤔|🔄|✨|🎯|📌|🧩|📁|🏷️)/u
+
+/** 把一整行步骤文本解析成 {icon, text}。 */
+function parseStepLine(line) {
+  const t = (line || '').trim()
+  if (!t) return null
+  const m = t.match(EMOJI_RE)
+  if (m) return { icon: m[0], text: t.slice(m[0].length).trim() }
+  // 没有 emoji 前缀时按关键词猜一个图标（兼容旧数据）
+  let icon = '•'
+  if (t.includes('工具') || t.includes('搜索'))        icon = '🔍'
+  else if (t.includes('检索') || t.includes('知识库') || t.includes('匹配')) icon = '📚'
+  else if (t.includes('拆解') || t.includes('分析') || t.includes('问题'))   icon = '🤔'
+  else if (t.includes('分支') || t.includes('判断') || t.includes('路由'))   icon = '🔀'
+  else if (t.includes('规划') || t.includes('方案'))                          icon = '📝'
+  else if (t.includes('合规') || t.includes('校验') || t.includes('闭环'))    icon = '✅'
+  else if (t.includes('生成') || t.includes('回答'))                          icon = '➡️'
+  else if (t.includes('返回') || t.includes('结果'))                          icon = '📋'
+  else if (t.includes('评测') || t.includes('报告'))                          icon = '📊'
+  else if (t.includes('保存'))                                                icon = '💾'
+  else if (t.includes('错误') || t.includes('失败') || t.includes('异常'))    icon = '⚠️'
+  return { icon, text: t }
+}
 
 function parseSteps(raw) {
   if (!raw) return []
-  return raw.split('\n').filter(Boolean).map(line => {
-    const t = line.trim()
-    // 如果文本以 emoji 开头，取它做图标
-    const m = t.match(EMOJI_RE)
-    if (m) {
-      return { icon: m[0], text: t.slice(m[0].length).trim() }
-    }
-    // 没有 emoji 前缀的，按关键词自动分配
-    let icon = '•'
-    if (t.includes('工具') || t.includes('搜索'))        icon = '🔍'
-    else if (t.includes('检索') || t.includes('知识库') || t.includes('匹配')) icon = '📚'
-    else if (t.includes('拆解') || t.includes('分析') || t.includes('问题'))   icon = '🤔'
-    else if (t.includes('分支') || t.includes('判断') || t.includes('路由'))   icon = '🔀'
-    else if (t.includes('规划') || t.includes('方案'))                          icon = '📝'
-    else if (t.includes('合规') || t.includes('校验') || t.includes('闭环'))    icon = '✅'
-    else if (t.includes('生成') || t.includes('回答'))                          icon = '➡️'
-    else if (t.includes('返回') || t.includes('结果'))                          icon = '📋'
-    else if (t.includes('评测') || t.includes('报告'))                          icon = '📊'
-    else if (t.includes('保存'))                                                icon = '💾'
-    else if (t.includes('错误') || t.includes('失败') || t.includes('异常'))    icon = '⚠️'
-    return { icon, text: t }
-  })
+  return raw.split('\n').filter(Boolean).map(parseStepLine).filter(Boolean)
 }
 
-const reasoningSteps = computed(() => parseSteps(reasoningLog.value))
+/**
+ * 解析落库的 reasoning 字段，返回 { steps, thinking }。
+ *
+ * 两种格式都要吃：
+ * - 新格式：JSON 字符串 {"steps": [...], "thinking": "..."}
+ * - 旧格式：以换行分隔的步骤纯文本（库里已有的历史数据）
+ */
+function parseStoredReasoning(raw) {
+  if (!raw) return { steps: [], thinking: '' }
+  try {
+    const obj = JSON.parse(raw)
+    if (obj && typeof obj === 'object') {
+      return {
+        steps: parseSteps((obj.steps || []).join('\n')),
+        thinking: obj.thinking || '',
+      }
+    }
+  } catch {
+    // 不是 JSON —— 按旧格式处理
+  }
+  return { steps: parseSteps(raw), thinking: '' }
+}
 
 function autoResize(e) {
   e.target.style.height = 'auto'
@@ -256,39 +292,77 @@ async function send() {
   messages.value.push({ role: 'user', content: text })
   streaming.value = true
   streamingText.value = ''
-  reasoningLog.value = ''
-  streamingReasoning.value = ''
+  liveSteps.value = []
+  thinkingText.value = ''
   let answerBuffer = ''
+  let errored = false
+
+  /**
+   * 结束本轮对话（幂等）。
+   *
+   * onDone 与 onClose 只会有一个触发（见 api/chat.js 的 settle），
+   * 但两条路径都要走这里，否则"服务端没发 done 就断开"时
+   * streaming 会永久为 true，输入框永久禁用。
+   */
+  function finalize(answer, cid) {
+    if (!streaming.value) return
+    const finalText = (answer || answerBuffer || '').trim()
+    if (finalText) {
+      messages.value.push({
+        role: 'assistant',
+        content: finalText,
+        // 模板读的是已解析好的 steps / thinking（与 loadConversation 保持一致），
+        // 直接引用副本，避免清空流式状态后把面板一起清掉
+        steps: liveSteps.value.slice(),
+        thinking: thinkingText.value,
+      })
+    } else if (!errored) {
+      // 一个字都没生成：明确告诉用户，而不是留下空白
+      messages.value.push({ role: 'assistant', content: '（本轮没有生成内容，请重试或换个问法）' })
+    }
+    if (cid && !currentConversationId.value) {
+      currentConversationId.value = cid
+    }
+    streaming.value = false
+    streamingText.value = ''
+    liveSteps.value = []
+    thinkingText.value = ''
+    abortController = null
+    scrollBottom()
+    loadHistory()
+  }
 
   abortController = streamChat(text, {
-    onReasoning(r) {
-      reasoningLog.value += (reasoningLog.value ? '\n' : '') + r
-      streamingReasoning.value += (streamingReasoning.value ? '\n' : '') + r
+    // 整行"步骤"（工具调用/检索结果）。后端可能附 icon，用于行首没有 emoji 的情况
+    onReasoning(line, icon) {
+      const step = parseStepLine(line)
+      if (!step) return
+      if (icon && step.icon === '•') step.icon = icon
+      liveSteps.value.push(step)
+    },
+    // 模型真实思考的增量（推理模型）
+    onReasoningDelta(delta) {
+      thinkingText.value += delta
     },
     onAnswer(a) {
       answerBuffer += a
       streamingText.value = answerBuffer
     },
-    onDone(returnedCid) {
-      if (answerBuffer) {
-        messages.value.push({ role: 'assistant', content: answerBuffer, reasoning: reasoningLog.value })
+    // done 带权威全文：用它替换流式期间累积的文本，
+    // 保证"界面显示的"与"落库的"完全一致（ReAct 中间轮次的过渡语不会混进答案）
+    onDone(cid, answer) {
+      finalize(answer, cid)
+    },
+    // 流结束但没有 done（网络中断/服务端异常/超时）—— 必须收尾，否则 UI 卡死
+    onClose(reason) {
+      if (reason !== 'aborted') {
+        console.warn('[chat] 流未正常结束:', reason)
       }
-      // 新对话：后端返回了 conversation_id，记录下来以便续接
-      if (returnedCid && !currentConversationId.value) {
-        currentConversationId.value = returnedCid
-      }
-      streaming.value = false
-      streamingText.value = ''
-      streamingReasoning.value = ''
-      abortController = null
-      scrollBottom()
-      loadHistory()
+      finalize('', null)
     },
     onError(err) {
+      errored = true
       messages.value.push({ role: 'assistant', content: `❌ ${err}` })
-      streaming.value = false
-      streamingText.value = ''
-      abortController = null
     },
   }, currentConversationId.value)
 
@@ -296,24 +370,26 @@ async function send() {
 }
 
 function stopStream() {
-  if (abortController) {
-    abortController.abort()
-    if (streamingText.value) {
-      messages.value.push({ role: 'assistant', content: streamingText.value, reasoning: reasoningLog.value })
-    }
-    streaming.value = false
-    streamingText.value = ''
-    streamingReasoning.value = ''
-    abortController = null
-    loadHistory()
+  if (!abortController) return
+  // 后端在取消路径上会同步保存已生成的内容，这里只负责收尾前端状态
+  abortController.abort()
+  abortController = null
+  streaming.value = false
+  const partial = streamingText.value
+  if (partial) {
+    messages.value.push({ role: 'assistant', content: partial })
   }
+  streamingText.value = ''
+  liveSteps.value = []
+  thinkingText.value = ''
+  loadHistory()
 }
 
 function clearChat() {
   messages.value = []
   streamingText.value = ''
-  reasoningLog.value = ''
-  streamingReasoning.value = ''
+  liveSteps.value = []
+  thinkingText.value = ''
   currentConversationId.value = null
   activeHistoryId.value = null
 }
@@ -377,10 +453,16 @@ async function loadConversation(c) {
     if (ctx.length > 0) {
       clearChat()
       for (const m of ctx) {
+        // reasoning 字段落库有两种格式（新的 JSON 含 steps/thinking、旧的纯文本行），
+        // 这里统一解析好再交给模板，避免模板里反复解析
+        const parsed = m.role === 'assistant'
+          ? parseStoredReasoning(m.reasoning)
+          : { steps: [], thinking: '' }
         messages.value.push({
           role: m.role,
           content: m.content,
-          reasoning: m.role === 'assistant' ? m.reasoning : undefined,
+          steps: parsed.steps,
+          thinking: parsed.thinking,
         })
       }
       // 仅真实 UUID 才支持续接，legacy '__single_' 前缀的不支持

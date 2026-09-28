@@ -1,50 +1,72 @@
-# 个人数字分身 · 多Agent私有RAG系统 — 完整依赖清单
+# ============================================
+# 个人数字分身 · 多Agent私有RAG系统 — 依赖清单
 # 安装: pip install -r requirements.txt
+#
+# ⚠️ 关于 langchain 系列：必须成组装，不能混代
+# ---------------------------------------------------------------
+# 曾经的 requirements 用全 `>=` 松约束 + 无 lock，结果装出了
+# "langchain-core 1.x 与 langchain-openai 0.2.x(为 core 0.3 构建)" 的错配环境。
+# 后果不是报错，而是**静默功能丢失**：推理模型的 reasoning_content 在流式
+# 路径上被丢弃（0.2.x 的 delta 转换器不认识该字段），只有 final usage 里
+# 能看出思考确实发生过。
+#
+# 因此这里把 langchain 系列锁在同一个世代（1.x），并给出上界防跨代。
+# 尚未用 lock 文件（Phase 6 会补 uv.lock）。
+# ============================================
 
-# --- UI 框架 ---
-# (已替换为 Vue 3 前端，不再需要 Gradio)
+# --- FastAPI 服务 ---
+fastapi>=0.115.0,<1.0
+uvicorn>=0.34.0,<1.0
+python-multipart>=0.0.18          # 上传接口依赖；<0.0.18 在部分生态里有兼容问题
+httpx>=0.25.0                     # 异步 HTTP（Phase 2 会用它替换同步调用）+ TestClient 依赖
 
-# --- FastAPI 文件上传依赖 ---
-python-multipart>=0.0.9
+# --- LangChain / LangGraph（同一世代，勿混代，见顶部说明）---
+langchain>=1.4.2,<2
+langchain-core>=1.6.3,<2
+langchain-openai>=1.6.2,<2        # langchain-deepseek 的基座，勿降到 0.x
+langchain-deepseek>=1.1.0,<2
+langchain-text-splitters>=1.1.2,<2
+langchain-chroma>=1.1.0,<2
+langgraph>=1.2.11,<2
 
-# --- 异步 HTTP ---
-httpx>=0.25.0
+# --- 数据校验 ---
+pydantic>=2.11.0,<3               # >=2.11 才能满足 mcp 包的约束
+pydantic-settings>=2.15.0,<3
 
-# --- 阿里云 DashScope (Embedding + Rerank) ---
+# --- 阿里云 DashScope（Embedding + Rerank）---
 dashscope>=1.20.0
 
-# --- 以下为核心依赖（大部分环境已预装，此处供参考） ---
-fastapi>=0.115.0
-uvicorn>=0.34.0
-langchain>=0.3.0
-langchain-core>=0.3.0
-langchain-community>=0.3.0
-langchain-deepseek>=1.0.0
-langchain-chroma>=0.2.0
-langchain-text-splitters>=0.3.0
-langgraph>=1.0.0
-chromadb>=1.0.0
-pydantic>=2.0.0
-pydantic-settings>=2.0.0
-PyJWT>=2.0.0
-bcrypt>=5.0.0
-loguru>=0.7.0
-unstructured>=0.10.0
+# --- 向量库 ---
+chromadb>=1.0.0,<2
+
+# --- 文档解析 ---
+# 注: 已移除 unstructured —— 全项目未引用，且会拖入大量传递依赖
 python-docx>=1.0.0
 openpyxl>=3.0.0
 pypdf>=5.0.0
 pytesseract>=0.3.0
 pillow>=10.0.0
-pytest>=9.0.0
 
-# --- RAG 检索增强 ---
+# --- 检索增强 ---
 rank-bm25>=0.2.2
 
-# --- 安全与可靠性 ---
+# --- 安全与鉴权 ---
+PyJWT>=2.0.0
+bcrypt>=5.0.0
 slowapi>=0.1.9
+
+# --- 可靠性 ---
 tenacity>=9.0.0
-redis>=5.0.0
-rq>=2.0.0
+redis>=5.0.0                      # 会话/缓存
+rq>=2.0.0                         # 可选：USE_RQ_QUEUE=true 时才走 RQ，需独立 worker
+
+# --- 可观测性与调度 ---
 prometheus-fastapi-instrumentator>=7.0.0
 apscheduler>=3.10.0
 psutil>=5.9.0
+
+# --- 日志 ---
+loguru>=0.7.0
+
+# --- 测试 ---
+pytest>=9.0.0

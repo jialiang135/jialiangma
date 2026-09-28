@@ -17,7 +17,7 @@ from core.database import (
     get_chat_by_conversation_id, get_conversations,
     delete_conversation,
 )
-from api.sse_stream import sse_simple_generator, sse_chat_generator
+from api.sse_stream import sse_chat_generator
 
 router = APIRouter(prefix="/api/chat", tags=["对话"])
 
@@ -32,9 +32,11 @@ async def chat_stream(
     返回 text/event-stream 格式的流式数据。
 
     事件类型:
-    - reasoning: ReAct 推理步骤
+    - reasoning: ReAct 推理步骤（整行）
+    - reasoning_delta: 模型真实思考的 token 增量（推理模型）
     - answer: 回答文本（逐 Token）
-    - done: 流式结束（含 conversation_id）
+    - usage: 真实 token 用量
+    - done: 流式结束（含 conversation_id 与权威全文）
     - error: 错误信息
     """
     # 新对话自动生成 conversation_id，续接对话沿用已有 ID
@@ -46,7 +48,7 @@ async def chat_stream(
     )
 
     return StreamingResponse(
-        sse_simple_generator(
+        sse_chat_generator(
             user_query=body.message,
             owner_id=user["owner_id"],
             username=user["username"],
@@ -73,18 +75,21 @@ async def chat_stream_public(
     """
     owner_id = user["owner_id"] if user else 0
     username = user["username"] if user else "guest"
+    # 与需登录接口保持一致：新对话也要生成 conversation_id，
+    # 否则这条记录没有分组 ID，历史列表里会散成单条
+    cid = body.conversation_id or str(uuid.uuid4())
 
     logger.info(
         f"[API] 公开流式对话: user={username}, mode={body.agent_mode}"
     )
 
     return StreamingResponse(
-        sse_simple_generator(
+        sse_chat_generator(
             user_query=body.message,
             owner_id=owner_id,
             username=username,
             agent_mode=body.agent_mode,
-            conversation_id=body.conversation_id,
+            conversation_id=cid,
         ),
         media_type="text/event-stream",
         headers={

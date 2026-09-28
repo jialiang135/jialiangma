@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     deepseek_api_key: str = "sk-your-deepseek-api-key-here"
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-pro"
+    # 单次回答的输出 token 上限。**推理模型下这个预算由"思考"和"答案"共享**：
+    # 思考消耗的 token 也算在内（实测某次问答 completion=310 中 reasoning=217）。
+    # 给太小会把答案挤空（max_tokens=32 时 content 直接是空串），
+    # 因此留出充足余量。端点实测接受到 32768。
+    llm_max_tokens: int = 8192
 
     # --- 阿里云 DashScope ---
     dashscope_api_key: str = "sk-your-dashscope-api-key-here"
@@ -162,7 +167,12 @@ validate_security_settings()
 # ========================================
 
 def get_deepseek_llm(temperature: float = 0.3, streaming: bool = True):
-    """获取 DeepSeek V4 Pro 大模型客户端"""
+    """
+    获取 DeepSeek 大模型客户端。
+
+    注意 ``max_tokens`` 对推理模型是"思考 + 答案"的共享预算，详见
+    ``llm_max_tokens`` 的说明。
+    """
     from langchain_deepseek import ChatDeepSeek
 
     return ChatDeepSeek(
@@ -171,17 +181,22 @@ def get_deepseek_llm(temperature: float = 0.3, streaming: bool = True):
         api_base=settings.deepseek_base_url,
         temperature=temperature,
         streaming=streaming,
-        max_tokens=4096,
+        max_tokens=settings.llm_max_tokens,
     )
 
 
 def get_dashscope_embeddings():
-    """获取阿里云 DashScope Embedding 客户端"""
-    from langchain_community.embeddings import DashScopeEmbeddings
+    """
+    获取阿里云 DashScope Embedding 客户端。
+
+    实现放在 core/embeddings.py（自研，不再依赖 langchain-community）：
+    该包在全项目只被用到这一个类，却要拖入整个 legacy 包及其 langchain-classic 依赖。
+    """
+    from core.embeddings import DashScopeEmbeddings
 
     return DashScopeEmbeddings(
         model=settings.embedding_model,
-        dashscope_api_key=settings.dashscope_api_key,
+        api_key=settings.dashscope_api_key,
     )
 
 

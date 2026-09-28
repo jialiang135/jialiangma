@@ -105,11 +105,22 @@ def init_database():
             model TEXT NOT NULL,
             prompt_tokens INTEGER DEFAULT 0,
             completion_tokens INTEGER DEFAULT 0,
+            reasoning_tokens INTEGER DEFAULT 0,
+            cached_tokens INTEGER DEFAULT 0,
             cost_estimate REAL DEFAULT 0.0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (owner_id) REFERENCES users(id)
         )
     """)
+
+    # 兼容旧库：补 reasoning_tokens / cached_tokens 两列
+    # （推理模型的思考 token 与 prompt 缓存命中量，用于成本与效能分析）
+    for col in ("reasoning_tokens", "cached_tokens"):
+        try:
+            cursor.execute(f"SELECT {col} FROM token_usage LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute(f"ALTER TABLE token_usage ADD COLUMN {col} INTEGER DEFAULT 0")
+            logger.info("已为 token_usage 补充列: {}", col)
 
     # 登录尝试记录（用于锁定）
     cursor.execute("""
