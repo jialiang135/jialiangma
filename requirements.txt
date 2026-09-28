@@ -68,6 +68,10 @@ rq>=2.0.0                         # 可选：USE_RQ_QUEUE=true 时才走 RQ，�
 
 # --- 可观测性与调度 ---
 prometheus-fastapi-instrumentator>=7.0.0
+# 链路追踪：只用 api + sdk 手写 span（自动插桩包会与本机 OTLP exporter 版本冲突）。
+# core/telemetry.py 里做了可选导入 —— 没装也能正常跑，只是不产出 trace。
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
 apscheduler>=3.10.0
 psutil>=5.9.0
 

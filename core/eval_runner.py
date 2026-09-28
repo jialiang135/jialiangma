@@ -51,6 +51,7 @@ from core.database import (
     run_async_from_thread,
     update_eval_report,
 )
+from core.telemetry import span
 
 # 判定"如实回答不知道"的关键词。知识库检索为空时，系统提示词要求回答
 # "我的知识库中没有这方面的信息"，这里按同一口径检验。
@@ -282,7 +283,8 @@ def run_eval_task(
             expected = item.get("expected_answer", "") or ""
             category = item.get("category", "")
             try:
-                answer, contexts, _steps = _answer_one_sync(question, owner_id)
+                with span("eval.question", category=category, qid=str(item.get("id", ""))):
+                    answer, contexts, _steps = _answer_one_sync(question, owner_id)
             except Exception as e:
                 logger.error("[Eval] 生成回答失败: {} - {}", question[:40], e)
                 answer, contexts = "", []

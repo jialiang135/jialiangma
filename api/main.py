@@ -36,6 +36,10 @@ async def lifespan(app: FastAPI):
     # 记录主事件循环：APScheduler 的后台线程需要把异步 DB 操作提交回来执行
     from config.settings import close_llm_clients
     from core.database import bind_main_loop, dispose_engine
+    from core.telemetry import setup_telemetry
+
+    # 链路追踪（未安装 OTel 时自动降级为 no-op，不影响启动）
+    setup_telemetry()
 
     bind_main_loop(asyncio.get_running_loop())
 
@@ -67,6 +71,11 @@ async def lifespan(app: FastAPI):
     # 顺序反了的话 httpx 会在事件循环关闭后才被回收，冒出未处理异常
     await close_llm_clients()
     await dispose_engine()
+
+    # flush 未发送的 span（放最后，保证前面的关闭动作也能被追踪到）
+    from core.telemetry import shutdown_telemetry
+
+    shutdown_telemetry()
     # 注意：不要在这里 asyncio.all_tasks() 后逐个 cancel —— 那是把所有任务
     # （含 ASGI 框架自身的门户任务、连接处理任务）都取消掉，会让 TestClient
     # 退出和 uvicorn 优雅关闭抛 CancelledError。未完成的请求交给 uvicorn

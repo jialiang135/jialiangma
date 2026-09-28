@@ -18,6 +18,7 @@ from agent.tools import (
 )
 from config.settings import get_deepseek_llm
 from core.circuit_breaker import CircuitOpenError, llm_circuit_breaker
+from core.telemetry import span
 from rag.retriever import format_context_for_prompt, retrieve
 
 # 问答 Agent 可用工具（5个）
@@ -130,7 +131,8 @@ async def chat_agent_node(state: AgentState) -> dict:
     try:
         # 走熔断器：连续失败到阈值就快速失败，不再反复去撞已经挂掉的 API。
         # 重试与指数退避由熔断器统一负责（注意是 await asyncio.sleep，不阻塞事件循环）。
-        response = await llm_circuit_breaker.call(llm_with_tools.ainvoke, messages)
+        with span("llm.invoke", iteration=iteration, message_count=len(messages)):
+            response = await llm_circuit_breaker.call(llm_with_tools.ainvoke, messages)
 
         # 检查是否有工具调用
         if response.tool_calls and iteration < 5:
@@ -254,7 +256,8 @@ async def retrieve_before_chat(state: AgentState) -> dict:
     # retrieve 内部是同步的：一次 Chroma 向量扫描 + 两次 DashScope 同步 HTTP
     # （查询向量化 + rerank）。直接在 async 节点里调用会**卡住整个事件循环**，
     # 同进程的所有请求一起排队 —— 这是全系统最主要的阻塞源，必须丢线程池。
-    result = await asyncio.to_thread(retrieve, query=user_query, owner_id=1, top_k_rerank=5)
+    with span("retrieve", query_length=len(user_query), owner_id=1):
+        result = await asyncio.to_thread(retrieve, query=user_query, owner_id=1, top_k_rerank=5)
 
     if not result["documents"]:
         logger.info("[ChatAgent] 知识库检索为空，将使用兜底回复")

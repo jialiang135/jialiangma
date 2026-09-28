@@ -112,6 +112,10 @@ services:
   prometheus:
     image: prom/prometheus:v2.55.0
     container_name: personal-agent-prometheus
+    # 默认不启动：Prometheus + Grafana 常驻会占 400~500MB 内存，
+    # 小内存机器上不值得。需要看监控时显式拉起：
+    #   docker compose --profile monitoring up -d
+    profiles: ["monitoring"]
     expose:
       - "9090"
     volumes:
@@ -137,6 +141,7 @@ services:
   grafana:
     image: grafana/grafana:11.2.0
     container_name: personal-agent-grafana
+    profiles: ["monitoring"]
     expose:
       - "3000"
     environment:

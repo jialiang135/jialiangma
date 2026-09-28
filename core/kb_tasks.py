@@ -32,6 +32,7 @@ from core.database import (
     update_upload_task,
 )
 from core.paths import safe_join
+from core.telemetry import span
 
 
 def compute_file_hash(filepath: str) -> str:
@@ -56,11 +57,20 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
     file_size = os.path.getsize(file_path)
     upload_dir = str(settings.resolve_path(settings.upload_dir))
 
-    docs = load_documents_from_paths([file_path], upload_dir)
+    # 解析（PDF/OCR 可能是分钟级）与分块各记一个 span，便于定位慢在哪一步
+    with span("document.parse", filename=filename, file_size=file_size):
+        docs = load_documents_from_paths([file_path], upload_dir)
     if not docs or not docs[0].get("content", "").strip():
         return {"success": False, "error": "无法解析文件内容"}
 
-    processed = process_documents_batch(docs, use_semantic_splitter=settings.use_semantic_splitter)
+    with span(
+        "document.split",
+        filename=filename,
+        semantic_splitter=settings.use_semantic_splitter,
+    ):
+        processed = process_documents_batch(
+            docs, use_semantic_splitter=settings.use_semantic_splitter
+        )
     if not processed or not processed[0].get("chunks"):
         return {"success": False, "error": "内容为空"}
 
@@ -85,7 +95,9 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
         {"owner_id": owner_id, "source": filename, "chunk_idx": i, "filepath": dest_path}
         for i in range(len(chunks))
     ]
-    add_documents(chunks, metadatas)
+    # 向量化是最慢的一步（每批一次 DashScope HTTP），单独计时
+    with span("document.embed", filename=filename, chunks=len(chunks)):
+        add_documents(chunks, metadatas)
 
     file_id = run_async_from_thread(
         insert_file_record(
