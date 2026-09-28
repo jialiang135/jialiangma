@@ -8,6 +8,7 @@ from loguru import logger
 from agent.state import AgentState
 from agent.chat_agent import chat_agent_node, tool_executor_node, retrieve_before_chat
 from agent.manage_agent import manage_agent_node
+from agent.eval_agent import eval_agent_node
 
 
 # ========================================
@@ -17,8 +18,15 @@ from agent.manage_agent import manage_agent_node
 def route_to_agent(state: AgentState) -> str:
     """
     根据 agent_mode 路由到对应的 Agent 节点。
+
+    返回的字符串必须与 add_conditional_edges 的映射表键一致，
+    否则 LangGraph 会抛"无效路径"错误（原实现允许 agent_mode='eval'
+    但映射表里没有 eval 分支，传进来就会崩溃）。
     """
     mode = state.get("agent_mode", "chat")
+    if mode not in ("chat", "manage", "eval"):
+        logger.warning(f"[Router] 未知 agent_mode={mode}，回退到 chat")
+        mode = "chat"
     logger.info(f"[Router] 路由到 {mode} Agent")
     return mode
 
@@ -65,6 +73,7 @@ def create_agent_graph():
     workflow.add_node("chat_agent", chat_agent_node)
     workflow.add_node("tools", tool_executor_node)
     workflow.add_node("manage_agent", manage_agent_node)
+    workflow.add_node("eval_agent", eval_agent_node)
 
     # --- 添加路由节点 ---
     workflow.add_node("router", _router_node)
@@ -79,6 +88,7 @@ def create_agent_graph():
         {
             "chat": "retrieve",     # 先检索再问答
             "manage": "manage_agent",
+            "eval": "eval_agent",
         },
     )
 
@@ -99,8 +109,9 @@ def create_agent_graph():
     # tools → chat_agent (回到循环)
     workflow.add_edge("tools", "chat_agent")
 
-    # --- Manage → END ---
+    # --- Manage / Eval → END ---
     workflow.add_edge("manage_agent", END)
+    workflow.add_edge("eval_agent", END)
 
     # --- 编译 ---
     graph = workflow.compile()

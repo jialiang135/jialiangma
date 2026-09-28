@@ -19,6 +19,7 @@ from api.routes.token_routes import router as token_router
 
 from api.routes.tool_routes import router as tool_router
 from api.routes.admin_routes import router as admin_router
+from api.routes.eval_routes import router as eval_router
 from core.database import init_database, create_admin_user
 from core.auth import hash_password
 from config.settings import settings
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI):
 
     # 记录主事件循环：APScheduler 的后台线程需要把异步 DB 操作提交回来执行
     from core.database import bind_main_loop, dispose_engine, init_database
+    from config.settings import close_llm_clients
 
     bind_main_loop(asyncio.get_running_loop())
 
@@ -63,6 +65,9 @@ async def lifespan(app: FastAPI):
     # 不等待长时间任务跑完（比如正在做 OCR 的文档），避免关闭卡住；
     # 未完成的任务会留在 upload_tasks 里，下次启动可见
     async_queue.shutdown(wait=False)
+    # 先关 LLM 的 HTTP 客户端，再释放数据库引擎：
+    # 顺序反了的话 httpx 会在事件循环关闭后才被回收，冒出未处理异常
+    await close_llm_clients()
     await dispose_engine()
     # 注意：不要在这里 asyncio.all_tasks() 后逐个 cancel —— 那是把所有任务
     # （含 ASGI 框架自身的门户任务、连接处理任务）都取消掉，会让 TestClient
@@ -163,6 +168,7 @@ def create_app() -> FastAPI:
 
     app.include_router(tool_router)
     app.include_router(admin_router)
+    app.include_router(eval_router)
 
     # --- 健康检查 ---
     @app.get("/api/health")

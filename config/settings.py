@@ -170,23 +170,56 @@ validate_security_settings()
 # 模型客户端封装
 # ========================================
 
+# LLM 客户端缓存。
+# 必须缓存：ChatDeepSeek 内部持有一个 httpx 异步客户端，而原实现每次调用都
+# 新建一个 —— 每个对话请求都会新建客户端且从不关闭，既是连接/内存泄漏，
+# 退出时还会抛出 "Event loop is closed" 的未处理异常（close 发生在循环关闭后）。
+_llm_cache: dict[tuple, object] = {}
+
+
 def get_deepseek_llm(temperature: float = 0.3, streaming: bool = True):
     """
-    获取 DeepSeek 大模型客户端。
+    获取 DeepSeek 大模型客户端（按参数缓存，同一进程内复用）。
 
     注意 ``max_tokens`` 对推理模型是"思考 + 答案"的共享预算，详见
     ``llm_max_tokens`` 的说明。
     """
-    from langchain_deepseek import ChatDeepSeek
+    key = (temperature, streaming)
+    cached = _llm_cache.get(key)
+    if cached is None:
+        from langchain_deepseek import ChatDeepSeek
 
-    return ChatDeepSeek(
-        model=settings.deepseek_model,
-        api_key=settings.deepseek_api_key,
-        api_base=settings.deepseek_base_url,
-        temperature=temperature,
-        streaming=streaming,
-        max_tokens=settings.llm_max_tokens,
-    )
+        cached = ChatDeepSeek(
+            model=settings.deepseek_model,
+            api_key=settings.deepseek_api_key,
+            api_base=settings.deepseek_base_url,
+            temperature=temperature,
+            streaming=streaming,
+            max_tokens=settings.llm_max_tokens,
+        )
+        _llm_cache[key] = cached
+    return cached
+
+
+async def close_llm_clients() -> None:
+    """
+    关闭缓存的 LLM 客户端（应用退出时调用）。
+
+    不显式关闭的话，httpx 客户端会在事件循环关闭后才被回收，
+    从而抛出 "Task exception was never retrieved: Event loop is closed"。
+    """
+    for llm in list(_llm_cache.values()):
+        for attr in ("root_async_client", "async_client", "root_client", "client"):
+            client = getattr(llm, attr, None)
+            if client is None or not hasattr(client, "close"):
+                continue
+            try:
+                result = client.close()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception as e:  # noqa: BLE001 - 退出清理失败不该影响关闭流程
+                logger.debug("关闭 LLM 客户端 {} 失败: {}", attr, e)
+    _llm_cache.clear()
 
 
 def get_dashscope_embeddings():

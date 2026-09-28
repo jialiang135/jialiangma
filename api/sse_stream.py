@@ -47,7 +47,7 @@ from core.llm import extract_reasoning_delta, extract_usage
 MAX_STORED_THINKING = 8000
 
 # 产出最终答案的节点（它们的输出里带 final_answer）
-_FINAL_ANSWER_NODES = ("chat_agent", "manage_agent")
+_FINAL_ANSWER_NODES = ("chat_agent", "manage_agent", "eval_agent")
 
 
 def _initial_state(
