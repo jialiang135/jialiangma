@@ -60,7 +60,9 @@ def sample_pdf():
 class TestConfig:
     def test_settings_load(self):
         from config.settings import settings
-        assert settings.deepseek_model == "deepseek-v4-pro"
+        # 不断言具体模型名：模型由 .env 决定，写死会让"换模型"变成测试失败
+        assert settings.deepseek_model
+        assert settings.deepseek_base_url.startswith("http")
         assert settings.embedding_model == "text-embedding-v4"
         assert settings.port > 0
         assert settings.admin_username
@@ -72,9 +74,9 @@ class TestConfig:
         assert str(PROJECT_ROOT) in str(p)
 
     def test_get_llm(self):
-        from config.settings import get_deepseek_llm
+        from config.settings import get_deepseek_llm, settings
         llm = get_deepseek_llm(temperature=0.0, streaming=False)
-        assert llm.model_name == "deepseek-v4-pro"
+        assert llm.model_name == settings.deepseek_model
         assert llm.temperature == 0.0
 
     def test_get_embeddings(self):

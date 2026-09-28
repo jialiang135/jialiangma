@@ -85,7 +85,7 @@ if __name__ == "__main__":
                 f"   👉 本机访问:  http://127.0.0.1:{self.config.port}",
                 *([f"   👉 手机访问:  http://{lan_ip}:{self.config.port}  (同WiFi下)"] if lan_ip else []),
                 f"   📖 API 文档:  http://127.0.0.1:{self.config.port}/api/docs",
-                f"   🔑 管理员:    {settings.admin_username} / {settings.admin_password}",
+                f"   🔑 管理员:    {settings.admin_username}  （密码见 config/.env 的 ADMIN_PASSWORD）",
                 "=" * 60,
             ]
             for line in lines:

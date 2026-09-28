@@ -19,6 +19,7 @@ from core.database import (
     get_all_chat_logs, get_all_files, get_global_stats,
     get_user_by_id,
 )
+from core.paths import remove_within
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 DB_PATH = PROJECT_ROOT / "assets" / "personal_agent.db"
@@ -122,11 +123,9 @@ async def remove_user(
         "SELECT filepath FROM files WHERE owner_id = ?", (user_id,)
     ).fetchall()
     for row in file_rows:
-        try:
-            if os.path.exists(row["filepath"]):
-                os.remove(row["filepath"])
-        except OSError:
-            pass
+        # remove_within 保证只删 upload_dir 内的文件：
+        # files.filepath 可能存着早期版本未净化文件名时写入的越界路径
+        remove_within(upload_dir, row["filepath"])
     conn.close()
 
     counts = delete_user_cascade(user_id)
@@ -287,7 +286,8 @@ async def get_queue_status(current_user: dict = Depends(require_admin)):
     return {
         "success": True,
         "queue_size": async_queue.get_queue_size(),
-        "redis_available": async_queue._rq_queue is not None,
+        "backend": async_queue.backend_name(),   # "thread_pool" | "rq"
+        "healthy": async_queue.health_check(),
     }
 
 

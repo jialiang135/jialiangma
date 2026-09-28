@@ -10,8 +10,33 @@ from loguru import logger
 
 from config.settings import settings
 
-security_scheme = HTTPBearer()
+security_scheme = HTTPBearer(auto_error=False)
 optional_security = HTTPBearer(auto_error=False)
+
+# 用于「用户不存在」时消耗与真实 bcrypt 校验相当的时间。
+# bcrypt 约 100~300ms，若用户不存在时立刻返回，攻击者能通过响应耗时区分
+# "用户名不存在"与"密码错误"，从而枚举出有效用户名。
+_DUMMY_HASH = bcrypt.hashpw(b"timing-equalization-dummy", bcrypt.gensalt()).decode()
+
+
+def dummy_verify() -> None:
+    """恒定耗时占位校验，供「用户不存在」分支调用，防止用户名枚举。"""
+    bcrypt.checkpw(b"timing-equalization-dummy", _DUMMY_HASH.encode())
+
+
+def unauthorized(detail: str) -> HTTPException:
+    """
+    构造 401 未认证响应。
+
+    注意 FastAPI 的 ``HTTPBearer()`` 默认 ``auto_error=True``，缺 Authorization
+    头时抛的是 **403 Forbidden**，与 HTTP 语义（应 401，因为根本没提供凭据）
+    和新版客户端预期都不符。这里统一改成 401 并带上 ``WWW-Authenticate``。
+    """
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 # ========================================
@@ -90,15 +115,9 @@ def verify_token(token: str) -> dict:
         )
         return payload
     except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token 已过期，请重新登录",
-        )
+        raise unauthorized("Token 已过期，请重新登录")
     except jwt.InvalidTokenError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的 Token",
-        )
+        raise unauthorized("无效的 Token")
 
 
 # ========================================
@@ -106,13 +125,18 @@ def verify_token(token: str) -> dict:
 # ========================================
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security_scheme),
 ) -> dict:
     """
     FastAPI 鉴权依赖注入。
     在所有需要登录的 API 路由中注入此依赖即可。
     返回 {"owner_id": int, "username": str, "role": str}
+
+    缺少凭据时返回 401（而非 FastAPI 默认的 403）。
     """
+    if credentials is None:
+        raise unauthorized("缺少 Authorization 头")
+
     payload = verify_token(credentials.credentials)
     owner_id = int(payload.get("sub"))
     username = payload.get("username", "")

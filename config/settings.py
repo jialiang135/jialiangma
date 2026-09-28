@@ -51,9 +51,27 @@ class Settings(BaseSettings):
     password_min_length: int = 8  # 密码最小长度
     max_login_attempts: int = 5  # 最大登录失败次数
     login_lockout_minutes: int = 30  # 登录锁定时间（分钟）
+    trust_proxy_headers: bool = True  # 是否信任 X-Forwarded-For / X-Real-IP（部署在反向代理后时为 True）
+    # 允许以默认密钥/口令启动。仅供本地开发与 CI 使用，生产必须为 False
+    allow_insecure_defaults: bool = False
+
+    # --- 上传限制 ---
+    max_upload_size_mb: int = 50  # 单文件大小上限（须小于 nginx client_max_body_size）
+
+    # --- 访问控制 ---
+    # 是否允许公开注册。私有知识库场景默认关闭：注册后虽拿不到 owner_id=1 的知识库，
+    # 但能调用 LLM，公网部署下等于把 API 额度开放给任意人。
+    allow_registration: bool = False
 
     # --- Redis（会话缓存 + 向量缓存 + 异步队列）---
     redis_url: str = "redis://localhost:6379/0"
+
+    # --- 异步任务队列 ---
+    # 默认用进程内线程池：单机部署下 RQ 需要额外 worker 进程，且对 Redis
+    # 版本有要求（RQ 2.x 需 Redis >= 5），收益为零而故障面很大。
+    # 需要跨进程/横向扩展时再打开，并务必部署独立 worker。
+    use_rq_queue: bool = False
+    worker_threads: int = 4  # 线程池并发数（文档解析 + 向量化任务）
 
     # --- 文档处理 ---
     chunk_size: int = 1000
@@ -92,6 +110,51 @@ logger.add(
     encoding="utf-8",
     format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
 )
+
+
+# ========================================
+# 启动期安全校验
+# ========================================
+
+# 代码仓库里的默认值 —— 一旦原样用于生产，等于把密钥公开在 GitHub 上
+_INSECURE_DEFAULTS = {
+    "jwt_secret_key": "personal-agent-default-jwt-secret-change-in-production-env",
+    "admin_password": "admin123456",
+}
+
+
+def validate_security_settings() -> list[str]:
+    """
+    检查是否仍在使用仓库内置的默认密钥/口令。
+
+    Returns:
+        仍在使用的字段名列表（空列表表示全部已改）。
+
+    Raises:
+        RuntimeError: 使用了默认值且未显式允许（``ALLOW_INSECURE_DEFAULTS=true``）。
+    """
+    insecure = [k for k, v in _INSECURE_DEFAULTS.items() if getattr(settings, k) == v]
+    if not insecure:
+        return []
+
+    if settings.allow_insecure_defaults:
+        logger.warning(
+            "⚠️ 正在使用默认的 {} —— 仅允许用于本地开发/CI，请勿部署到公网",
+            "、".join(insecure),
+        )
+        return insecure
+
+    raise RuntimeError(
+        "检测到未修改的默认安全配置: "
+        + "、".join(insecure)
+        + "\n这些值来自代码仓库，任何人可见，等同于没有保护。"
+        "\n请在 config/.env 中改为随机值（例如 JWT_SECRET_KEY 用 "
+        "`python -c \"import secrets;print(secrets.token_urlsafe(48))\"` 生成）。"
+        "\n本地开发/CI 可设置 ALLOW_INSECURE_DEFAULTS=true 跳过此检查。"
+    )
+
+
+validate_security_settings()
 
 
 # ========================================

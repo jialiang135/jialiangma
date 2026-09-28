@@ -26,6 +26,7 @@ from core.database import (
     delete_all_file_records,
     update_file_chunk_count,
 )
+from core.paths import safe_join, remove_within
 
 
 async def manage_agent_node(state: AgentState) -> dict:
@@ -107,7 +108,9 @@ async def _handle_upload(state: AgentState, owner_id: int) -> tuple[str, list]:
             reasoning.append(f"✂️ 文本分块: {len(chunks)} 块")
 
             # Step 3: 复制文件到持久化目录
-            dest_path = os.path.join(upload_dir, filename)
+            # 用 safe_join 而非裸 os.path.join：Path(filepath).name 在 Linux 上
+            # 不把反斜杠当分隔符，"..\\..\\x" 会被原样拼进目标路径
+            dest_path = str(safe_join(upload_dir, filename))
             if filepath != dest_path:
                 shutil.copy2(filepath, dest_path)
 
@@ -219,10 +222,11 @@ async def _handle_delete(state: AgentState, owner_id: int) -> tuple[str, list]:
     # 从向量库删除
     deleted_chunks = delete_by_file(filename, owner_id)
 
-    # 从文件系统删除
+    # 从文件系统删除（走 remove_within，库里的历史路径可能越界）
+    upload_dir = str(settings.resolve_path(settings.upload_dir))
     filepath = file_record["filepath"]
-    if os.path.exists(filepath):
-        os.remove(filepath)
+    if not remove_within(upload_dir, filepath):
+        logger.warning("[ManageAgent] 磁盘文件未删除（越界或不存在）: {}", filepath)
 
     # 从数据库删除
     delete_file_record(file_id, owner_id)

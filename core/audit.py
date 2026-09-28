@@ -77,11 +77,10 @@ class AuditMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         start = time.time()
 
-        # 提取客户端 IP
-        ip = request.client.host if request.client else "unknown"
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            ip = forwarded.split(",")[0].strip()
+        # 提取客户端 IP（统一走 core.net，避免各处重复实现取错段）
+        from core.net import client_ip
+
+        ip = client_ip(request)
 
         # 提取用户信息
         user_id = None

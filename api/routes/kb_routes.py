@@ -21,12 +21,28 @@ from core.database import (
     insert_file_record,
     update_file_chunk_count,
 )
+from core.paths import safe_filename, safe_join, remove_within
 from core.async_queue import async_queue
 from config.settings import settings, PROJECT_ROOT
+from rag.document_loader import SUPPORTED_EXTENSIONS
 
 DB_PATH = PROJECT_ROOT / "assets" / "personal_agent.db"
 
 router = APIRouter(prefix="/api/kb", tags=["知识库"])
+
+# 允许上传的扩展名 —— 直接取自文档加载器白名单，保持单一真相源。
+# loader 内部对 .zip 走特殊分支（load_zip），所以要单独并进来。
+ALLOWED_UPLOAD_EXTENSIONS = frozenset(SUPPORTED_EXTENSIONS) | {".zip"}
+
+# 用于「Content-Type 与扩展名是否明显不符」的告警（仅图片/PDF 这类明确的家族）
+_MIME_BY_EXT = {
+    ".pdf": "application/pdf",
+    ".png": "image/",
+    ".jpg": "image/",
+    ".jpeg": "image/",
+    ".bmp": "image/",
+    ".tiff": "image/",
+}
 
 
 # ─── 辅助函数 ───
@@ -35,6 +51,91 @@ def _get_conn():
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _validate_upload(file: UploadFile) -> tuple[str | None, str | None]:
+    """
+    校验单个上传文件。
+
+    Returns:
+        ``(净化后的文件名, 错误原因)`` —— 两者恰有一个为 None。
+    """
+    raw_name = file.filename or ""
+
+    # 1. 文件名净化 —— 路径穿越的唯一防线，必须最先做
+    clean = safe_filename(raw_name, fallback="")
+    if not clean:
+        return None, f"文件名不合法: {raw_name!r}"
+
+    # 2. 扩展名白名单：不合规在入口就拒绝，而不是落盘后等解析任务失败
+    ext = Path(clean).suffix.lower()
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        return None, f"不支持的文件格式: {ext or '(无扩展名)'}"
+
+    # 3. 大小上限（file.size 由 multipart 解析器填入；落盘时还会再兜一次）
+    if file.size is not None and file.size > settings.max_upload_size_mb * 1024 * 1024:
+        return None, f"文件超过 {settings.max_upload_size_mb}MB 上限"
+
+    # 4. Content-Type 与扩展名明显不符时告警（不拦截，理由见函数说明）
+    _warn_on_mime_mismatch(clean, file.content_type)
+
+    return clean, None
+
+
+def _warn_on_mime_mismatch(filename: str, content_type: str | None) -> None:
+    """
+    声明的 Content-Type 与扩展名明显不符时记告警，但**不拦截**。
+
+    不硬拦截的原因：Content-Type 完全由客户端决定且各家差异很大
+    （``.md`` 可能是 ``text/markdown`` / ``text/plain`` /
+    ``application/octet-stream``），硬拦截会误伤正常上传。真正的类型安全
+    由 document_loader 按扩展名分派解析器来保证。
+    """
+    if not content_type:
+        return
+    expected = _MIME_BY_EXT.get(Path(filename).suffix.lower())
+    if expected and not content_type.lower().startswith(expected):
+        logger.warning(
+            "上传 Content-Type 与扩展名不符: {} 声明={} 预期前缀={}",
+            filename,
+            content_type,
+            expected,
+        )
+
+
+async def _spool_to_temp(file: UploadFile, suffix: str, max_bytes: int) -> tuple[str, int]:
+    """
+    分块把上传内容写入临时文件，返回 ``(临时文件路径, 字节数)``。
+
+    不用 ``await file.read()`` 一次性读入内存：那样单个大文件就会整份驻留内存，
+    批量上传时内存放大 N 倍。这里改为 1MB 分块，并在累积过程中硬性拦截超限
+    （不依赖客户端的 Content-Length，避免被伪造绕过）。
+    """
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp_path = tmp.name
+    size = 0
+    try:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"文件超过 {settings.max_upload_size_mb}MB 上限",
+                )
+            tmp.write(chunk)
+        tmp.close()
+        return tmp_path, size
+    except BaseException:
+        # 超限 / 客户端断开 / 磁盘错误：都不要留下半成品临时文件
+        tmp.close()
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _compute_file_hash(filepath: str) -> str:
@@ -78,8 +179,8 @@ def _process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
 
     chunks = processed[0]["chunks"]
 
-    # 持久化
-    dest_path = os.path.join(upload_dir, filename)
+    # 持久化：文件名已在入口净化过，这里再用 safe_join 做一次纵深防御
+    dest_path = str(safe_join(upload_dir, filename))
     shutil.copy2(file_path, dest_path)
 
     # 去重检查
@@ -196,58 +297,104 @@ async def upload_files(
     """
     批量上传文件（异步处理 + 文件去重 + 进度追踪）。
     返回 task_ids 列表，前端轮询 GET /api/kb/upload-status/{task_id}
+
+    校验分两层：文件名/扩展名/大小在**入口**就拒绝（返回 400/413），
+    内容能否解析交给异步任务的 status 字段。
     """
     if not files:
-        raise HTTPException(status_code=400, detail="请选择要上传的文件")
+        raise HTTPException(status_code=400, detail="请选择要勾选的文件")
 
     owner_id = user["owner_id"]
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
     conn = _get_conn()
     task_ids = []
     skipped_already = []
+    rejected = []
 
-    for file in files:
-        filename = file.filename
-        file_size = 0
-        try:
-            content = await file.read()
-            file_size = len(content)
-
-            # 写入临时文件
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix) as tmp:
-                tmp.write(content)
-                tmp_path = tmp.name
-
-            # 快速 hash 去重（同步检查，快）
-            file_hash = _compute_file_hash(tmp_path)
-            existing = _check_file_exists(owner_id, file_hash, filename)
-            if existing:
-                skipped_already.append(f"{filename}（已存在 # {existing['id']}）")
-                os.unlink(tmp_path)
+    try:
+        for file in files:
+            # ── 1. 入口校验：不合规的文件直接记录原因，不落盘、不建任务 ──
+            filename, err = _validate_upload(file)
+            if err:
+                rejected.append({"filename": file.filename, "reason": err})
+                logger.warning("[KB] 拒绝上传: {} - {}", file.filename, err)
                 continue
 
-            # 创建任务记录
-            task_id = str(uuid.uuid4())[:12]
-            conn.execute(
-                "INSERT INTO upload_tasks (task_id, owner_id, filename, file_size, status) VALUES (?, ?, ?, ?, 'pending')",
-                (task_id, owner_id, filename, file_size),
-            )
-            conn.commit()
-            task_ids.append(task_id)
+            tmp_path = ""
+            task_id = None
+            try:
+                # ── 2. 分块落盘（带超限硬拦截） ──
+                tmp_path, file_size = await _spool_to_temp(
+                    file, Path(filename).suffix, max_bytes
+                )
 
-            # 提交异步处理
-            async_queue.enqueue(
-                _process_file_async,
-                task_id, tmp_path, filename, owner_id,
-            )
+                # ── 3. 快速 hash 去重 ──
+                file_hash = _compute_file_hash(tmp_path)
+                existing = _check_file_exists(owner_id, file_hash, filename)
+                if existing:
+                    skipped_already.append(f"{filename}（已存在 # {existing['id']}）")
+                    os.unlink(tmp_path)
+                    continue
 
-        except Exception as e:
-            logger.error(f"[KB] 文件提交失败: {filename} - {e}")
+                # ── 4. 建任务记录 ──
+                task_id = str(uuid.uuid4())[:12]
+                conn.execute(
+                    "INSERT INTO upload_tasks (task_id, owner_id, filename, file_size, status) VALUES (?, ?, ?, ?, 'pending')",
+                    (task_id, owner_id, filename, file_size),
+                )
+                conn.commit()
 
-    conn.close()
+                # ── 5. 提交异步处理 ──
+                # 必须先确认提交成功再计入 task_ids。反过来的话，入队失败时
+                # 同一个文件会同时出现在 task_ids 和 rejected 里（自相矛盾），
+                # 前端还会去轮询一个永远不会推进的任务。
+                async_queue.enqueue(
+                    _process_file_async,
+                    task_id, tmp_path, filename, owner_id,
+                )
+                task_ids.append(task_id)
+
+            except HTTPException as e:
+                # 超限等客户端错误：清理临时文件后记为 rejected，而不是 500
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                rejected.append({"filename": filename, "reason": str(e.detail)})
+                logger.warning("[KB] 拒绝上传: {} - {}", filename, e.detail)
+            except Exception as e:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                # 已经把任务行写进库了，但没能提交给队列 —— 标记为失败，
+                # 否则前端会一直轮询到一个永久 pending 的任务
+                if task_id:
+                    try:
+                        conn.execute(
+                            "UPDATE upload_tasks SET status='failed', progress=100, error=?, "
+                            "updated_at=CURRENT_TIMESTAMP WHERE task_id=?",
+                            (f"任务提交失败: {str(e)[:200]}", task_id),
+                        )
+                        conn.commit()
+                    except Exception as db_err:
+                        logger.error("[KB] 标记任务失败也失败了: {}", db_err)
+                rejected.append({"filename": filename, "reason": f"提交失败: {str(e)[:100]}"})
+                logger.error(f"[KB] 文件提交失败: {filename} - {e}")
+    finally:
+        conn.close()
 
     msg = f"已提交 {len(task_ids)} 个文件异步处理"
     if skipped_already:
         msg += f"（{len(skipped_already)} 个已存在跳过）"
+    if rejected:
+        msg += f"（{len(rejected)} 个被拒绝）"
+
+    # 全部被拒 → 明确返回 400，让前端能直接提示原因
+    if not task_ids and not skipped_already and rejected:
+        raise HTTPException(status_code=400, detail={"message": msg, "rejected": rejected})
 
     return APIResponse(
         success=True,
@@ -255,6 +402,7 @@ async def upload_files(
         data={
             "task_ids": task_ids,
             "skipped": skipped_already,
+            "rejected": rejected,
             "total_submitted": len(task_ids),
         },
     )
@@ -300,8 +448,13 @@ async def delete_file(file_id: int, user: dict = Depends(require_admin)):
     filepath = file_record["filepath"]
 
     deleted_chunks = delete_by_file(filename, owner_id)
-    if os.path.exists(filepath):
-        os.remove(filepath)
+
+    # 走 remove_within 而非直接 os.remove：库里可能存在早期版本写入的
+    # 穿越路径（那时文件名没净化），直接删就是任意文件删除。
+    upload_dir = str(settings.resolve_path(settings.upload_dir))
+    if not remove_within(upload_dir, filepath):
+        logger.warning("[KB] 磁盘文件未删除（越界或不存在）: {}", filepath)
+
     delete_file_record(file_id, owner_id)
     logger.info(f"[KB] 删除文件: {filename}, {deleted_chunks} 块")
 

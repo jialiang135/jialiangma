@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 import time
+import uuid
 from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from api.routes.auth_routes import router as auth_router
@@ -49,17 +49,16 @@ async def lifespan(app: FastAPI):
     yield
     # 优雅关闭
     from core.scheduler import stop_scheduler
-    stop_scheduler()
+    from core.async_queue import async_queue
 
-    import asyncio
-    try:
-        pending = asyncio.all_tasks()
-        for task in pending:
-            if task is not asyncio.current_task():
-                task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-    except Exception:
-        pass
+    stop_scheduler()
+    # 不等待长时间任务跑完（比如正在做 OCR 的文档），避免关闭卡住；
+    # 未完成的任务会留在 upload_tasks 里，下次启动可见
+    async_queue.shutdown(wait=False)
+    # 注意：不要在这里 asyncio.all_tasks() 后逐个 cancel —— 那是把所有任务
+    # （含 ASGI 框架自身的门户任务、连接处理任务）都取消掉，会让 TestClient
+    # 退出和 uvicorn 优雅关闭抛 CancelledError。未完成的请求交给 uvicorn
+    # 自己的优雅关闭流程处理。
     logger.info("系统关闭")
 
 
@@ -76,21 +75,37 @@ def create_app() -> FastAPI:
 
     # --- CORS 中间件 ---
     from config.settings import settings as app_settings
+    from core.net import client_ip
+
     cors_origins = app_settings.cors_origins
-    if cors_origins == "*":
+    if cors_origins.strip() == "*":
         cors_origins_list = ["*"]
+        # 浏览器规范：`Access-Control-Allow-Origin: *` 与 credentials 不能共存。
+        # 两者同时设置时，带凭据的跨域请求会被浏览器直接拒绝 —— 配置看似"全开放"，
+        # 实际效果是"全都不能用"。这里显式关掉 credentials 让语义自洽。
+        allow_credentials = False
+        logger.warning(
+            "CORS 允许所有来源且已关闭 credentials；生产环境请把 CORS_ORIGINS 设为具体域名"
+        )
     else:
         cors_origins_list = [o.strip() for o in cors_origins.split(",") if o.strip()]
+        allow_credentials = True
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins_list,
-        allow_credentials=True,
+        allow_credentials=allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    # --- 请求限流（IP 级别，每分钟 N 次） ---
-    limiter = Limiter(key_func=get_remote_address, default_limits=[f"{app_settings.rate_limit_per_minute}/minute"])
+    # --- 请求限流（真实客户端 IP 级别，每分钟 N 次） ---
+    # 不能用 slowapi 默认的 get_remote_address：它取 request.client.host，
+    # 经 Nginx 反代后拿到的是代理容器 IP，会让全站共享一个计数器、限流实际失效。
+    limiter = Limiter(
+        key_func=client_ip,
+        default_limits=[f"{app_settings.rate_limit_per_minute}/minute"],
+    )
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -114,12 +129,18 @@ def create_app() -> FastAPI:
     # --- 全局异常处理 ---
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
-        logger.error(f"未处理的异常: {request.method} {request.url.path} - {exc}")
+        # 把内部异常细节回传给客户端会泄露实现信息（文件路径、SQL、依赖版本等），
+        # 因此只回一个 trace_id，细节写日志，便于用户报错时对齐。
+        trace_id = uuid.uuid4().hex[:12]
+        logger.opt(exception=exc).error(
+            "未处理的异常 [trace={}] {} {}", trace_id, request.method, request.url.path
+        )
         return JSONResponse(
             status_code=500,
             content={
                 "success": False,
-                "message": f"服务器内部错误: {str(exc)[:500]}",
+                "message": "服务器内部错误，请稍后重试",
+                "trace_id": trace_id,
                 "data": None,
             },
         )

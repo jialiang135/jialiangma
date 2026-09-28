@@ -1,0 +1,44 @@
+fix(security): Phase 0 安全修复 — 路径穿越/上传校验/默认凭据/鉴权语义
+
+路径穿越（原可任意文件写 + 任意文件删）:
+- 新增 core/paths.py: safe_filename / ensure_within / safe_join / remove_within
+- kb_routes: 上传文件名净化 + 落盘包含性校验；删除走 remove_within
+- manage_agent: 同样两处修复
+- admin_routes: 删除用户时清理文件走 remove_within
+- 注意正确行为是"净化成安全 basename"而非拒绝，断言的不变量是"不越界写"
+
+上传校验:
+- 扩展名白名单（复用 document_loader.SUPPORTED_EXTENSIONS 作单一真相源）
+- 单文件大小上限 MAX_UPLOAD_SIZE_MB=50，分块落盘 + 累积硬拦截
+- 不再 await file.read() 一次性读入内存
+- Content-Type 与扩展名不符时告警（不硬拦截，避免误伤正常上传）
+
+凭据与访问控制:
+- 启动期校验默认密钥/口令，未修改则拒绝启动（ALLOW_INSECURE_DEFAULTS 逃生开关）
+- 启动日志不再打印明文管理员密码
+- 删除"凭配置口令自动建号"的明文后门（绕过哈希/失败计数/审计）
+- 登录时用户不存在走恒定耗时 bcrypt 占位校验，防用户名枚举
+- 公开注册默认关闭（ALLOW_REGISTRATION=false）
+- CORS: `*` 与 credentials 不再并存（浏览器规范下二者互斥，原先等于全都不能用）
+
+鉴权语义:
+- HTTPBearer(auto_error=False) → 缺 token 返回 401 + WWW-Authenticate（原先 403）
+- 一并修正 4 个因此失败的测试断言
+
+异步队列（原先上传功能在两种环境下都是坏的）:
+- 根因1: 本机 Redis 3.2.100 不支持多字段 HSET，RQ 入队对所有上传都失败
+- 根因2: Docker 只起 FastAPI 无 worker，任务入队后永远 pending
+- 改为默认有界 ThreadPoolExecutor；RQ 改显式 opt-in 并做能力探测
+- enqueue 失败抛 QueueUnavailableError，不再吞异常假装已提交
+- 修复同一文件同时出现在 task_ids 与 rejected 的矛盾：先确认入队成功再计入
+
+其他:
+- 限流键改用真实客户端 IP（X-Real-IP → XFF 末段），原先经 Nginx 后全站共享一个桶
+- 审计日志 IP 同样修正（原先取 XFF 首段，客户端可伪造）
+- 全局异常不再回传 str(exc)，改 trace_id + 日志
+- lifespan 不再 cancel 所有 asyncio 任务（会让关闭抛 CancelledError）
+- 前端 marked 输出经 DOMPurify 白名单净化后再 v-html（防文档内容 XSS）
+
+验证: 38 项安全检查通过；测试由 8 红降为 4 红（剩余属 Phase 4 eval 重建范围）
+
+Co-Authored-By: Claude Code <noreply@anthropic.com>

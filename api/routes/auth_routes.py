@@ -5,9 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from loguru import logger
 
 from core.schemas import UserLogin, UserRegister, TokenResponse, APIResponse
-from core.auth import verify_password, create_access_token, hash_password, get_current_user, require_admin, validate_password_strength
-from core.database import get_user_by_username, get_user_by_id, create_admin_user, create_user, check_login_locked, record_login_attempt
+from core.auth import (
+    verify_password, create_access_token, hash_password,
+    get_current_user, require_admin, validate_password_strength, dummy_verify,
+)
+from core.database import get_user_by_username, get_user_by_id, create_user, check_login_locked, record_login_attempt
 from core.audit import log_audit
+from core.net import client_ip
 from config.settings import settings
 
 router = APIRouter(prefix="/api/auth", tags=["鉴权"])
@@ -19,7 +23,7 @@ async def login(body: UserLogin, request: Request):
     管理员登录接口。
     验证用户名密码，返回 JWT Token。
     """
-    ip = request.client.host if request.client else "unknown"
+    ip = client_ip(request)
 
     # 检查登录锁定
     if check_login_locked(body.username):
@@ -33,22 +37,18 @@ async def login(body: UserLogin, request: Request):
 
     user = get_user_by_username(body.username)
 
+    # 管理员账号由启动流程（api/main.py lifespan 里的 create_admin_user）按
+    # config/.env 创建。这里**不再**做"凭配置口令自动建号"——那等于用明文口令
+    # 开了一个后门：绕过 bcrypt 哈希、绕过登录失败计数、绕过审计。
     if not user:
-        # 如果数据库中没有任何用户，且输入匹配配置文件中的管理员凭据，自动创建
-        if (body.username == settings.admin_username
-                and body.password == settings.admin_password):
-            user_id = create_admin_user(
-                body.username,
-                hash_password(body.password),
-            )
-            user = get_user_by_username(body.username)
-            logger.info(f"首次启动，自动创建管理员账号: {body.username}")
-        else:
-            record_login_attempt(body.username, ip, success=False)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="用户名或密码错误",
-            )
+        # 恒定耗时占位校验：否则"用户不存在"会立刻返回，
+        # 攻击者可用响应耗时把有效用户名枚举出来
+        dummy_verify()
+        record_login_attempt(body.username, ip, success=False)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户名或密码错误",
+        )
 
     # 验证密码
     if not verify_password(body.password, user.get("password_hash", "")):
@@ -92,10 +92,19 @@ async def get_current_user_info(
 @router.post("/register", response_model=TokenResponse)
 async def register(body: UserRegister, request: Request):
     """
-    用户注册接口（公开）。
-    注册后自动获得普通用户角色，可直接登录使用。
+    用户注册接口。
+
+    默认**关闭**（``ALLOW_REGISTRATION=false``）：本系统是单管理员私有知识库，
+    公开注册意味着任何人都能拿到 token 去调用 LLM，公网部署下等于把 API 额度
+    开放给任意人。需要开放演示时再显式打开。
     """
-    ip = request.client.host if request.client else "unknown"
+    if not settings.allow_registration:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="本站未开放注册",
+        )
+
+    ip = client_ip(request)
     logger.info(f"注册请求: username={body.username}")
 
     # 密码强度校验

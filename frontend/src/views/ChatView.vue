@@ -139,12 +139,29 @@ import { streamChat, getConversations, getConversation, deleteConversation } fro
 import { useAuthStore } from '../stores/auth.js'
 import TokenStats from '../components/TokenStats.vue'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 
-// 配置 marked：安全的 markdown 渲染（marked v18 使用 .use() 替代废弃的 .setOptions()）
+// 配置 marked。注意：marked v5 起移除了内置的 sanitize 选项，
+// 它现在**不做任何净化**，输出必须自己处理后再交给 v-html。
 marked.use({
   breaks: true,      // 单个换行也转 <br>
   gfm: true,         // GitHub Flavored Markdown（表格、任务列表、删除线等）
 })
+
+// 白名单式净化。
+// 渲染的内容来自两个不可信来源：LLM 输出，以及被检索到的**用户上传文档**——
+// 传一个含 `<img src=x onerror=...>` 的 md，不净化就会在对话区执行脚本。
+// 采用白名单而非黑名单：不在列表里的标签/属性一律丢弃。
+const PURIFY_CONFIG = {
+  ALLOWED_TAGS: [
+    'p', 'br', 'hr', 'strong', 'em', 'del', 'code', 'pre', 'blockquote',
+    'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'table', 'thead', 'tbody', 'tr', 'th', 'td', 'a', 'span',
+  ],
+  ALLOWED_ATTR: ['href', 'title', 'class'],
+  // 只允许安全协议，挡掉 javascript: / data: 这类伪协议
+  ALLOWED_URI_REGEXP: /^(?:https?|mailto):/i,
+}
 
 const auth = useAuthStore()
 const messages = ref([])
@@ -189,7 +206,8 @@ function renderMarkdown(text) {
   if (!text) return ''
   // GFM 表格要求表头行前有空行，LLM 输出经常缺少，自动补齐
   const fixed = text.replace(/([^\n])\n(\|[^\n]+\|\s*\n\|[-| :]+\|)/g, '$1\n\n$2')
-  return marked(fixed)
+  // 净化后再交 v-html（marked 自身不再做净化）
+  return DOMPurify.sanitize(marked(fixed), PURIFY_CONFIG)
 }
 
 
