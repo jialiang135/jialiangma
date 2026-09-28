@@ -1,28 +1,29 @@
 """
 FastAPI 主入口 + 全局中间件
 """
+
+import asyncio
+import time
+import uuid
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
-import asyncio
-import time
-import uuid
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from api.routes.admin_routes import router as admin_router
 from api.routes.auth_routes import router as auth_router
 from api.routes.chat_routes import router as chat_router
+from api.routes.eval_routes import router as eval_router
 from api.routes.kb_routes import router as kb_router
 from api.routes.token_routes import router as token_router
-
 from api.routes.tool_routes import router as tool_router
-from api.routes.admin_routes import router as admin_router
-from api.routes.eval_routes import router as eval_router
-from core.database import init_database, create_admin_user
-from core.auth import hash_password
 from config.settings import settings
+from core.auth import hash_password
+from core.database import create_admin_user, init_database
 
 
 @asynccontextmanager
@@ -33,8 +34,8 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
 
     # 记录主事件循环：APScheduler 的后台线程需要把异步 DB 操作提交回来执行
-    from core.database import bind_main_loop, dispose_engine, init_database
     from config.settings import close_llm_clients
+    from core.database import bind_main_loop, dispose_engine
 
     bind_main_loop(asyncio.get_running_loop())
 
@@ -49,13 +50,14 @@ async def lifespan(app: FastAPI):
 
     # 启动定时任务调度器
     from core.scheduler import start_scheduler
+
     start_scheduler()
 
     logger.info("系统就绪 ✓")
     yield
     # 优雅关闭
-    from core.scheduler import stop_scheduler
     from core.async_queue import async_queue
+    from core.scheduler import stop_scheduler
 
     stop_scheduler()
     # 不等待长时间任务跑完（比如正在做 OCR 的文档），避免关闭卡住；
@@ -126,8 +128,7 @@ def create_app() -> FastAPI:
         response = await call_next(request)
         duration = time.time() - start_time
         logger.info(
-            f"{request.method} {request.url.path} → {response.status_code} "
-            f"({duration:.3f}s)"
+            f"{request.method} {request.url.path} → {response.status_code} ({duration:.3f}s)"
         )
         return response
 
@@ -174,6 +175,7 @@ def create_app() -> FastAPI:
     # Prometheus 指标监控（可选，未安装则跳过）
     try:
         from prometheus_fastapi_instrumentator import Instrumentator
+
         Instrumentator().instrument(app).expose(app, include_in_schema=False)
     except ImportError:
         pass

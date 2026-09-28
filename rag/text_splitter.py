@@ -11,16 +11,16 @@
 3. ``SemanticTextSplitter`` — 自动按结构感知策略分块
 4. ``process_document()`` / ``process_documents_batch()`` — 完整流水线
 """
+
 import re
-from typing import Optional
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from loguru import logger
 
-
 # ====================================================================
 # 清洗
 # ====================================================================
+
 
 def clean_text(text: str) -> str:
     """
@@ -37,7 +37,7 @@ def clean_text(text: str) -> str:
     text = text.replace("\x00", "")
 
     # 移除奇怪的 Unicode 控制字符
-    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', "", text)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", text)
 
     # 规范化空白：多个空格/制表符 → 单个空格
     text = re.sub(r"[ \t]+", " ", text)
@@ -54,6 +54,7 @@ def clean_text(text: str) -> str:
 # ====================================================================
 # 过滤 & 去重
 # ====================================================================
+
 
 def filter_short_chunks(chunks: list[str], min_length: int = 20) -> list[str]:
     """过滤掉太短的文本块（无意义碎片）。"""
@@ -81,6 +82,7 @@ def deduplicate_chunks(chunks: list[str], threshold: float = 0.9) -> list[str]:
 # ====================================================================
 # 结构感知分块函数
 # ====================================================================
+
 
 def split_by_headings(text: str) -> list[str]:
     """
@@ -201,6 +203,7 @@ def split_by_paragraphs(text: str) -> list[str]:
 # SemanticTextSplitter
 # ====================================================================
 
+
 class SemanticTextSplitter:
     """
     语义分块器 —— 按文档结构层次分块。
@@ -313,10 +316,11 @@ class SemanticTextSplitter:
 # 原有接口（完全向后兼容）
 # ====================================================================
 
+
 def create_text_splitter(
     chunk_size: int = 1000,
     chunk_overlap: int = 200,
-    separators: Optional[list[str]] = None,
+    separators: list[str] | None = None,
 ) -> RecursiveCharacterTextSplitter:
     """
     创建语义分块器。
@@ -333,21 +337,21 @@ def create_text_splitter(
     """
     if separators is None:
         separators = [
-            "\n\n\n",   # 大段落分隔
-            "\n\n",     # 段落分隔
-            "\n",       # 换行
-            "。",       # 中文句号
-            "！",       # 中文感叹号
-            "？",       # 中文问号
-            ". ",       # 英文句号
-            "! ",       # 英文感叹号
-            "? ",       # 英文问号
-            "；",       # 中文分号
-            "; ",       # 英文分号
-            "，",       # 中文逗号
-            ", ",       # 英文逗号
-            " ",        # 空格
-            "",         # 最终兜底：逐字符
+            "\n\n\n",  # 大段落分隔
+            "\n\n",  # 段落分隔
+            "\n",  # 换行
+            "。",  # 中文句号
+            "！",  # 中文感叹号
+            "？",  # 中文问号
+            ". ",  # 英文句号
+            "! ",  # 英文感叹号
+            "? ",  # 英文问号
+            "；",  # 中文分号
+            "; ",  # 英文分号
+            "，",  # 中文逗号
+            ", ",  # 英文逗号
+            " ",  # 空格
+            "",  # 最终兜底：逐字符
         ]
 
     return RecursiveCharacterTextSplitter(
@@ -395,14 +399,18 @@ def process_document(
         chunks = splitter.split_text(cleaned)
         logger.info(
             "语义分块完成: {} 块 (chunk_size={}, overlap={})",
-            len(chunks), chunk_size, chunk_overlap,
+            len(chunks),
+            chunk_size,
+            chunk_overlap,
         )
     else:
         splitter = create_text_splitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         chunks = splitter.split_text(cleaned)
         logger.info(
             "递归分块完成: {} 块 (chunk_size={}, overlap={})",
-            len(chunks), chunk_size, chunk_overlap,
+            len(chunks),
+            chunk_size,
+            chunk_overlap,
         )
 
     # 3. 过滤短块
@@ -439,9 +447,11 @@ def process_documents_batch(
             use_semantic_splitter=use_semantic_splitter,
         )
         if chunks:
-            results.append({
-                "filepath": doc["filepath"],
-                "filename": doc["filename"],
-                "chunks": chunks,
-            })
+            results.append(
+                {
+                    "filepath": doc["filepath"],
+                    "filename": doc["filename"],
+                    "chunks": chunks,
+                }
+            )
     return results

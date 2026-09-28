@@ -5,21 +5,23 @@
 CPU/IO 密集的同步工作 —— 统一丢到线程池（``asyncio.to_thread``）执行，
 避免阻塞事件循环。重活的具体实现收在 ``core/kb_tasks``，与上传接口共用一份。
 """
+
 import asyncio
 import os
 from pathlib import Path
+
 from langchain_core.messages import AIMessage
 from loguru import logger
 
 from agent.state import AgentState
 from config.settings import settings
-from core.kb_tasks import process_file_sync, rebuild_knowledge_base
 from core.database import (
-    get_files_by_owner,
-    get_file_by_id,
-    delete_file_record,
     delete_all_file_records,
+    delete_file_record,
+    get_file_by_id,
+    get_files_by_owner,
 )
+from core.kb_tasks import process_file_sync, rebuild_knowledge_base
 from core.paths import remove_within
 
 
@@ -53,7 +55,7 @@ async def manage_agent_node(state: AgentState) -> dict:
 
     except Exception as e:
         logger.error(f"[ManageAgent] 操作失败: {e}")
-        result_message = f"❌ 操作失败: {str(e)}"
+        result_message = f"❌ 操作失败: {e!s}"
         reasoning = [f"❌ 错误: {str(e)[:200]}"]
 
     return {
@@ -81,14 +83,12 @@ async def _handle_upload(state: AgentState, owner_id: int) -> tuple[str, list]:
 
         filename = Path(filepath).name
         file_size = os.path.getsize(filepath)
-        reasoning.append(f"📄 处理文件: {filename} ({file_size/1024:.1f}KB)")
+        reasoning.append(f"📄 处理文件: {filename} ({file_size / 1024:.1f}KB)")
 
         try:
             # 解析 → 分块 → 向量化 → 落库：复用 core/kb_tasks 的同一份实现，
             # 丢线程池执行（CPU/IO 密集；其内部 DB 调用会提交回主循环）
-            result = await asyncio.to_thread(
-                process_file_sync, filepath, filename, owner_id
-            )
+            result = await asyncio.to_thread(process_file_sync, filepath, filename, owner_id)
             if result.get("success"):
                 if result.get("skipped"):
                     reasoning.append(f"⏭️ {result.get('message', '已存在，跳过')}")
@@ -118,6 +118,7 @@ async def _handle_list(owner_id: int) -> tuple[str, list]:
     """列出当前用户的所有文件"""
     files = await get_files_by_owner(owner_id)
     from rag.vector_store import get_collection_stats
+
     stats = await asyncio.to_thread(get_collection_stats, owner_id)
 
     if not files:
@@ -128,9 +129,9 @@ async def _handle_list(owner_id: int) -> tuple[str, list]:
         )
 
     lines = [
-        f"## 知识库概况",
-        f"| 指标 | 数值 |",
-        f"|------|------|",
+        "## 知识库概况",
+        "| 指标 | 数值 |",
+        "|------|------|",
         f"| 文件数 | {len(files)} |",
         f"| 向量块总数 | {stats['total_chunks']} |",
         f"| 涉及文件 | {stats['unique_files']} |",
@@ -163,7 +164,8 @@ async def _handle_delete(state: AgentState, owner_id: int) -> tuple[str, list]:
     try:
         # 尝试直接解析数字
         import re
-        ids = re.findall(r'\b(\d+)\b', user_query)
+
+        ids = re.findall(r"\b(\d+)\b", user_query)
         if not ids:
             return "请指定要删除的文件ID。用法: 删除文件 ID=123", ["⚠️ 未指定文件ID"]
 
@@ -182,6 +184,7 @@ async def _handle_delete(state: AgentState, owner_id: int) -> tuple[str, list]:
 
     # 从向量库删除（Chroma 是同步的，丢线程池）
     from rag.vector_store import delete_by_file
+
     deleted_chunks = await asyncio.to_thread(delete_by_file, filename, owner_id)
 
     # 从文件系统删除（走 remove_within，库里的历史路径可能越界）
@@ -196,10 +199,7 @@ async def _handle_delete(state: AgentState, owner_id: int) -> tuple[str, list]:
     reasoning.append(f"🗑️ 已删除: {filename} ({deleted_chunks} 个向量块)")
 
     return (
-        f"## 删除成功\n\n"
-        f"- 文件: {filename}\n"
-        f"- 移除向量块: {deleted_chunks} 个\n"
-        f"- 磁盘文件已清理",
+        f"## 删除成功\n\n- 文件: {filename}\n- 移除向量块: {deleted_chunks} 个\n- 磁盘文件已清理",
         reasoning,
     )
 
@@ -253,8 +253,6 @@ async def _handle_rebuild(state: AgentState, owner_id: int) -> tuple[str, list]:
     reasoning.append(f"✅ 重建完成: {total_chunks} 个向量块")
 
     return (
-        f"## 知识库重建完成\n\n"
-        f"- 处理文件: {len(files)} 个\n"
-        f"- 总向量块: {total_chunks} 块",
+        f"## 知识库重建完成\n\n- 处理文件: {len(files)} 个\n- 总向量块: {total_chunks} 块",
         reasoning,
     )

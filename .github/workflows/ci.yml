@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 最小权限：只读仓库内容即可，CI 不需要写权限
+permissions:
+  contents: read
+
+# 同一分支的新提交取消上一次未完成的运行，省 runner 时间
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # Lint：真正的阻断式门禁
+  # ============================================================
+  # 原配置的问题：job 级 continue-on-error + 命令末尾 || true，
+  # 测试失败根本不会让 CI 变红 —— 等于没有门禁。
+  # 现在失败即失败。
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install ruff
+      # 规则集与豁免项在 pyproject.toml 的 [tool.ruff] 里，
+      # 不再用命令行 --ignore 把最常见的问题类别整批关掉
+      - run: ruff check .
+
+  # ============================================================
+  # 测试 + 覆盖率门槛
+  # ============================================================
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 25
+    env:
+      # 仓库内置的默认密钥/口令在生产不可用，CI 里显式放行
+      ALLOW_INSECURE_DEFAULTS: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        # 原配置是 `pip install ... 2>&1 | tail -3`：bash 默认没有 pipefail，
+        # 退出码取的是 tail，**任何安装失败都会被吞掉**，后续步骤在残缺环境里跑。
+        # 这里显式 set -o pipefail，并且不再截断输出。
+        run: |
+          set -o pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+      - name: Run tests with coverage
+        # 覆盖率门槛在 pyproject.toml 的 [tool.coverage.report] fail_under。
+        # 慢测试（真实调用 LLM/Embedding）由 addopts = -m 'not slow' 默认跳过 ——
+        # 原配置只声明了 marker 没加 addopts，CI 每次都在真烧 API 额度。
+        run: pytest tests/ -v --tb=short --cov --cov-report=term-missing
+
+  # ============================================================
+  # 前端构建
+  # ============================================================
+  # 原 CI 完全没验证前端能否构建 —— 前端坏了也能合并进去。
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build
+        working-directory: frontend
+        run: npm run build

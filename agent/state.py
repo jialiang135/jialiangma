@@ -1,13 +1,17 @@
 """
 LangGraph 全局 Agent 状态定义
 """
-from typing import TypedDict, Annotated, Sequence, Optional
-from langchain_core.messages import BaseMessage
+
 import operator
+from collections.abc import Sequence
+from typing import Annotated, TypedDict
+
+from langchain_core.messages import BaseMessage
 
 
 class AgentState(TypedDict):
     """LangGraph 多智能体全局状态"""
+
     # 对话消息历史
     messages: Annotated[Sequence[BaseMessage], operator.add]
 
@@ -20,7 +24,7 @@ class AgentState(TypedDict):
 
     # 当前对话 ID。
     # 用于把**历史轮次**喂给模型 —— 原实现不带历史，导致追问（"那它呢"）没有上下文。
-    conversation_id: Optional[str]
+    conversation_id: str | None
 
     # 当前用户输入的原始问题
     user_query: str
@@ -51,11 +55,11 @@ class AgentState(TypedDict):
     iteration_count: int
 
     # 错误信息
-    error: Optional[str]
+    error: str | None
 
     # --- 知识库管理专用 ---
-    upload_files: Optional[list[str]]
-    operation: Optional[str]  # upload / delete / list / rebuild
-    operation_result: Optional[str]
+    upload_files: list[str] | None
+    operation: str | None  # upload / delete / list / rebuild
+    operation_result: str | None
 
     # --- 预留扩展字段 ---

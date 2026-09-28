@@ -2,18 +2,19 @@
 个人数字分身 · 多Agent私有RAG系统 — 启动入口
 FastAPI 主服务 + Vue 3 前端静态文件托管
 """
-import sys
+
 import os
+import sys
 from pathlib import Path
 
 # 确保项目根目录在 Python 路径中
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from api.main import app as fastapi_app
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
 from loguru import logger
 
+from api.main import app as fastapi_app
 
 # 项目根目录
 BASE_DIR = Path(__file__).parent
@@ -56,8 +57,10 @@ app = fastapi_app
 
 if __name__ == "__main__":
     import socket
+
     import uvicorn
     from uvicorn import Config
+
     from config.settings import settings
 
     # 获取本机局域网 IP（用于手机/其他设备访问）
@@ -83,7 +86,11 @@ if __name__ == "__main__":
                 "🚀 个人数字分身 · 多Agent私有RAG系统 启动成功！",
                 "=" * 60,
                 f"   👉 本机访问:  http://127.0.0.1:{self.config.port}",
-                *([f"   👉 手机访问:  http://{lan_ip}:{self.config.port}  (同WiFi下)"] if lan_ip else []),
+                *(
+                    [f"   👉 手机访问:  http://{lan_ip}:{self.config.port}  (同WiFi下)"]
+                    if lan_ip
+                    else []
+                ),
                 f"   📖 API 文档:  http://127.0.0.1:{self.config.port}/api/docs",
                 f"   🔑 管理员:    {settings.admin_username}  （密码见 config/.env 的 ADMIN_PASSWORD）",
                 "=" * 60,

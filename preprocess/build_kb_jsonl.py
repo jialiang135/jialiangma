@@ -12,10 +12,9 @@ Claude 离线预处理脚本
 
 直接在 Claude Code 对话中执行此任务，无需运行此脚本。
 """
+
 import json
-import os
 from pathlib import Path
-from typing import Optional
 
 
 def generate_kb_qa_pairs(docs_dir: str, output_path: str):
@@ -45,8 +44,7 @@ def generate_kb_qa_pairs(docs_dir: str, output_path: str):
     # 加载所有文档
     docs = load_documents_from_paths(filepaths)
     all_content = "\n\n---\n\n".join(
-        f"### 文件: {d['filename']}\n{d['content'][:5000]}"
-        for d in docs
+        f"### 文件: {d['filename']}\n{d['content'][:5000]}" for d in docs
     )
 
     # 生成 prompt
@@ -97,7 +95,7 @@ def generate_eval_testset(kb_jsonl_path: str, output_path: str):
     }}
     """
     qa_pairs = []
-    with open(kb_jsonl_path, "r", encoding="utf-8") as f:
+    with open(kb_jsonl_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
@@ -113,12 +111,14 @@ def generate_eval_testset(kb_jsonl_path: str, output_path: str):
     # 采样（取每个分类的若干条）
     test_questions = []
     for qa in qa_pairs:
-        test_questions.append({
-            "id": qa.get("id", f"t{len(test_questions)+1:03d}"),
-            "question": qa["question"],
-            "expected_answer": qa.get("answer", ""),
-            "category": qa.get("category", "未分类"),
-        })
+        test_questions.append(
+            {
+                "id": qa.get("id", f"t{len(test_questions) + 1:03d}"),
+                "question": qa["question"],
+                "expected_answer": qa.get("answer", ""),
+                "category": qa.get("category", "未分类"),
+            }
+        )
 
     testset = {
         "name": "知识库问答评测集",

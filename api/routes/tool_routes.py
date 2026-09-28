@@ -2,9 +2,11 @@
 工具注册中心 API
 列出所有可用工具，供前端可视化编排面板使用
 """
+
 from fastapi import APIRouter, Depends
-from core.tool_registry import tool_registry
+
 from core.auth import get_current_user
+from core.tool_registry import tool_registry
 
 router = APIRouter(prefix="/api/tools", tags=["工具"])
 

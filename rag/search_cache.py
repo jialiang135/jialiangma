@@ -9,6 +9,7 @@
 
 缓存 key = md5(query + owner_id + 检索参数)，TTL 默认 1 小时。
 """
+
 import hashlib
 import time
 from threading import Lock

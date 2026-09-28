@@ -4,20 +4,31 @@
 注意：bcrypt 的哈希/校验是**故意设计得慢**的 CPU 密集操作（约 100~300ms），
 在 async 端点里直接调用会阻塞整个事件循环，因此统一用 asyncio.to_thread 执行。
 """
+
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from loguru import logger
 
-from core.schemas import UserLogin, UserRegister, TokenResponse, APIResponse
-from core.auth import (
-    verify_password, create_access_token, hash_password,
-    get_current_user, require_admin, validate_password_strength, dummy_verify,
-)
-from core.database import get_user_by_username, get_user_by_id, create_user, check_login_locked, record_login_attempt
-from core.audit import log_audit
-from core.net import client_ip
 from config.settings import settings
+from core.audit import log_audit
+from core.auth import (
+    create_access_token,
+    dummy_verify,
+    get_current_user,
+    hash_password,
+    validate_password_strength,
+    verify_password,
+)
+from core.database import (
+    check_login_locked,
+    create_user,
+    get_user_by_id,
+    get_user_by_username,
+    record_login_attempt,
+)
+from core.net import client_ip
+from core.schemas import TokenResponse, UserLogin, UserRegister
 
 router = APIRouter(prefix="/api/auth", tags=["鉴权"])
 
@@ -67,8 +78,9 @@ async def login(body: UserLogin, request: Request):
     await record_login_attempt(body.username, ip, success=True)
     user_role = user.get("role", "user")
     token = create_access_token(user["id"], user["username"], user_role)
-    await log_audit("login", user_id=user["id"], username=user["username"],
-                    ip_address=ip, status="success")
+    await log_audit(
+        "login", user_id=user["id"], username=user["username"], ip_address=ip, status="success"
+    )
     logger.info(f"登录成功: username={body.username}, user_id={user['id']}, role={user_role}")
 
     return TokenResponse(
@@ -136,12 +148,13 @@ async def register(body: UserRegister, request: Request):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
-        )
+        ) from e
 
     # 注册成功，直接签发 Token
     token = create_access_token(user_id, body.username, "user")
-    await log_audit("register", user_id=user_id, username=body.username,
-                    ip_address=ip, status="success")
+    await log_audit(
+        "register", user_id=user_id, username=body.username, ip_address=ip, status="success"
+    )
     logger.info(f"注册成功: username={body.username}, user_id={user_id}")
 
     return TokenResponse(

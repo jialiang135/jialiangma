@@ -6,6 +6,7 @@
 那里没有 event loop。而数据层是 async 的，因此所有 DB 操作都要通过
 ``core.database.run_async_from_thread`` 提交到主循环执行。
 """
+
 import time
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from loguru import logger
 
 try:
     from apscheduler.schedulers.background import BackgroundScheduler
+
     APSCHEDULER_AVAILABLE = True
 except ImportError:
     APSCHEDULER_AVAILABLE = False
@@ -24,6 +26,7 @@ ASSETS_DIR = PROJECT_ROOT / "assets"
 
 
 # ─── 定时任务函数 ───
+
 
 def cleanup_old_logs(retention_days: int = 30):
     """清理过期日志文件（纯文件操作，不涉及事件循环）"""
@@ -82,6 +85,7 @@ def backup_database():
 def health_check_job():
     """定时健康检查（输出版本 + 容器状态）"""
     import psutil
+
     disk = psutil.disk_usage("/")
     mem = psutil.virtual_memory()
     logger.info(
@@ -111,13 +115,18 @@ def start_scheduler():
     _scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
     # 每日凌晨 3 点：清理日志
-    _scheduler.add_job(cleanup_old_logs, "cron", hour=3, minute=0,
-                       kwargs={"retention_days": 30})
+    _scheduler.add_job(cleanup_old_logs, "cron", hour=3, minute=0, kwargs={"retention_days": 30})
     # 每日凌晨 4 点：备份数据库
     _scheduler.add_job(backup_database, "cron", hour=4, minute=0)
     # 每周日凌晨 5 点：清理审计日志
-    _scheduler.add_job(cleanup_old_audit_logs, "cron", day_of_week=0, hour=5, minute=0,
-                       kwargs={"retention_days": 90})
+    _scheduler.add_job(
+        cleanup_old_audit_logs,
+        "cron",
+        day_of_week=0,
+        hour=5,
+        minute=0,
+        kwargs={"retention_days": 90},
+    )
     # 每 30 分钟：健康检查
     _scheduler.add_job(health_check_job, "interval", minutes=30)
 

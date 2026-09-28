@@ -11,8 +11,10 @@
 3. 原本这套逻辑同时存在于 ``api/routes/kb_routes.py`` 与
    ``agent/manage_agent.py`` 两处，重复且容易漂移，这里收口成一份。
 """
+
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import shutil
@@ -58,9 +60,7 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
     if not docs or not docs[0].get("content", "").strip():
         return {"success": False, "error": "无法解析文件内容"}
 
-    processed = process_documents_batch(
-        docs, use_semantic_splitter=settings.use_semantic_splitter
-    )
+    processed = process_documents_batch(docs, use_semantic_splitter=settings.use_semantic_splitter)
     if not processed or not processed[0].get("chunks"):
         return {"success": False, "error": "内容为空"}
 
@@ -71,9 +71,7 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
     shutil.copy2(file_path, dest_path)
 
     file_hash = compute_file_hash(dest_path)
-    existing = run_async_from_thread(
-        find_file_by_hash_or_name(owner_id, file_hash, filename)
-    )
+    existing = run_async_from_thread(find_file_by_hash_or_name(owner_id, file_hash, filename))
     if existing:
         os.unlink(dest_path)
         return {
@@ -89,13 +87,15 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
     ]
     add_documents(chunks, metadatas)
 
-    file_id = run_async_from_thread(insert_file_record(
-        owner_id=owner_id,
-        filename=filename,
-        filepath=dest_path,
-        file_size=file_size,
-        chunk_count=len(chunks),
-    ))
+    file_id = run_async_from_thread(
+        insert_file_record(
+            owner_id=owner_id,
+            filename=filename,
+            filepath=dest_path,
+            file_size=file_size,
+            chunk_count=len(chunks),
+        )
+    )
     run_async_from_thread(update_file_chunk_count(file_id, len(chunks)))
     run_async_from_thread(update_file_hash(file_id, file_hash))
 
@@ -110,32 +110,48 @@ def process_file_task(task_id: str, tmp_path: str, filename: str, owner_id: int)
         result = process_file_sync(tmp_path, filename, owner_id)
         if result.get("success"):
             if result.get("skipped"):
-                run_async_from_thread(update_upload_task(
-                    task_id, status="skipped", progress=100,
-                    error=result.get("message", "跳过"),
-                ))
+                run_async_from_thread(
+                    update_upload_task(
+                        task_id,
+                        status="skipped",
+                        progress=100,
+                        error=result.get("message", "跳过"),
+                    )
+                )
             else:
-                run_async_from_thread(update_upload_task(
-                    task_id, status="done", progress=100,
-                    chunk_count=result.get("chunks", 0),
-                ))
+                run_async_from_thread(
+                    update_upload_task(
+                        task_id,
+                        status="done",
+                        progress=100,
+                        chunk_count=result.get("chunks", 0),
+                    )
+                )
         else:
-            run_async_from_thread(update_upload_task(
-                task_id, status="failed", progress=100, error=result.get("error", "未知错误"),
-            ))
+            run_async_from_thread(
+                update_upload_task(
+                    task_id,
+                    status="failed",
+                    progress=100,
+                    error=result.get("error", "未知错误"),
+                )
+            )
     except Exception as e:
         logger.error("[KB] 文件处理失败: {} - {}", filename, e)
         try:
-            run_async_from_thread(update_upload_task(
-                task_id, status="failed", progress=100, error=str(e)[:500],
-            ))
+            run_async_from_thread(
+                update_upload_task(
+                    task_id,
+                    status="failed",
+                    progress=100,
+                    error=str(e)[:500],
+                )
+            )
         except Exception as inner:
             logger.error("[KB] 标记任务失败也失败了: {}", inner)
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
 
 
 def rebuild_knowledge_base(owner_id: int) -> int:
@@ -145,9 +161,9 @@ def rebuild_knowledge_base(owner_id: int) -> int:
     **同步函数**，应在工作线程中执行 —— 这个操作可能耗时数分钟到数小时
     （PDF 解析 + OCR + 逐块向量化），绝不能进事件循环。
     """
-    from rag.vector_store import delete_all_by_owner, reset_vector_store, add_documents
     from rag.document_loader import load_documents_from_paths
     from rag.text_splitter import process_documents_batch
+    from rag.vector_store import add_documents, delete_all_by_owner, reset_vector_store
 
     delete_all_by_owner(owner_id)
     reset_vector_store()
@@ -171,8 +187,12 @@ def rebuild_knowledge_base(owner_id: int) -> int:
                 continue
             chunks = processed[0]["chunks"]
             metadatas = [
-                {"owner_id": owner_id, "source": file_record["filename"],
-                 "chunk_idx": i, "filepath": filepath}
+                {
+                    "owner_id": owner_id,
+                    "source": file_record["filename"],
+                    "chunk_idx": i,
+                    "filepath": filepath,
+                }
                 for i in range(len(chunks))
             ]
             add_documents(chunks, metadatas)
@@ -189,15 +209,25 @@ def rebuild_task(task_id: str, owner_id: int) -> None:
     try:
         run_async_from_thread(update_upload_task(task_id, status="processing", progress=10))
         total_chunks = rebuild_knowledge_base(owner_id)
-        run_async_from_thread(update_upload_task(
-            task_id, status="done", progress=100, chunk_count=total_chunks,
-        ))
+        run_async_from_thread(
+            update_upload_task(
+                task_id,
+                status="done",
+                progress=100,
+                chunk_count=total_chunks,
+            )
+        )
         logger.info("[KB] 重建完成: {} 块", total_chunks)
     except Exception as e:
         logger.error("[KB] 重建失败: {}", e)
         try:
-            run_async_from_thread(update_upload_task(
-                task_id, status="failed", progress=100, error=str(e)[:500],
-            ))
+            run_async_from_thread(
+                update_upload_task(
+                    task_id,
+                    status="failed",
+                    progress=100,
+                    error=str(e)[:500],
+                )
+            )
         except Exception as inner:
             logger.error("[KB] 标记重建失败也失败了: {}", inner)

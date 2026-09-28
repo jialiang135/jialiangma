@@ -1,23 +1,30 @@
 """
 对话问答路由（SSE 流式）
 """
-import json
+
 import uuid
-from fastapi import APIRouter, Depends, HTTPException
+
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from loguru import logger
 
-from core.schemas import (
-    ChatRequest, ChatHistoryResponse, ChatLogOut,
-    ConversationSummary, ConversationListResponse,
-)
+from api.sse_stream import sse_chat_generator
 from core.auth import get_current_user, get_optional_user
 from core.database import (
-    get_chat_history, get_chat_history_count,
-    get_chat_by_conversation_id, get_conversations,
-    delete_conversation, get_chat_log_by_id,
+    delete_conversation,
+    get_chat_by_conversation_id,
+    get_chat_history,
+    get_chat_history_count,
+    get_chat_log_by_id,
+    get_conversations,
 )
-from api.sse_stream import sse_chat_generator
+from core.schemas import (
+    ChatHistoryResponse,
+    ChatLogOut,
+    ChatRequest,
+    ConversationListResponse,
+    ConversationSummary,
+)
 
 router = APIRouter(prefix="/api/chat", tags=["对话"])
 
@@ -79,9 +86,7 @@ async def chat_stream_public(
     # 否则这条记录没有分组 ID，历史列表里会散成单条
     cid = body.conversation_id or str(uuid.uuid4())
 
-    logger.info(
-        f"[API] 公开流式对话: user={username}, mode={body.agent_mode}"
-    )
+    logger.info(f"[API] 公开流式对话: user={username}, mode={body.agent_mode}")
 
     return StreamingResponse(
         sse_chat_generator(
@@ -151,8 +156,13 @@ async def get_conversation(
             "owner_id": owner_id,
             "messages": [
                 {"role": "user", "content": log["question"], "created_at": log["created_at"]},
-                {"role": "assistant", "content": log["answer"], "reasoning": log.get("reasoning"),
-                 "sources": log.get("sources"), "created_at": log["created_at"]},
+                {
+                    "role": "assistant",
+                    "content": log["answer"],
+                    "reasoning": log.get("reasoning"),
+                    "sources": log.get("sources"),
+                    "created_at": log["created_at"],
+                },
             ],
             "total_turns": 1,
         }
@@ -164,18 +174,22 @@ async def get_conversation(
 
     messages = []
     for log in logs:
-        messages.append({
-            "role": "user",
-            "content": log["question"],
-            "created_at": log["created_at"],
-        })
-        messages.append({
-            "role": "assistant",
-            "content": log["answer"],
-            "reasoning": log.get("reasoning"),
-            "sources": log.get("sources"),
-            "created_at": log["created_at"],
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": log["question"],
+                "created_at": log["created_at"],
+            }
+        )
+        messages.append(
+            {
+                "role": "assistant",
+                "content": log["answer"],
+                "reasoning": log.get("reasoning"),
+                "sources": log.get("sources"),
+                "created_at": log["created_at"],
+            }
+        )
 
     return {
         "conversation_id": conversation_id,
@@ -223,7 +237,6 @@ async def remove_conversation(
     if deleted == 0:
         return {"success": False, "message": "对话不存在或无权删除"}
     logger.info(
-        f"[API] 删除对话: user={user['username']}, group={group_id[:20]}..., "
-        f"deleted={deleted} rows"
+        f"[API] 删除对话: user={user['username']}, group={group_id[:20]}..., deleted={deleted} rows"
     )
     return {"success": True, "message": f"已删除 {deleted} 条消息", "deleted": deleted}

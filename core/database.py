@@ -30,15 +30,16 @@ DDL 里保留了 ``FOREIGN KEY`` 声明，但**运行时不启用强制**
 id=0 的用户 —— 一旦启用强制，匿名对话会全部写入失败。
 这是既有设计的取舍，此处显式记录，避免后来者误以为是遗漏。
 """
+
 from __future__ import annotations
 
 import asyncio
 import os
 import threading
-from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import AsyncIterator, Optional
 
 from loguru import logger
 from sqlalchemy import (
@@ -46,12 +47,12 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    delete,
     event,
     func,
     select,
     text,
     update,
-    delete,
 )
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -82,6 +83,7 @@ def get_db_path() -> Path:
 # 类型
 # ============================================================
 
+
 class UTCDateTime(TypeDecorator):
     """
     以 ``'YYYY-MM-DD HH:MM:SS'``（UTC）存储的 datetime。
@@ -96,17 +98,17 @@ class UTCDateTime(TypeDecorator):
     impl = String(19)
     cache_ok = True
 
-    def process_bind_param(self, value, dialect):  # noqa: ANN001
+    def process_bind_param(self, value, dialect):
         if value is None:
             return None
         if isinstance(value, datetime):
             # 统一按 UTC 写入，与 CURRENT_TIMESTAMP 语义一致
             if value.tzinfo is not None:
-                value = value.astimezone(timezone.utc).replace(tzinfo=None)
+                value = value.astimezone(UTC).replace(tzinfo=None)
             return value.strftime(_SQLITE_DT_FMT)
         return str(value)
 
-    def process_result_value(self, value, dialect):  # noqa: ANN001
+    def process_result_value(self, value, dialect):
         if value is None:
             return None
         if isinstance(value, datetime):
@@ -120,12 +122,13 @@ class UTCDateTime(TypeDecorator):
 
 def utcnow() -> datetime:
     """当前 UTC 时间（naive，与库中格式对齐）。"""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 # ============================================================
 # 模型
 # ============================================================
+
 
 class Base(DeclarativeBase):
     pass
@@ -184,13 +187,13 @@ class ChatLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     owner_id: Mapped[int] = mapped_column(Integer, nullable=False)
     agent_mode: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'chat'"))
-    conversation_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    conversation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     question: Mapped[str] = mapped_column(Text, nullable=False)
     answer: Mapped[str] = mapped_column(Text, nullable=False)
     # reasoning / sources 都是 JSON 字符串塞在 TEXT 里。
     # 刻意**不**改成 JSON 列：改了存量数据读不出来。
-    reasoning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    sources: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sources: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, server_default=text("CURRENT_TIMESTAMP")
     )
@@ -217,7 +220,7 @@ class LoginAttempt(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String, nullable=False)
-    ip_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
     success: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, server_default=text("CURRENT_TIMESTAMP")
@@ -235,14 +238,14 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    username: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    username: Mapped[str | None] = mapped_column(String, nullable=True)
     action: Mapped[str] = mapped_column(String, nullable=False)
-    resource: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    ip_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    user_agent: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    duration_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    resource: Mapped[str | None] = mapped_column(String, nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String, nullable=True)
+    duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String, server_default=text("'success'"))
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, server_default=text("CURRENT_TIMESTAMP")
@@ -276,13 +279,13 @@ class EvalReport(Base):
     accuracy: Mapped[float] = mapped_column(Float, server_default=text("0.0"))
     hallucination_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     hallucination_rate: Mapped[float] = mapped_column(Float, server_default=text("0.0"))
-    honesty_rate: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    avg_match_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    honesty_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     poor_retrieval_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
-    duration_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    metrics_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    results_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    recommendations_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metrics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    results_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recommendations_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str] = mapped_column(Text, server_default=text("''"))
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, server_default=text("CURRENT_TIMESTAMP")
@@ -292,6 +295,7 @@ class EvalReport(Base):
 # ============================================================
 # 引擎与会话
 # ============================================================
+
 
 def _build_engine():
     db_path = get_db_path()
@@ -310,7 +314,7 @@ def _build_engine():
     )
 
     @event.listens_for(eng.sync_engine, "connect")
-    def _set_sqlite_pragma(dbapi_connection, _connection_record):  # noqa: ANN001
+    def _set_sqlite_pragma(dbapi_connection, _connection_record):
         """
         每个新连接都设置 PRAGMA。
 
@@ -376,10 +380,10 @@ async def dispose_engine() -> None:
 # 跨线程执行（供 APScheduler 后台线程使用）
 # ------------------------------------------------------------
 
-_main_loop: "asyncio.AbstractEventLoop | None" = None
+_main_loop: asyncio.AbstractEventLoop | None = None
 
 
-def bind_main_loop(loop: "asyncio.AbstractEventLoop") -> None:
+def bind_main_loop(loop: asyncio.AbstractEventLoop) -> None:
     """应用启动时记录主事件循环，供后台线程提交协程。"""
     global _main_loop
     _main_loop = loop
@@ -418,7 +422,7 @@ def run_async_blocking(coro, timeout: float = 30.0):
     def _worker() -> None:
         try:
             result["value"] = asyncio.run(coro)
-        except BaseException as e:  # noqa: BLE001 - 要把异常原样带回主线程
+        except BaseException as e:
             result["error"] = e
 
     thread = threading.Thread(target=_worker, daemon=True, name="persist-on-cancel")
@@ -474,18 +478,24 @@ async def init_database() -> None:
                     logger.info("数据库迁移：{} 表补充列 {}", table, col)
 
         # 索引（create_all 只建模型上声明的；这两条是历史遗留的手工索引）
-        await conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS idx_login_attempts_user "
-            "ON login_attempts(username, created_at)"
-        ))
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_login_attempts_user "
+                "ON login_attempts(username, created_at)"
+            )
+        )
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)"))
-        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)"))
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at)")
+        )
         # 对话历史按 (owner_id, created_at) 查询最频繁
-        await conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS idx_chat_logs_owner_created "
-            "ON chat_logs(owner_id, created_at)"
-        ))
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_chat_logs_owner_created "
+                "ON chat_logs(owner_id, created_at)"
+            )
+        )
 
     logger.info("数据库初始化完成: {}", str(db_path))
 
@@ -494,12 +504,13 @@ async def init_database() -> None:
 # 用户操作
 # ============================================================
 
+
 async def create_admin_user(username: str, password_hash: str) -> int:
     """创建管理员用户（已存在则确保其角色为 admin），返回用户 id。"""
     async with session_scope() as session:
-        user = (await session.execute(
-            select(User).where(User.username == username)
-        )).scalar_one_or_none()
+        user = (
+            await session.execute(select(User).where(User.username == username))
+        ).scalar_one_or_none()
 
         if user is not None:
             if user.role != "admin":
@@ -509,7 +520,7 @@ async def create_admin_user(username: str, password_hash: str) -> int:
 
         user = User(username=username, password_hash=password_hash, role="admin")
         session.add(user)
-        await session.flush()   # 必须在 flush 后取 id，否则是 None
+        await session.flush()  # 必须在 flush 后取 id，否则是 None
         logger.info("管理员账号创建成功: {} (id={}, role=admin)", username, user.id)
         return user.id
 
@@ -517,9 +528,9 @@ async def create_admin_user(username: str, password_hash: str) -> int:
 async def create_user(username: str, password_hash: str, role: str = "user") -> int:
     """创建普通用户，返回用户 id。用户名已存在则抛 ValueError。"""
     async with session_scope() as session:
-        existing = (await session.execute(
-            select(User.id).where(User.username == username)
-        )).scalar_one_or_none()
+        existing = (
+            await session.execute(select(User.id).where(User.username == username))
+        ).scalar_one_or_none()
         if existing is not None:
             raise ValueError(f"用户名已被占用: {username}")
 
@@ -540,15 +551,15 @@ def _user_to_dict(user: User) -> dict:
     }
 
 
-async def get_user_by_username(username: str) -> Optional[dict]:
+async def get_user_by_username(username: str) -> dict | None:
     async with session_scope() as session:
-        user = (await session.execute(
-            select(User).where(User.username == username)
-        )).scalar_one_or_none()
+        user = (
+            await session.execute(select(User).where(User.username == username))
+        ).scalar_one_or_none()
         return _user_to_dict(user) if user else None
 
 
-async def get_user_by_id(user_id: int) -> Optional[dict]:
+async def get_user_by_id(user_id: int) -> dict | None:
     async with session_scope() as session:
         user = await session.get(User, user_id)
         return _user_to_dict(user) if user else None
@@ -557,6 +568,7 @@ async def get_user_by_id(user_id: int) -> Optional[dict]:
 # ============================================================
 # 文件元数据
 # ============================================================
+
 
 def _file_to_dict(record: FileRecord) -> dict:
     return {
@@ -571,30 +583,40 @@ def _file_to_dict(record: FileRecord) -> dict:
     }
 
 
-async def insert_file_record(owner_id: int, filename: str, filepath: str,
-                             file_size: int = 0, chunk_count: int = 0) -> int:
+async def insert_file_record(
+    owner_id: int, filename: str, filepath: str, file_size: int = 0, chunk_count: int = 0
+) -> int:
     """插入文件记录，返回记录 id。"""
     async with session_scope() as session:
         record = FileRecord(
-            owner_id=owner_id, filename=filename, filepath=filepath,
-            file_size=file_size, chunk_count=chunk_count,
+            owner_id=owner_id,
+            filename=filename,
+            filepath=filepath,
+            file_size=file_size,
+            chunk_count=chunk_count,
         )
         session.add(record)
-        await session.flush()   # 调用方会立刻用这个 id 做后续更新
+        await session.flush()  # 调用方会立刻用这个 id 做后续更新
         return record.id
 
 
 async def get_files_by_owner(owner_id: int) -> list[dict]:
     async with session_scope() as session:
-        rows = (await session.execute(
-            select(FileRecord)
-            .where(FileRecord.owner_id == owner_id)
-            .order_by(FileRecord.created_at.desc())
-        )).scalars().all()
+        rows = (
+            (
+                await session.execute(
+                    select(FileRecord)
+                    .where(FileRecord.owner_id == owner_id)
+                    .order_by(FileRecord.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
         return [_file_to_dict(r) for r in rows]
 
 
-async def get_file_by_id(file_id: int) -> Optional[dict]:
+async def get_file_by_id(file_id: int) -> dict | None:
     async with session_scope() as session:
         record = await session.get(FileRecord, file_id)
         return _file_to_dict(record) if record else None
@@ -603,18 +625,14 @@ async def get_file_by_id(file_id: int) -> Optional[dict]:
 async def delete_file_record(file_id: int, owner_id: int) -> bool:
     async with session_scope() as session:
         result = await session.execute(
-            delete(FileRecord).where(
-                FileRecord.id == file_id, FileRecord.owner_id == owner_id
-            )
+            delete(FileRecord).where(FileRecord.id == file_id, FileRecord.owner_id == owner_id)
         )
         return (result.rowcount or 0) > 0
 
 
 async def delete_all_file_records(owner_id: int) -> int:
     async with session_scope() as session:
-        result = await session.execute(
-            delete(FileRecord).where(FileRecord.owner_id == owner_id)
-        )
+        result = await session.execute(delete(FileRecord).where(FileRecord.owner_id == owner_id))
         return result.rowcount or 0
 
 
@@ -638,15 +656,19 @@ async def update_file_hash(file_id: int, file_hash: str) -> None:
         )
 
 
-async def find_file_by_hash_or_name(owner_id: int, file_hash: str, filename: str) -> Optional[dict]:
+async def find_file_by_hash_or_name(owner_id: int, file_hash: str, filename: str) -> dict | None:
     """按 (哈希 或 文件名) 查重，用于上传去重。"""
     async with session_scope() as session:
-        record = (await session.execute(
-            select(FileRecord).where(
-                FileRecord.owner_id == owner_id,
-                (FileRecord.file_hash == file_hash) | (FileRecord.filename == filename),
-            ).limit(1)
-        )).scalar_one_or_none()
+        record = (
+            await session.execute(
+                select(FileRecord)
+                .where(
+                    FileRecord.owner_id == owner_id,
+                    (FileRecord.file_hash == file_hash) | (FileRecord.filename == filename),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
         return _file_to_dict(record) if record else None
 
 
@@ -654,13 +676,20 @@ async def find_file_by_hash_or_name(owner_id: int, file_hash: str, filename: str
 # 上传任务
 # ============================================================
 
-async def create_upload_task(task_id: str, owner_id: int, filename: str,
-                             file_size: int = 0) -> None:
+
+async def create_upload_task(
+    task_id: str, owner_id: int, filename: str, file_size: int = 0
+) -> None:
     async with session_scope() as session:
-        session.add(UploadTask(
-            task_id=task_id, owner_id=owner_id,
-            filename=filename, file_size=file_size, status="pending",
-        ))
+        session.add(
+            UploadTask(
+                task_id=task_id,
+                owner_id=owner_id,
+                filename=filename,
+                file_size=file_size,
+                status="pending",
+            )
+        )
 
 
 async def update_upload_task(task_id: str, **fields) -> None:
@@ -680,13 +709,15 @@ async def update_upload_task(task_id: str, **fields) -> None:
         )
 
 
-async def get_upload_task(task_id: str, owner_id: int) -> Optional[dict]:
+async def get_upload_task(task_id: str, owner_id: int) -> dict | None:
     async with session_scope() as session:
-        task = (await session.execute(
-            select(UploadTask).where(
-                UploadTask.task_id == task_id, UploadTask.owner_id == owner_id
+        task = (
+            await session.execute(
+                select(UploadTask).where(
+                    UploadTask.task_id == task_id, UploadTask.owner_id == owner_id
+                )
             )
-        )).scalar_one_or_none()
+        ).scalar_one_or_none()
         if task is None:
             return None
         return {
@@ -707,6 +738,7 @@ async def get_upload_task(task_id: str, owner_id: int) -> Optional[dict]:
 # 对话日志
 # ============================================================
 
+
 def _chat_to_dict(log: ChatLog) -> dict:
     return {
         "id": log.id,
@@ -721,13 +753,24 @@ def _chat_to_dict(log: ChatLog) -> dict:
     }
 
 
-async def insert_chat_log(owner_id: int, agent_mode: str, question: str,
-                          answer: str, reasoning: str = None, sources: str = None,
-                          conversation_id: str = None) -> int:
+async def insert_chat_log(
+    owner_id: int,
+    agent_mode: str,
+    question: str,
+    answer: str,
+    reasoning: str | None = None,
+    sources: str | None = None,
+    conversation_id: str | None = None,
+) -> int:
     async with session_scope() as session:
         log = ChatLog(
-            owner_id=owner_id, agent_mode=agent_mode, conversation_id=conversation_id,
-            question=question, answer=answer, reasoning=reasoning, sources=sources,
+            owner_id=owner_id,
+            agent_mode=agent_mode,
+            conversation_id=conversation_id,
+            question=question,
+            answer=answer,
+            reasoning=reasoning,
+            sources=sources,
         )
         session.add(log)
         await session.flush()
@@ -736,20 +779,29 @@ async def insert_chat_log(owner_id: int, agent_mode: str, question: str,
 
 async def get_chat_history(owner_id: int, limit: int = 50, offset: int = 0) -> list[dict]:
     async with session_scope() as session:
-        rows = (await session.execute(
-            select(ChatLog)
-            .where(ChatLog.owner_id == owner_id)
-            .order_by(ChatLog.created_at.desc())
-            .limit(limit).offset(offset)
-        )).scalars().all()
+        rows = (
+            (
+                await session.execute(
+                    select(ChatLog)
+                    .where(ChatLog.owner_id == owner_id)
+                    .order_by(ChatLog.created_at.desc())
+                    .limit(limit)
+                    .offset(offset)
+                )
+            )
+            .scalars()
+            .all()
+        )
         return [_chat_to_dict(r) for r in rows]
 
 
 async def get_chat_history_count(owner_id: int) -> int:
     async with session_scope() as session:
-        return (await session.execute(
-            select(func.count()).select_from(ChatLog).where(ChatLog.owner_id == owner_id)
-        )).scalar_one()
+        return (
+            await session.execute(
+                select(func.count()).select_from(ChatLog).where(ChatLog.owner_id == owner_id)
+            )
+        ).scalar_one()
 
 
 async def get_conversations(owner_id: int, limit: int = 30) -> list[dict]:
@@ -779,26 +831,36 @@ async def get_conversations(owner_id: int, limit: int = 30) -> list[dict]:
         LIMIT :limit
     """)
     async with session_scope() as session:
-        rows = (await session.execute(stmt, {"owner_id": owner_id, "limit": limit})).mappings().all()
+        rows = (
+            (await session.execute(stmt, {"owner_id": owner_id, "limit": limit})).mappings().all()
+        )
         return [dict(r) for r in rows]
 
 
 async def get_chat_by_conversation_id(owner_id: int, conversation_id: str) -> list[dict]:
     async with session_scope() as session:
-        rows = (await session.execute(
-            select(ChatLog)
-            .where(ChatLog.owner_id == owner_id, ChatLog.conversation_id == conversation_id)
-            .order_by(ChatLog.created_at.asc())
-        )).scalars().all()
+        rows = (
+            (
+                await session.execute(
+                    select(ChatLog)
+                    .where(ChatLog.owner_id == owner_id, ChatLog.conversation_id == conversation_id)
+                    .order_by(ChatLog.created_at.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
         return [_chat_to_dict(r) for r in rows]
 
 
-async def get_chat_log_by_id(owner_id: int, log_id: int) -> Optional[dict]:
+async def get_chat_log_by_id(owner_id: int, log_id: int) -> dict | None:
     """按 id 取单条（供旧格式 ``__single_<id>`` 的历史会话使用）。"""
     async with session_scope() as session:
-        log = (await session.execute(
-            select(ChatLog).where(ChatLog.id == log_id, ChatLog.owner_id == owner_id)
-        )).scalar_one_or_none()
+        log = (
+            await session.execute(
+                select(ChatLog).where(ChatLog.id == log_id, ChatLog.owner_id == owner_id)
+            )
+        ).scalar_one_or_none()
         return _chat_to_dict(log) if log else None
 
 
@@ -827,6 +889,7 @@ async def delete_conversation(owner_id: int, group_id: str) -> int:
 # 登录尝试
 # ============================================================
 
+
 async def check_login_locked(username: str) -> bool:
     """
     检查用户是否因连续登录失败被锁定。
@@ -838,46 +901,56 @@ async def check_login_locked(username: str) -> bool:
     """
     cutoff = utcnow() - timedelta(minutes=settings.login_lockout_minutes)
     async with session_scope() as session:
-        count = (await session.execute(
-            select(func.count()).select_from(LoginAttempt).where(
-                LoginAttempt.username == username,
-                LoginAttempt.success == 0,
-                LoginAttempt.created_at > cutoff,
+        count = (
+            await session.execute(
+                select(func.count())
+                .select_from(LoginAttempt)
+                .where(
+                    LoginAttempt.username == username,
+                    LoginAttempt.success == 0,
+                    LoginAttempt.created_at > cutoff,
+                )
             )
-        )).scalar_one()
+        ).scalar_one()
         return count >= settings.max_login_attempts
 
 
-async def record_login_attempt(username: str, ip_address: str = None,
-                               success: bool = False) -> None:
+async def record_login_attempt(
+    username: str, ip_address: str | None = None, success: bool = False
+) -> None:
     async with session_scope() as session:
-        session.add(LoginAttempt(
-            username=username, ip_address=ip_address, success=1 if success else 0
-        ))
+        session.add(
+            LoginAttempt(username=username, ip_address=ip_address, success=1 if success else 0)
+        )
 
 
 async def count_recent_failed_logins(username: str) -> int:
     """最近锁定窗口内的失败次数（供管理接口/诊断使用）。"""
     cutoff = utcnow() - timedelta(minutes=settings.login_lockout_minutes)
     async with session_scope() as session:
-        return (await session.execute(
-            select(func.count()).select_from(LoginAttempt).where(
-                LoginAttempt.username == username,
-                LoginAttempt.success == 0,
-                LoginAttempt.created_at > cutoff,
+        return (
+            await session.execute(
+                select(func.count())
+                .select_from(LoginAttempt)
+                .where(
+                    LoginAttempt.username == username,
+                    LoginAttempt.success == 0,
+                    LoginAttempt.created_at > cutoff,
+                )
             )
-        )).scalar_one()
+        ).scalar_one()
 
 
 # ============================================================
 # 管理员：用户管理
 # ============================================================
 
+
 async def get_all_users() -> list[dict]:
     async with session_scope() as session:
-        rows = (await session.execute(
-            select(User).order_by(User.created_at.desc())
-        )).scalars().all()
+        rows = (
+            (await session.execute(select(User).order_by(User.created_at.desc()))).scalars().all()
+        )
         return [
             {"id": u.id, "username": u.username, "role": u.role, "created_at": u.created_at}
             for u in rows
@@ -892,16 +965,24 @@ async def get_users_with_counts() -> list[dict]:
     分组聚合再在内存里合并，用户数增长时不会线性放大查询次数。
     """
     async with session_scope() as session:
-        users = (await session.execute(
-            select(User).order_by(User.created_at.desc())
-        )).scalars().all()
+        users = (
+            (await session.execute(select(User).order_by(User.created_at.desc()))).scalars().all()
+        )
 
-        file_counts = dict((await session.execute(
-            select(FileRecord.owner_id, func.count()).group_by(FileRecord.owner_id)
-        )).all())
-        chat_counts = dict((await session.execute(
-            select(ChatLog.owner_id, func.count()).group_by(ChatLog.owner_id)
-        )).all())
+        file_counts = dict(
+            (
+                await session.execute(
+                    select(FileRecord.owner_id, func.count()).group_by(FileRecord.owner_id)
+                )
+            ).all()
+        )
+        chat_counts = dict(
+            (
+                await session.execute(
+                    select(ChatLog.owner_id, func.count()).group_by(ChatLog.owner_id)
+                )
+            ).all()
+        )
 
     return [
         {
@@ -920,9 +1001,7 @@ async def update_user_role(user_id: int, role: str) -> bool:
     if role not in ("admin", "user"):
         raise ValueError("角色只能是 admin 或 user")
     async with session_scope() as session:
-        result = await session.execute(
-            update(User).where(User.id == user_id).values(role=role)
-        )
+        result = await session.execute(update(User).where(User.id == user_id).values(role=role))
         return (result.rowcount or 0) > 0
 
 
@@ -939,7 +1018,7 @@ async def delete_user_cascade(user_id: int) -> dict:
         for name, model in (
             ("chat_logs", ChatLog),
             ("token_usage", TokenUsage),
-            ("login_attempts", None),   # 该表按 username 关联，见下
+            ("login_attempts", None),  # 该表按 username 关联，见下
             ("files", FileRecord),
             ("upload_tasks", UploadTask),
         ):
@@ -961,15 +1040,19 @@ async def delete_user_cascade(user_id: int) -> dict:
 # 管理员：全局查询
 # ============================================================
 
-async def get_all_chat_logs(limit: int = 50, offset: int = 0,
-                            username: str = None) -> list[dict]:
+
+async def get_all_chat_logs(
+    limit: int = 50, offset: int = 0, username: str | None = None
+) -> list[dict]:
     async with session_scope() as session:
         stmt = select(ChatLog, User.username).join(User, ChatLog.owner_id == User.id)
         if username:
             stmt = stmt.where(User.username == username)
-        rows = (await session.execute(
-            stmt.order_by(ChatLog.created_at.desc()).limit(limit).offset(offset)
-        )).all()
+        rows = (
+            await session.execute(
+                stmt.order_by(ChatLog.created_at.desc()).limit(limit).offset(offset)
+            )
+        ).all()
         out = []
         for log, uname in rows:
             item = _chat_to_dict(log)
@@ -978,15 +1061,18 @@ async def get_all_chat_logs(limit: int = 50, offset: int = 0,
         return out
 
 
-async def get_all_files(limit: int = 50, offset: int = 0,
-                        username: str = None) -> list[dict]:
+async def get_all_files(
+    limit: int = 50, offset: int = 0, username: str | None = None
+) -> list[dict]:
     async with session_scope() as session:
         stmt = select(FileRecord, User.username).join(User, FileRecord.owner_id == User.id)
         if username:
             stmt = stmt.where(User.username == username)
-        rows = (await session.execute(
-            stmt.order_by(FileRecord.created_at.desc()).limit(limit).offset(offset)
-        )).all()
+        rows = (
+            await session.execute(
+                stmt.order_by(FileRecord.created_at.desc()).limit(limit).offset(offset)
+            )
+        ).all()
         out = []
         for record, uname in rows:
             item = _file_to_dict(record)
@@ -998,28 +1084,33 @@ async def get_all_files(limit: int = 50, offset: int = 0,
 async def get_global_stats() -> dict:
     """全局仪表盘数据（管理员用）。"""
     async with session_scope() as session:
-        user_count = (await session.execute(
-            select(func.count()).select_from(User)
-        )).scalar_one()
-        file_count = (await session.execute(
-            select(func.count()).select_from(FileRecord)
-        )).scalar_one()
+        user_count = (await session.execute(select(func.count()).select_from(User))).scalar_one()
+        file_count = (
+            await session.execute(select(func.count()).select_from(FileRecord))
+        ).scalar_one()
         # date('now') 是 SQLite 的 UTC 日期，与库中 UTC 写入一致
-        today_chats = (await session.execute(
-            select(func.count()).select_from(ChatLog)
-            .where(func.date(ChatLog.created_at) == func.date("now"))
-        )).scalar_one()
-        total_chats = (await session.execute(
-            select(func.count()).select_from(ChatLog)
-        )).scalar_one()
-        total_tokens = (await session.execute(
-            select(func.coalesce(
-                func.sum(TokenUsage.prompt_tokens + TokenUsage.completion_tokens), 0)
+        today_chats = (
+            await session.execute(
+                select(func.count())
+                .select_from(ChatLog)
+                .where(func.date(ChatLog.created_at) == func.date("now"))
             )
-        )).scalar_one()
-        total_cost = (await session.execute(
-            select(func.coalesce(func.sum(TokenUsage.cost_estimate), 0.0))
-        )).scalar_one()
+        ).scalar_one()
+        total_chats = (
+            await session.execute(select(func.count()).select_from(ChatLog))
+        ).scalar_one()
+        total_tokens = (
+            await session.execute(
+                select(
+                    func.coalesce(
+                        func.sum(TokenUsage.prompt_tokens + TokenUsage.completion_tokens), 0
+                    )
+                )
+            )
+        ).scalar_one()
+        total_cost = (
+            await session.execute(select(func.coalesce(func.sum(TokenUsage.cost_estimate), 0.0)))
+        ).scalar_one()
 
     # 磁盘用量（同步 IO，但这个函数是低频的管理接口调用）
     return {
@@ -1040,10 +1131,8 @@ def _dir_size_mb(path: Path) -> float:
         return 0.0
     for root, _dirs, files in os.walk(path):
         for f in files:
-            try:
+            with suppress(OSError):
                 total += os.path.getsize(os.path.join(root, f))
-            except OSError:
-                pass
     return round(total / (1024 * 1024), 2)
 
 
@@ -1051,10 +1140,18 @@ def _dir_size_mb(path: Path) -> float:
 # 审计日志
 # ============================================================
 
-async def insert_audit_log(action: str, user_id: int = None, username: str = None,
-                           resource: str = None, detail: str = None,
-                           ip_address: str = None, user_agent: str = None,
-                           duration_ms: float = None, status: str = "success") -> None:
+
+async def insert_audit_log(
+    action: str,
+    user_id: int | None = None,
+    username: str | None = None,
+    resource: str | None = None,
+    detail: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    duration_ms: float | None = None,
+    status: str = "success",
+) -> None:
     """
     写入一条审计日志。
 
@@ -1063,17 +1160,26 @@ async def insert_audit_log(action: str, user_id: int = None, username: str = Non
     """
     try:
         async with session_scope() as session:
-            session.add(AuditLog(
-                user_id=user_id, username=username, action=action, resource=resource,
-                detail=detail, ip_address=ip_address, user_agent=user_agent,
-                duration_ms=duration_ms, status=status,
-            ))
+            session.add(
+                AuditLog(
+                    user_id=user_id,
+                    username=username,
+                    action=action,
+                    resource=resource,
+                    detail=detail,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                    duration_ms=duration_ms,
+                    status=status,
+                )
+            )
     except Exception as e:
         logger.warning("审计日志写入失败: {}", e)
 
 
-async def get_audit_logs(limit: int = 50, offset: int = 0,
-                         action: str = None, username: str = None) -> list[dict]:
+async def get_audit_logs(
+    limit: int = 50, offset: int = 0, action: str | None = None, username: str | None = None
+) -> list[dict]:
     """查询审计日志，支持按 action 模糊匹配、按 username 精确过滤。"""
     async with session_scope() as session:
         stmt = select(AuditLog)
@@ -1081,15 +1187,27 @@ async def get_audit_logs(limit: int = 50, offset: int = 0,
             stmt = stmt.where(AuditLog.action.like(f"%{action}%"))
         if username:
             stmt = stmt.where(AuditLog.username == username)
-        rows = (await session.execute(
-            stmt.order_by(AuditLog.created_at.desc()).limit(limit).offset(offset)
-        )).scalars().all()
+        rows = (
+            (
+                await session.execute(
+                    stmt.order_by(AuditLog.created_at.desc()).limit(limit).offset(offset)
+                )
+            )
+            .scalars()
+            .all()
+        )
         return [
             {
-                "id": r.id, "user_id": r.user_id, "username": r.username,
-                "action": r.action, "resource": r.resource, "detail": r.detail,
-                "ip_address": r.ip_address, "user_agent": r.user_agent,
-                "duration_ms": r.duration_ms, "status": r.status,
+                "id": r.id,
+                "user_id": r.user_id,
+                "username": r.username,
+                "action": r.action,
+                "resource": r.resource,
+                "detail": r.detail,
+                "ip_address": r.ip_address,
+                "user_agent": r.user_agent,
+                "duration_ms": r.duration_ms,
+                "status": r.status,
                 "created_at": r.created_at,
             }
             for r in rows
@@ -1112,6 +1230,7 @@ async def count_audit_logs() -> int:
 # ============================================================
 # 评测报告
 # ============================================================
+
 
 def _eval_to_dict(report: EvalReport) -> dict:
     return {
@@ -1139,19 +1258,31 @@ def _eval_to_dict(report: EvalReport) -> dict:
 
 # 允许通过 update_eval_report 更新的字段（白名单，防止拼错字段名却不报错）
 _EVAL_UPDATABLE = {
-    "status", "progress", "total_questions", "completed", "answered_count",
-    "hallucination_count", "hallucination_rate", "honesty_rate",
-    "avg_match_score", "poor_retrieval_count", "duration_seconds",
-    "metrics_json", "results_json", "recommendations_json", "error",
+    "status",
+    "progress",
+    "total_questions",
+    "completed",
+    "answered_count",
+    "hallucination_count",
+    "hallucination_rate",
+    "honesty_rate",
+    "avg_match_score",
+    "poor_retrieval_count",
+    "duration_seconds",
+    "metrics_json",
+    "results_json",
+    "recommendations_json",
+    "error",
 }
 
 
-async def create_eval_report(owner_id: int, testset_name: str,
-                             total_questions: int = 0) -> int:
+async def create_eval_report(owner_id: int, testset_name: str, total_questions: int = 0) -> int:
     async with session_scope() as session:
         report = EvalReport(
-            owner_id=owner_id, testset_name=testset_name,
-            total_questions=total_questions, status="pending",
+            owner_id=owner_id,
+            testset_name=testset_name,
+            total_questions=total_questions,
+            status="pending",
         )
         session.add(report)
         await session.flush()
@@ -1163,12 +1294,10 @@ async def update_eval_report(report_id: int, **fields) -> None:
     if not values:
         return
     async with session_scope() as session:
-        await session.execute(
-            update(EvalReport).where(EvalReport.id == report_id).values(**values)
-        )
+        await session.execute(update(EvalReport).where(EvalReport.id == report_id).values(**values))
 
 
-async def get_eval_report(report_id: int, owner_id: int = None) -> Optional[dict]:
+async def get_eval_report(report_id: int, owner_id: int | None = None) -> dict | None:
     async with session_scope() as session:
         stmt = select(EvalReport).where(EvalReport.id == report_id)
         if owner_id is not None:
@@ -1177,19 +1306,21 @@ async def get_eval_report(report_id: int, owner_id: int = None) -> Optional[dict
         return _eval_to_dict(report) if report else None
 
 
-async def list_eval_reports(owner_id: int = None, limit: int = 20) -> list[dict]:
+async def list_eval_reports(owner_id: int | None = None, limit: int = 20) -> list[dict]:
     """列出评测报告（不含体积大的 results_json）。"""
     async with session_scope() as session:
         stmt = select(EvalReport)
         if owner_id is not None:
             stmt = stmt.where(EvalReport.owner_id == owner_id)
-        rows = (await session.execute(
-            stmt.order_by(EvalReport.created_at.desc()).limit(limit)
-        )).scalars().all()
+        rows = (
+            (await session.execute(stmt.order_by(EvalReport.created_at.desc()).limit(limit)))
+            .scalars()
+            .all()
+        )
         out = []
         for r in rows:
             item = _eval_to_dict(r)
-            item.pop("results_json", None)   # 逐题明细只在详情接口返回
+            item.pop("results_json", None)  # 逐题明细只在详情接口返回
             out.append(item)
         return out
 
@@ -1197,15 +1328,14 @@ async def list_eval_reports(owner_id: int = None, limit: int = 20) -> list[dict]
 async def delete_eval_report(report_id: int) -> bool:
     """删除评测报告，返回是否删到了行。"""
     async with session_scope() as session:
-        result = await session.execute(
-            delete(EvalReport).where(EvalReport.id == report_id)
-        )
+        result = await session.execute(delete(EvalReport).where(EvalReport.id == report_id))
         return (result.rowcount or 0) > 0
 
 
 # ============================================================
 # 备份
 # ============================================================
+
 
 async def backup_database(dest_path: Path) -> None:
     """
@@ -1220,5 +1350,5 @@ async def backup_database(dest_path: Path) -> None:
         dest_path.unlink()
     async with engine.connect() as conn:
         # VACUUM INTO 的目标路径作为字面量传入（参数化不支持）
-        await conn.execute(text(f"VACUUM INTO '{str(dest_path).replace(chr(39), chr(39)*2)}'"))
+        await conn.execute(text(f"VACUUM INTO '{str(dest_path).replace(chr(39), chr(39) * 2)}'"))
     logger.info("数据库备份完成: {}", str(dest_path))

@@ -2,11 +2,12 @@
 全局配置模块
 使用 pydantic-settings 读取 .env，封装所有模型客户端
 """
+
 import os
 from pathlib import Path
-from pydantic_settings import BaseSettings
-from loguru import logger
 
+from loguru import logger
+from pydantic_settings import BaseSettings
 
 # 项目根目录
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -60,7 +61,9 @@ class Settings(BaseSettings):
     password_min_length: int = 8  # 密码最小长度
     max_login_attempts: int = 5  # 最大登录失败次数
     login_lockout_minutes: int = 30  # 登录锁定时间（分钟）
-    trust_proxy_headers: bool = True  # 是否信任 X-Forwarded-For / X-Real-IP（部署在反向代理后时为 True）
+    trust_proxy_headers: bool = (
+        True  # 是否信任 X-Forwarded-For / X-Real-IP（部署在反向代理后时为 True）
+    )
     # 允许以默认密钥/口令启动。仅供本地开发与 CI 使用，生产必须为 False
     allow_insecure_defaults: bool = False
 
@@ -166,7 +169,7 @@ def validate_security_settings() -> list[str]:
         + "、".join(insecure)
         + "\n这些值来自代码仓库，任何人可见，等同于没有保护。"
         "\n请在 config/.env 中改为随机值（例如 JWT_SECRET_KEY 用 "
-        "`python -c \"import secrets;print(secrets.token_urlsafe(48))\"` 生成）。"
+        '`python -c "import secrets;print(secrets.token_urlsafe(48))"` 生成）。'
         "\n本地开发/CI 可设置 ALLOW_INSECURE_DEFAULTS=true 跳过此检查。"
     )
 
@@ -225,7 +228,7 @@ async def close_llm_clients() -> None:
                 result = client.close()
                 if hasattr(result, "__await__"):
                     await result
-            except Exception as e:  # noqa: BLE001 - 退出清理失败不该影响关闭流程
+            except Exception as e:
                 logger.debug("关闭 LLM 客户端 {} 失败: {}", attr, e)
     _llm_cache.clear()
 
@@ -269,7 +272,9 @@ def rerank_with_dashscope(query: str, documents: list[str], top_n: int = 5) -> l
                 {
                     "index": item["index"],
                     "score": item["relevance_score"],
-                    "text": item["document"] if isinstance(item["document"], str) else item["document"]["text"],
+                    "text": item["document"]
+                    if isinstance(item["document"], str)
+                    else item["document"]["text"],
                 }
                 for item in result.output["results"]
             ]
@@ -277,13 +282,9 @@ def rerank_with_dashscope(query: str, documents: list[str], top_n: int = 5) -> l
             logger.warning(f"Rerank API 返回异常: {result.status_code} - {result.message}")
             # 降级：返回原始排序
             return [
-                {"index": i, "score": 1.0, "text": doc}
-                for i, doc in enumerate(documents[:top_n])
+                {"index": i, "score": 1.0, "text": doc} for i, doc in enumerate(documents[:top_n])
             ]
     except Exception as e:
         logger.error(f"Rerank API 调用失败: {e}")
         # 降级
-        return [
-            {"index": i, "score": 1.0, "text": doc}
-            for i, doc in enumerate(documents[:top_n])
-        ]
+        return [{"index": i, "score": 1.0, "text": doc} for i, doc in enumerate(documents[:top_n])]

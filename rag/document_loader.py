@@ -2,11 +2,12 @@
 多格式文档加载器
 支持 PDF/Word/Excel/TXT/Markdown/图片(OCR)/ZIP压缩包
 """
+
 import os
-import zipfile
 import tempfile
+import zipfile
 from pathlib import Path
-from typing import Optional
+
 from loguru import logger
 
 
@@ -14,6 +15,7 @@ def load_pdf(filepath: str) -> str:
     """加载 PDF 文件文本"""
     try:
         from pypdf import PdfReader
+
         reader = PdfReader(filepath)
         texts = []
         for page in reader.pages:
@@ -32,6 +34,7 @@ def load_docx(filepath: str) -> str:
     """加载 Word 文档文本"""
     try:
         from docx import Document
+
         doc = Document(filepath)
         texts = [para.text for para in doc.paragraphs if para.text.strip()]
         content = "\n\n".join(texts)
@@ -46,6 +49,7 @@ def load_xlsx(filepath: str) -> str:
     """加载 Excel 文件文本（逐行拼接）"""
     try:
         import openpyxl
+
         # 使用 with 语句确保资源正确释放
         with openpyxl.load_workbook(filepath, read_only=True, data_only=True) as wb:
             all_texts = []
@@ -54,9 +58,7 @@ def load_xlsx(filepath: str) -> str:
                 ws = wb[sheet_name]
                 sheet_texts = [f"--- Sheet: {sheet_name} ---"]
                 for row in ws.iter_rows(values_only=True):
-                    row_text = " | ".join(
-                        str(cell) for cell in row if cell is not None
-                    )
+                    row_text = " | ".join(str(cell) for cell in row if cell is not None)
                     if row_text.strip():
                         sheet_texts.append(row_text)
                 all_texts.append("\n".join(sheet_texts))
@@ -76,7 +78,7 @@ def load_txt_md(filepath: str) -> str:
     encodings = ["utf-8", "gbk", "gb2312", "latin-1"]
     for enc in encodings:
         try:
-            with open(filepath, "r", encoding=enc) as f:
+            with open(filepath, encoding=enc) as f:
                 content = f.read()
             logger.info(f"TXT/MD 解析完成: {filepath}, 编码={enc}, {len(content)} 字符")
             return content
@@ -88,8 +90,8 @@ def load_txt_md(filepath: str) -> str:
 def load_image_ocr(filepath: str) -> str:
     """对图片进行 OCR 文字提取（需要 Tesseract 已安装）"""
     try:
-        from PIL import Image
         import pytesseract
+        from PIL import Image
 
         with Image.open(filepath) as image:
             text = pytesseract.image_to_string(image, lang="chi_sim+eng")
@@ -118,7 +120,7 @@ def load_zip(filepath: str, upload_dir: str) -> list[str]:
         try:
             zf.extractall(extract_dir)
 
-            for root, dirs, files in os.walk(extract_dir):
+            for root, _dirs, files in os.walk(extract_dir):
                 for fname in files:
                     full_path = os.path.join(root, fname)
                     try:
@@ -130,6 +132,7 @@ def load_zip(filepath: str, upload_dir: str) -> list[str]:
         finally:
             # 清理临时目录
             import shutil
+
             shutil.rmtree(extract_dir, ignore_errors=True)
 
     combined = "\n\n".join(texts)
@@ -172,7 +175,9 @@ def load_single_document(filepath: str, upload_dir: str = "") -> str:
 
     loader = SUPPORTED_EXTENSIONS.get(ext)
     if loader is None:
-        raise ValueError(f"不支持的文件格式: {ext}。支持的格式: {list(SUPPORTED_EXTENSIONS.keys())}")
+        raise ValueError(
+            f"不支持的文件格式: {ext}。支持的格式: {list(SUPPORTED_EXTENSIONS.keys())}"
+        )
 
     return loader(filepath)
 
@@ -189,11 +194,13 @@ def load_documents_from_paths(filepaths: list[str], upload_dir: str = "") -> lis
         try:
             content = load_single_document(fp, upload_dir)
             if content.strip():
-                results.append({
-                    "filepath": fp,
-                    "filename": Path(fp).name,
-                    "content": content,
-                })
+                results.append(
+                    {
+                        "filepath": fp,
+                        "filename": Path(fp).name,
+                        "content": content,
+                    }
+                )
             else:
                 logger.warning(f"文档内容为空: {fp}")
         except Exception as e:

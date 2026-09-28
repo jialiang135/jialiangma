@@ -6,12 +6,13 @@
 可能耗时几分钟到几十分钟。因此 POST /run 只负责提交任务并返回 report_id，
 进度与结果通过 GET /reports/{id} 轮询 —— 与知识库重建同一模式。
 """
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from core.auth import get_current_user, require_admin
 from core.async_queue import async_queue
+from core.auth import get_current_user, require_admin
 from core.database import (
     create_eval_report,
     delete_eval_report,
@@ -25,15 +26,19 @@ router = APIRouter(prefix="/api/eval", tags=["评测"])
 
 # 允许请求的 RAGAS 指标（白名单，避免把任意字符串传给 ragas）
 ALLOWED_METRICS = {
-    "faithfulness", "answer_relevancy", "context_precision", "context_recall",
+    "faithfulness",
+    "answer_relevancy",
+    "context_precision",
+    "context_recall",
 }
 
 
 class EvalRunRequest(BaseModel):
     testset: str = Field(default="auto_eval", description="评测集名称")
     metrics: list[str] = Field(default_factory=lambda: list(DEFAULT_METRICS))
-    sample_limit: int = Field(default=DEFAULT_SAMPLE_LIMIT, ge=1, le=100,
-                              description="只评测前 N 题（全量会很慢）")
+    sample_limit: int = Field(
+        default=DEFAULT_SAMPLE_LIMIT, ge=1, le=100, description="只评测前 N 题（全量会很慢）"
+    )
 
 
 @router.get("/testsets")
@@ -57,14 +62,16 @@ async def run_evaluation(
 
     try:
         async_queue.enqueue(
-            run_eval_task, report_id, owner_id, body.testset,
-            metrics, body.sample_limit,
+            run_eval_task,
+            report_id,
+            owner_id,
+            body.testset,
+            metrics,
+            body.sample_limit,
         )
     except Exception as e:
-        await update_eval_report(
-            report_id, status="failed", error=f"任务提交失败: {str(e)[:200]}"
-        )
-        raise HTTPException(status_code=503, detail=f"评测任务提交失败: {str(e)[:200]}")
+        await update_eval_report(report_id, status="failed", error=f"任务提交失败: {str(e)[:200]}")
+        raise HTTPException(status_code=503, detail=f"评测任务提交失败: {str(e)[:200]}") from e
 
     logger.info(
         f"[Eval] 评测任务已提交: report={report_id}, testset={body.testset}, "
@@ -73,8 +80,12 @@ async def run_evaluation(
     return {
         "success": True,
         "message": "评测任务已提交，请轮询进度",
-        "data": {"report_id": report_id, "testset": body.testset,
-                 "metrics": metrics, "sample_limit": body.sample_limit},
+        "data": {
+            "report_id": report_id,
+            "testset": body.testset,
+            "metrics": metrics,
+            "sample_limit": body.sample_limit,
+        },
     }
 
 

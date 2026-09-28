@@ -12,35 +12,37 @@
    **没有 event loop**，而这正是我们要的"重活离开事件循环"。它们保持同步，
    内部的数据库调用通过 ``run_async_from_thread`` 提交回主循环执行。
 """
+
 import asyncio
+import contextlib
 import os
 import tempfile
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from loguru import logger
 
-from core.schemas import KnowledgeBaseStats, FileMetaOut, APIResponse
+from config.settings import settings
+from core.async_queue import async_queue
 from core.auth import get_current_user, require_admin
 from core.database import (
-    get_files_by_owner,
-    get_file_by_id,
-    delete_file_record,
-    delete_all_file_records,
-    find_file_by_hash_or_name,
     create_upload_task,
-    update_upload_task,
+    delete_all_file_records,
+    delete_file_record,
+    find_file_by_hash_or_name,
+    get_file_by_id,
+    get_files_by_owner,
     get_upload_task,
+    update_upload_task,
 )
 from core.kb_tasks import (
     compute_file_hash,
     process_file_task,
     rebuild_task,
 )
-from core.paths import safe_filename, safe_join, remove_within
-from core.async_queue import async_queue
-from config.settings import settings
+from core.paths import remove_within, safe_filename
+from core.schemas import APIResponse, FileMetaOut, KnowledgeBaseStats
 from rag.document_loader import SUPPORTED_EXTENSIONS
 
 router = APIRouter(prefix="/api/kb", tags=["知识库"])
@@ -64,6 +66,7 @@ REBUILD_TASK_FILENAME = "__rebuild__"
 
 
 # ─── 校验 ───
+
 
 def _validate_upload(file: UploadFile) -> tuple[str | None, str | None]:
     """
@@ -109,7 +112,9 @@ def _warn_on_mime_mismatch(filename: str, content_type: str | None) -> None:
     if expected and not content_type.lower().startswith(expected):
         logger.warning(
             "上传 Content-Type 与扩展名不符: {} 声明={} 预期前缀={}",
-            filename, content_type, expected,
+            filename,
+            content_type,
+            expected,
         )
 
 
@@ -121,7 +126,9 @@ async def _spool_to_temp(file: UploadFile, suffix: str, max_bytes: int) -> tuple
     批量上传时内存放大 N 倍。这里改为 1MB 分块，并在累积过程中硬性拦截超限
     （不依赖客户端的 Content-Length，避免被伪造绕过）。
     """
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    # 刻意不用 with：成功时文件要保留（交给后台任务处理），失败时才清理，
+    # 生命周期由下面的 try/except 显式管理
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)  # noqa: SIM115
     tmp_path = tmp.name
     size = 0
     try:
@@ -141,10 +148,8 @@ async def _spool_to_temp(file: UploadFile, suffix: str, max_bytes: int) -> tuple
     except BaseException:
         # 超限 / 客户端断开 / 磁盘错误：都不要留下半成品临时文件
         tmp.close()
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise
 
 
@@ -162,12 +167,14 @@ def _clear_upload_dir(upload_dir: Path) -> None:
 
 # ─── 路由 ───
 
+
 @router.get("/files", response_model=KnowledgeBaseStats)
 async def list_files(user: dict = Depends(get_current_user)):
     """列出知识库文件"""
     KB_OWNER_ID = 1
     files = await get_files_by_owner(KB_OWNER_ID)
     from rag.vector_store import get_collection_stats
+
     stats = await asyncio.to_thread(get_collection_stats, KB_OWNER_ID)
 
     return KnowledgeBaseStats(
@@ -221,9 +228,7 @@ async def upload_files(
         task_id = None
         try:
             # ── 2. 分块落盘（带超限硬拦截） ──
-            tmp_path, file_size = await _spool_to_temp(
-                file, Path(filename).suffix, max_bytes
-            )
+            tmp_path, file_size = await _spool_to_temp(file, Path(filename).suffix, max_bytes)
 
             # ── 3. 快速 hash 去重 ──
             file_hash = await asyncio.to_thread(compute_file_hash, tmp_path)
@@ -243,31 +248,32 @@ async def upload_files(
             # 前端还会去轮询一个永远不会推进的任务。
             async_queue.enqueue(
                 process_file_task,
-                task_id, tmp_path, filename, owner_id,
+                task_id,
+                tmp_path,
+                filename,
+                owner_id,
             )
             task_ids.append(task_id)
 
         except HTTPException as e:
             # 超限等客户端错误：清理临时文件后记为 rejected，而不是 500
             if tmp_path:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(tmp_path)
-                except OSError:
-                    pass
             rejected.append({"filename": filename, "reason": str(e.detail)})
             logger.warning("[KB] 拒绝上传: {} - {}", filename, e.detail)
         except Exception as e:
             if tmp_path:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(tmp_path)
-                except OSError:
-                    pass
             # 已经把任务行写进库了，但没能提交给队列 —— 标记为失败，
             # 否则前端会一直轮询到一个永久 pending 的任务
             if task_id:
                 try:
                     await update_upload_task(
-                        task_id, status="failed", progress=100,
+                        task_id,
+                        status="failed",
+                        progress=100,
                         error=f"任务提交失败: {str(e)[:200]}",
                     )
                 except Exception as db_err:
@@ -308,8 +314,8 @@ async def get_upload_status(task_id: str, user: dict = Depends(get_current_user)
         "success": True,
         "task_id": task["task_id"],
         "filename": task["filename"],
-        "status": task["status"],       # pending / processing / done / failed / skipped
-        "progress": task["progress"],    # 0-100
+        "status": task["status"],  # pending / processing / done / failed / skipped
+        "progress": task["progress"],  # 0-100
         "chunk_count": task["chunk_count"],
         "error": task["error"],
         "is_rebuild": task["filename"] == REBUILD_TASK_FILENAME,
@@ -322,6 +328,7 @@ async def delete_file(file_id: int, user: dict = Depends(require_admin)):
     """删除指定文件（仅管理员）"""
     owner_id = user["owner_id"]
     from rag.vector_store import delete_by_file
+
     file_record = await get_file_by_id(file_id)
     if not file_record:
         raise HTTPException(status_code=404, detail="文件不存在")
@@ -382,7 +389,7 @@ async def rebuild_knowledge_base(user: dict = Depends(require_admin)):
         await update_upload_task(
             task_id, status="failed", progress=100, error=f"任务提交失败: {str(e)[:200]}"
         )
-        raise HTTPException(status_code=503, detail=f"重建任务提交失败: {str(e)[:200]}")
+        raise HTTPException(status_code=503, detail=f"重建任务提交失败: {str(e)[:200]}") from e
 
     logger.info(f"[KB] 重建任务已提交: task_id={task_id}")
     return APIResponse(

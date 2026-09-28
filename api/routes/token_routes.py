@@ -2,6 +2,7 @@
 Token 使用统计 API 路由
 提供按用户、按天聚合的 token 用量和费用统计
 """
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 
@@ -29,4 +30,4 @@ async def api_token_stats(
         }
     except Exception as e:
         logger.error(f"[API] Token 统计查询失败: {e}")
-        raise HTTPException(status_code=500, detail="查询失败，请稍后重试")
+        raise HTTPException(status_code=500, detail="查询失败，请稍后重试") from e

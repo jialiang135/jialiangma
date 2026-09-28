@@ -9,8 +9,8 @@ Features:
     - hybrid_search(): BM25 + 向量语义的 RRF 融合检索
     - invalidate_bm25_cache(): 文档更新时使索引失效
 """
+
 import re
-from typing import Optional
 
 from loguru import logger
 from rank_bm25 import BM25Okapi
@@ -55,7 +55,7 @@ class BM25IndexManager:
         self._indices: dict[int, tuple[BM25Okapi, list[dict]]] = {}
 
     # ------------------------------------------------------------------
-    def build_index(self, owner_id: int) -> tuple[Optional[BM25Okapi], list[dict]]:
+    def build_index(self, owner_id: int) -> tuple[BM25Okapi | None, list[dict]]:
         """
         从 ChromaDB 拉取指定用户的全部文档，构建 BM25Okapi 索引。
 
@@ -100,7 +100,7 @@ class BM25IndexManager:
         return bm25, documents
 
     # ------------------------------------------------------------------
-    def get_index(self, owner_id: int) -> tuple[Optional[BM25Okapi], list[dict]]:
+    def get_index(self, owner_id: int) -> tuple[BM25Okapi | None, list[dict]]:
         """获取 (或惰性构建) 指定用户的 BM25 索引。"""
         if owner_id not in self._indices:
             result = self.build_index(owner_id)
@@ -111,7 +111,7 @@ class BM25IndexManager:
         return self._indices.get(owner_id, (None, []))
 
     # ------------------------------------------------------------------
-    def invalidate(self, owner_id: Optional[int] = None) -> None:
+    def invalidate(self, owner_id: int | None = None) -> None:
         """
         使 BM25 索引缓存失效。
 
@@ -178,7 +178,9 @@ def bm25_search(
     scored.sort(key=lambda x: x["score"], reverse=True)
     result = scored[:top_k]
 
-    logger.debug("BM25 检索: query='{}', owner_id={}, results={}", query[:50], owner_id, len(result))
+    logger.debug(
+        "BM25 检索: query='{}', owner_id={}, results={}", query[:50], owner_id, len(result)
+    )
     return result
 
 
@@ -264,6 +266,6 @@ def hybrid_search(
     return sorted_results
 
 
-def invalidate_bm25_cache(owner_id: Optional[int] = None) -> None:
+def invalidate_bm25_cache(owner_id: int | None = None) -> None:
     """使 BM25 缓存失效（文档增删后调用）。"""
     _bm25_manager.invalidate(owner_id)

@@ -2,21 +2,28 @@
 ChromaDB 向量数据库封装
 支持 owner_id 元数据过滤，实现多用户数据隔离
 """
+
+# 启用延迟注解：注解不再在导入时求值。
+# 原因：chromadb.PersistentClient 是**函数**（工厂）而不是类，写成
+# `chromadb.PersistentClient | None` 会在导入时抛
+# TypeError: unsupported operand type(s) for |: 'function' and 'NoneType'。
+# （`Optional[X]` 不会，因为它只是把 X 包一层、不当类型用。）
+from __future__ import annotations
+
 import os
-from typing import Optional
+
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from langchain_chroma import Chroma
 from loguru import logger
 
-from config.settings import settings, get_dashscope_embeddings
-
+from config.settings import get_dashscope_embeddings, settings
 
 COLLECTION_NAME = "knowledge_base"
 
 # 全局单例
-_chroma_client: Optional[chromadb.PersistentClient] = None
-_vector_store: Optional[Chroma] = None
+_chroma_client: chromadb.PersistentClient | None = None
+_vector_store: Chroma | None = None
 
 
 def _get_chroma_client() -> chromadb.PersistentClient:
@@ -58,6 +65,7 @@ def reset_vector_store():
 # 缓存失效
 # ========================================
 
+
 def _invalidate_retrieval_caches(owner_id: int) -> None:
     """
     文档变更后清掉检索侧缓存。
@@ -74,14 +82,14 @@ def _invalidate_retrieval_caches(owner_id: int) -> None:
         from rag.bm25_search import invalidate_bm25_cache
 
         invalidate_bm25_cache(owner_id)
-    except Exception as e:  # noqa: BLE001 - 缓存失效失败不该让写操作失败
+    except Exception as e:
         logger.warning("BM25 缓存失效失败 (owner_id={}): {}", owner_id, e)
 
     try:
         from rag.search_cache import clear_cache
 
         clear_cache()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("检索结果缓存清理失败: {}", e)
 
 
@@ -89,10 +97,11 @@ def _invalidate_retrieval_caches(owner_id: int) -> None:
 # 向量库 CRUD
 # ========================================
 
+
 def add_documents(
     chunks: list[str],
     metadatas: list[dict],
-    ids: Optional[list[str]] = None,
+    ids: list[str] | None = None,
     batch_size: int = 10,
 ) -> list[str]:
     """
@@ -107,18 +116,16 @@ def add_documents(
 
     if ids is None:
         import hashlib
-        ids = [
-            hashlib.md5(chunk.encode("utf-8")).hexdigest()[:16]
-            for chunk in chunks
-        ]
+
+        ids = [hashlib.md5(chunk.encode("utf-8")).hexdigest()[:16] for chunk in chunks]
 
     all_ids = []
     total = len(chunks)
 
     for i in range(0, total, batch_size):
-        batch_chunks = chunks[i:i + batch_size]
-        batch_metadatas = metadatas[i:i + batch_size]
-        batch_ids = ids[i:i + batch_size]
+        batch_chunks = chunks[i : i + batch_size]
+        batch_metadatas = metadatas[i : i + batch_size]
+        batch_ids = ids[i : i + batch_size]
 
         try:
             added = vector_store.add_texts(
@@ -184,10 +191,12 @@ def delete_by_file(filename: str, owner_id: int) -> int:
     try:
         # 查找匹配的文档ID
         existing = collection.get(
-            where={"$and": [
-                {"owner_id": owner_id},
-                {"source": filename},
-            ]}
+            where={
+                "$and": [
+                    {"owner_id": owner_id},
+                    {"source": filename},
+                ]
+            }
         )
         if existing["ids"]:
             collection.delete(ids=existing["ids"])
@@ -210,9 +219,7 @@ def delete_all_by_owner(owner_id: int) -> int:
 
     count = 0
     try:
-        existing = collection.get(
-            where={"owner_id": owner_id}
-        )
+        existing = collection.get(where={"owner_id": owner_id})
         if existing["ids"]:
             collection.delete(ids=existing["ids"])
             count = len(existing["ids"])

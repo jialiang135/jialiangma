@@ -20,6 +20,7 @@
 注意 ``os.path.basename`` 不足以解决问题：Linux 上它不把 ``\\`` 视作
 分隔符，``os.path.basename("..\\\\..\\\\main.py")`` 会原样返回。
 """
+
 from __future__ import annotations
 
 import re

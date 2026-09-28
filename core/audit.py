@@ -2,9 +2,9 @@
 审计日志模块
 记录所有关键操作：登录、查询、文档操作、配置变更
 """
+
 import time
 
-from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # 建表语句已收归 core/database.py 的 AuditLog 模型，
@@ -14,13 +14,13 @@ from core.database import insert_audit_log
 
 async def log_audit(
     action: str,
-    user_id: int = None,
-    username: str = None,
-    resource: str = None,
-    detail: str = None,
-    ip_address: str = None,
-    user_agent: str = None,
-    duration_ms: float = None,
+    user_id: int | None = None,
+    username: str | None = None,
+    resource: str | None = None,
+    detail: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    duration_ms: float | None = None,
     status: str = "success",
 ) -> None:
     """记录一条审计日志（异步写入）。"""
@@ -55,6 +55,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
         if auth_header.startswith("Bearer "):
             try:
                 from core.auth import decode_token
+
                 payload = decode_token(auth_header[7:])
                 if payload:
                     user_id = payload.get("sub")

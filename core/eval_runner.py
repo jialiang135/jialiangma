@@ -34,6 +34,7 @@ RAGAS 侧（每条问题的回答 + 检索到的上下文 + 期望答案）：
 用于类型标注，实际走 DeepSeek 路径时不会被实例化。
 上游修好后删掉 ``_install_ragas_compat_shim()`` 即可。
 """
+
 from __future__ import annotations
 
 import json
@@ -47,7 +48,6 @@ from loguru import logger
 
 from config.settings import settings
 from core.database import (
-    get_eval_report,
     run_async_from_thread,
     update_eval_report,
 )
@@ -55,8 +55,14 @@ from core.database import (
 # 判定"如实回答不知道"的关键词。知识库检索为空时，系统提示词要求回答
 # "我的知识库中没有这方面的信息"，这里按同一口径检验。
 _REFUSAL_MARKERS = (
-    "知识库中没有", "知识库中未找到", "没有相关信息", "未找到相关",
-    "没有这方面的信息", "暂无相关", "没有记录", "无法回答",
+    "知识库中没有",
+    "知识库中未找到",
+    "没有相关信息",
+    "未找到相关",
+    "没有这方面的信息",
+    "暂无相关",
+    "没有记录",
+    "无法回答",
 )
 
 # ── 默认参数（API 路由与评测 Agent 共用同一份，避免两处漂移）──
@@ -116,6 +122,7 @@ def _load_ragas():
 # 评测集
 # ------------------------------------------------------------
 
+
 def list_testsets() -> list[dict]:
     """列出 assets/test_data 下可用的评测集。"""
     test_dir = settings.resolve_path(settings.test_data_dir)
@@ -126,11 +133,13 @@ def list_testsets() -> list[dict]:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             questions = data.get("questions") or []
-            out.append({
-                "name": path.stem,
-                "title": data.get("name", path.stem),
-                "count": len(questions),
-            })
+            out.append(
+                {
+                    "name": path.stem,
+                    "title": data.get("name", path.stem),
+                    "count": len(questions),
+                }
+            )
         except Exception as e:
             logger.warning("评测集读取失败: {} - {}", path.name, e)
     return out
@@ -167,6 +176,7 @@ def load_testset(name: str) -> list[dict]:
 # 逐题生成回答 + 检索上下文
 # ------------------------------------------------------------
 
+
 def _answer_one_sync(question: str, owner_id: int) -> tuple[str, list[str], list[str]]:
     """
     对单条问题跑一次问答图，取回：回答、检索到的上下文、推理步骤。
@@ -184,9 +194,7 @@ def _answer_one_sync(question: str, owner_id: int) -> tuple[str, list[str], list
 
     answer = final_state.get("final_answer", "") or ""
     contexts = [
-        d.get("content", "")
-        for d in (final_state.get("retrieved_docs") or [])
-        if d.get("content")
+        d.get("content", "") for d in (final_state.get("retrieved_docs") or []) if d.get("content")
     ]
     steps = [s for s in (final_state.get("reasoning_log") or []) if isinstance(s, str)]
     return answer, contexts, steps
@@ -200,6 +208,7 @@ def _looks_like_refusal(answer: str) -> bool:
 # ------------------------------------------------------------
 # 主流程（后台任务，跑在线程池里）
 # ------------------------------------------------------------
+
 
 def _select_samples(questions: list[dict], limit: int | None) -> list[dict]:
     """
@@ -231,8 +240,9 @@ def _select_samples(questions: list[dict], limit: int | None) -> list[dict]:
     return selected
 
 
-def run_eval_task(report_id: int, owner_id: int, testset_name: str,
-                  metrics: list[str], limit: int | None = None) -> None:
+def run_eval_task(
+    report_id: int, owner_id: int, testset_name: str, metrics: list[str], limit: int | None = None
+) -> None:
     """
     执行一次评测并落库。**同步函数**，由线程池调度。
 
@@ -246,14 +256,23 @@ def run_eval_task(report_id: int, owner_id: int, testset_name: str,
         questions = load_testset(testset_name)
         questions = _select_samples(questions, limit)
         if not questions:
-            run_async_from_thread(update_eval_report(
-                report_id, status="failed", error="评测集为空", progress=100,
-            ))
+            run_async_from_thread(
+                update_eval_report(
+                    report_id,
+                    status="failed",
+                    error="评测集为空",
+                    progress=100,
+                )
+            )
             return
 
-        run_async_from_thread(update_eval_report(
-            report_id, total_questions=len(questions), progress=10,
-        ))
+        run_async_from_thread(
+            update_eval_report(
+                report_id,
+                total_questions=len(questions),
+                progress=10,
+            )
+        )
 
         # ── 1. 逐题生成回答 ──
         samples: list[dict] = []
@@ -269,21 +288,25 @@ def run_eval_task(report_id: int, owner_id: int, testset_name: str,
                 answer, contexts = "", []
 
             refused = _looks_like_refusal(answer)
-            per_question.append({
-                "id": item.get("id"),
-                "category": category,
-                "question": question,
-                "expected_answer": expected,
-                "answer": answer,
-                "contexts_count": len(contexts),
-                "refused": refused,
-            })
-            samples.append({
-                "user_input": question,
-                "response": answer or "（无回答）",
-                "retrieved_contexts": contexts or ["（未检索到任何上下文）"],
-                "reference": expected or "（无期望答案）",
-            })
+            per_question.append(
+                {
+                    "id": item.get("id"),
+                    "category": category,
+                    "question": question,
+                    "expected_answer": expected,
+                    "answer": answer,
+                    "contexts_count": len(contexts),
+                    "refused": refused,
+                }
+            )
+            samples.append(
+                {
+                    "user_input": question,
+                    "response": answer or "（无回答）",
+                    "retrieved_contexts": contexts or ["（未检索到任何上下文）"],
+                    "reference": expected or "（无期望答案）",
+                }
+            )
 
             progress = 10 + int(45 * i / len(questions))
             run_async_from_thread(update_eval_report(report_id, progress=progress))
@@ -304,11 +327,17 @@ def run_eval_task(report_id: int, owner_id: int, testset_name: str,
             if selected:
                 dataset = rag["EvaluationDataset"].from_list(samples)
                 result = rag["evaluate"](
-                    dataset=dataset, metrics=selected, llm=judge_llm, embeddings=judge_emb,
+                    dataset=dataset,
+                    metrics=selected,
+                    llm=judge_llm,
+                    embeddings=judge_emb,
                 )
                 # ragas 返回的结果对象可转 dict；只保留数值型指标
-                raw = result.to_pandas().to_dict(orient="list") \
-                    if hasattr(result, "to_pandas") else dict(result)
+                raw = (
+                    result.to_pandas().to_dict(orient="list")
+                    if hasattr(result, "to_pandas")
+                    else dict(result)
+                )
                 for key, value in raw.items():
                     if key in ("user_input", "response", "retrieved_contexts", "reference"):
                         continue
@@ -326,8 +355,7 @@ def run_eval_task(report_id: int, owner_id: int, testset_name: str,
 
         # ── 3. 自建指标：诚实度 ──
         # "幻觉检测" 类问题 = 知识库中本就没有答案，正确行为是如实说不知道
-        hallucination_items = [q for q in per_question
-                               if "幻觉" in (q["category"] or "")]
+        hallucination_items = [q for q in per_question if "幻觉" in (q["category"] or "")]
         if hallucination_items:
             honest = sum(1 for q in hallucination_items if q["refused"])
             honesty_rate = round(honest / len(hallucination_items), 4)
@@ -337,9 +365,7 @@ def run_eval_task(report_id: int, owner_id: int, testset_name: str,
             hallucination_count = 0
 
         answered = [q for q in per_question if q["answer"]]
-        avg_ctx = round(
-            sum(q["contexts_count"] for q in per_question) / len(per_question), 2
-        )
+        avg_ctx = round(sum(q["contexts_count"] for q in per_question) / len(per_question), 2)
 
         # ── 4. 诊断建议 ──
         recommendations: list[str] = []
@@ -348,12 +374,18 @@ def run_eval_task(report_id: int, owner_id: int, testset_name: str,
                 "faithfulness 偏低：回答与检索内容的吻合度不足，"
                 "检查系统提示词的防幻觉约束或降低 temperature"
             )
-        if metric_scores.get("context_recall") is not None and metric_scores["context_recall"] < 0.7:
+        if (
+            metric_scores.get("context_recall") is not None
+            and metric_scores["context_recall"] < 0.7
+        ):
             recommendations.append(
                 "context_recall 偏低：期望答案的信息没被检索到，"
                 "考虑调大 top_k、开启混合检索或改进分块策略"
             )
-        if metric_scores.get("context_precision") is not None and metric_scores["context_precision"] < 0.7:
+        if (
+            metric_scores.get("context_precision") is not None
+            and metric_scores["context_precision"] < 0.7
+        ):
             recommendations.append(
                 "context_precision 偏低：检索结果里无关内容较多，考虑启用 rerank 或调整 top_k"
             )
@@ -366,31 +398,41 @@ def run_eval_task(report_id: int, owner_id: int, testset_name: str,
             recommendations.append("平均检索到的上下文不足 1 条，知识库可能为空或检索链路异常")
 
         duration = round(time.time() - started, 1)
-        run_async_from_thread(update_eval_report(
-            report_id,
-            status="done",
-            progress=100,
-            completed=len(per_question),
-            results_json=json.dumps(per_question, ensure_ascii=False),
-            recommendations_json=json.dumps(recommendations, ensure_ascii=False),
-            metrics_json=json.dumps(metric_scores, ensure_ascii=False),
-            honesty_rate=honesty_rate,
-            hallucination_count=hallucination_count,
-            avg_match_score=metric_scores.get("faithfulness"),
-            poor_retrieval_count=sum(1 for q in per_question if q["contexts_count"] == 0),
-            answered_count=len(answered),
-            duration_seconds=duration,
-        ))
+        run_async_from_thread(
+            update_eval_report(
+                report_id,
+                status="done",
+                progress=100,
+                completed=len(per_question),
+                results_json=json.dumps(per_question, ensure_ascii=False),
+                recommendations_json=json.dumps(recommendations, ensure_ascii=False),
+                metrics_json=json.dumps(metric_scores, ensure_ascii=False),
+                honesty_rate=honesty_rate,
+                hallucination_count=hallucination_count,
+                avg_match_score=metric_scores.get("faithfulness"),
+                poor_retrieval_count=sum(1 for q in per_question if q["contexts_count"] == 0),
+                answered_count=len(answered),
+                duration_seconds=duration,
+            )
+        )
         logger.info(
             "[Eval] 评测完成 report={}: {} 题, 指标={}, 耗时 {}s",
-            report_id, len(per_question), metric_scores, duration,
+            report_id,
+            len(per_question),
+            metric_scores,
+            duration,
         )
 
     except Exception as e:
         logger.error("[Eval] 评测任务失败: {}", e)
         try:
-            run_async_from_thread(update_eval_report(
-                report_id, status="failed", progress=100, error=str(e)[:500],
-            ))
+            run_async_from_thread(
+                update_eval_report(
+                    report_id,
+                    status="failed",
+                    progress=100,
+                    error=str(e)[:500],
+                )
+            )
         except Exception as inner:
             logger.error("[Eval] 标记评测失败也失败了: {}", inner)

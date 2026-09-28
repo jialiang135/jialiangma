@@ -21,8 +21,10 @@
 RQ 仍可通过 ``USE_RQ_QUEUE=true`` 显式启用（需要部署独立 worker），
 启用时会做一次能力探测，探测失败则回落到线程池并明确告警。
 """
+
 from __future__ import annotations
 
+import contextlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from itertools import count
@@ -96,16 +98,12 @@ class AsyncQueue:
         try:
             self._redis.hset(probe_key, mapping={"a": "1", "b": "2"})
         except Exception as e:
-            logger.warning(
-                "Redis 不支持多字段 HSET（版本过低），RQ 不可用，回落线程池: {}", e
-            )
+            logger.warning("Redis 不支持多字段 HSET（版本过低），RQ 不可用，回落线程池: {}", e)
             self._redis = None
             return
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 self._redis.delete(probe_key)
-            except Exception:
-                pass
         if self._redis is None:
             return
 
@@ -125,16 +123,12 @@ class AsyncQueue:
         """
         if self._rq_queue is not None:
             try:
-                job = self._rq_queue.enqueue(
-                    func, *args, retry=Retry(max=3, interval=5), **kwargs
-                )
+                job = self._rq_queue.enqueue(func, *args, retry=Retry(max=3, interval=5), **kwargs)
                 logger.info("任务入队(RQ): {} (job={})", func.__name__, job.id)
                 return job.id
             except Exception as e:
                 # RQ 运行时故障（Redis 掉线/权限/版本）→ 回落到线程池而不是丢任务
-                logger.error(
-                    "RQ 入队失败，回落线程池: {} - {}", func.__name__, e
-                )
+                logger.error("RQ 入队失败，回落线程池: {} - {}", func.__name__, e)
 
         try:
             self._executor.submit(self._run, func, args, kwargs)

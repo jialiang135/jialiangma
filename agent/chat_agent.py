@@ -1,32 +1,32 @@
 """
 问答对话 Agent —— ReAct 推理循环节点
 """
+
 import asyncio
 
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from loguru import logger
 
-from agent.state import AgentState
 from agent.prompts import CHAT_AGENT_SYSTEM_PROMPT
+from agent.state import AgentState
 from agent.tools import (
-    search_knowledge_base,
-    list_my_files,
-    get_kb_summary,
     get_chat_context,
+    get_kb_summary,
+    list_my_files,
+    search_knowledge_base,
     verify_answer_against_kb,
 )
 from config.settings import get_deepseek_llm
 from core.circuit_breaker import CircuitOpenError, llm_circuit_breaker
-from rag.retriever import retrieve, format_context_for_prompt
-
+from rag.retriever import format_context_for_prompt, retrieve
 
 # 问答 Agent 可用工具（5个）
 CHAT_TOOLS = [
-    search_knowledge_base,   # 核心：语义检索
-    get_kb_summary,           # 新增：知识库全貌
-    list_my_files,            # 文件列表
-    get_chat_context,         # 新增：对话历史
-    verify_answer_against_kb, # 新增：自我校验防幻觉
+    search_knowledge_base,  # 核心：语义检索
+    get_kb_summary,  # 新增：知识库全貌
+    list_my_files,  # 文件列表
+    get_chat_context,  # 新增：对话历史
+    verify_answer_against_kb,  # 新增：自我校验防幻觉
 ]
 
 
@@ -53,9 +53,7 @@ async def _load_recent_history(state: AgentState) -> list:
         return []
 
     try:
-        logs = await get_chat_by_conversation_id(
-            state.get("owner_id", 1), conversation_id
-        )
+        logs = await get_chat_by_conversation_id(state.get("owner_id", 1), conversation_id)
     except Exception as e:
         logger.warning("[ChatAgent] 读取历史对话失败: {}", e)
         return []
@@ -87,10 +85,14 @@ async def build_chat_messages(state: AgentState) -> list:
     # 历史轮次（跨请求的对话上下文）
     history = await _load_recent_history(state)
     if history:
-        messages.append(SystemMessage(content=(
-            "## 此前的对话\n以下是本次对话中更早的问答，"
-            "用于理解用户当前的追问；知识库检索结果以上文为准。"
-        )))
+        messages.append(
+            SystemMessage(
+                content=(
+                    "## 此前的对话\n以下是本次对话中更早的问答，"
+                    "用于理解用户当前的追问；知识库检索结果以上文为准。"
+                )
+            )
+        )
         messages.extend(history)
 
     # 本轮 ReAct 循环内的消息（工具调用与返回），保证 LLM 能看到工具结果
@@ -139,7 +141,7 @@ async def chat_agent_node(state: AgentState) -> dict:
                 "messages": [response],
                 "needs_tool_call": True,
                 "reasoning_log": [
-                    f"🔍 第{iteration+1}轮推理 → 调用工具: {', '.join(tool_names)}"
+                    f"🔍 第{iteration + 1}轮推理 → 调用工具: {', '.join(tool_names)}"
                 ],
                 "iteration_count": iteration + 1,
             }
@@ -221,18 +223,14 @@ async def tool_executor_node(state: AgentState) -> dict:
             else:
                 result_str = f"未知工具: {tool_name}"
 
-            reasoning_updates.append(
-                f"🛠️ 执行 {tool_name} → 返回 {len(result_str)} 字符"
-            )
+            reasoning_updates.append(f"🛠️ 执行 {tool_name} → 返回 {len(result_str)} 字符")
 
         except Exception as e:
-            result_str = f"工具执行失败: {str(e)}"
+            result_str = f"工具执行失败: {e!s}"
             reasoning_updates.append(f"❌ {tool_name} 执行失败: {str(e)[:100]}")
             logger.error(f"[ToolExecutor] {tool_name} 失败: {e}")
 
-        tool_messages.append(
-            ToolMessage(content=result_str, tool_call_id=tool_call_id)
-        )
+        tool_messages.append(ToolMessage(content=result_str, tool_call_id=tool_call_id))
 
     return {
         "messages": tool_messages,
@@ -256,9 +254,7 @@ async def retrieve_before_chat(state: AgentState) -> dict:
     # retrieve 内部是同步的：一次 Chroma 向量扫描 + 两次 DashScope 同步 HTTP
     # （查询向量化 + rerank）。直接在 async 节点里调用会**卡住整个事件循环**，
     # 同进程的所有请求一起排队 —— 这是全系统最主要的阻塞源，必须丢线程池。
-    result = await asyncio.to_thread(
-        retrieve, query=user_query, owner_id=1, top_k_rerank=5
-    )
+    result = await asyncio.to_thread(retrieve, query=user_query, owner_id=1, top_k_rerank=5)
 
     if not result["documents"]:
         logger.info("[ChatAgent] 知识库检索为空，将使用兜底回复")

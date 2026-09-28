@@ -2,8 +2,8 @@
 Token 使用统计与费用估算
 跟踪每次 LLM 调用的 token 消耗，支持按用户、按天、按模型聚合统计
 """
-from datetime import datetime, timedelta
-from typing import Optional
+
+from datetime import timedelta
 
 from loguru import logger
 from sqlalchemy import func, select
@@ -34,7 +34,7 @@ def estimate_tokens(text: str) -> int:
     """
     if not text:
         return 0
-    chinese_chars = sum(1 for c in text if '一' <= c <= '鿿')
+    chinese_chars = sum(1 for c in text if "一" <= c <= "鿿")
     other_chars = len(text) - chinese_chars
     estimated = int(chinese_chars * 1.5 + other_chars / 4)
     return max(estimated, 1)
@@ -84,17 +84,27 @@ async def track_usage(
     cost = calculate_cost(model, prompt_tokens, completion_tokens)
     try:
         async with session_scope() as session:
-            session.add(TokenUsage(
-                owner_id=owner_id, model=model,
-                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-                reasoning_tokens=reasoning_tokens, cached_tokens=cached_tokens,
-                cost_estimate=cost,
-            ))
+            session.add(
+                TokenUsage(
+                    owner_id=owner_id,
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    cached_tokens=cached_tokens,
+                    cost_estimate=cost,
+                )
+            )
         logger.debug(
             "Token usage tracked: owner={}, model={}, prompt={}, completion={} "
             "(reasoning={}, cached={}), cost=${:.6f}",
-            owner_id, model, prompt_tokens, completion_tokens,
-            reasoning_tokens, cached_tokens, cost,
+            owner_id,
+            model,
+            prompt_tokens,
+            completion_tokens,
+            reasoning_tokens,
+            cached_tokens,
+            cost,
         )
     except Exception as e:
         logger.error(f"Failed to track token usage: {e}")
@@ -115,50 +125,69 @@ async def get_usage_stats(owner_id: int, days: int = 7) -> dict:
 
     async with session_scope() as session:
         daily = [
-            dict(r) for r in (await session.execute(
-                select(
-                    day_col,
-                    func.sum(TokenUsage.prompt_tokens).label("prompt_tokens"),
-                    func.sum(TokenUsage.completion_tokens).label("completion_tokens"),
-                    func.sum(total_expr).label("total_tokens"),
-                    func.sum(TokenUsage.reasoning_tokens).label("reasoning_tokens"),
-                    func.sum(TokenUsage.cost_estimate).label("cost"),
+            dict(r)
+            for r in (
+                await session.execute(
+                    select(
+                        day_col,
+                        func.sum(TokenUsage.prompt_tokens).label("prompt_tokens"),
+                        func.sum(TokenUsage.completion_tokens).label("completion_tokens"),
+                        func.sum(total_expr).label("total_tokens"),
+                        func.sum(TokenUsage.reasoning_tokens).label("reasoning_tokens"),
+                        func.sum(TokenUsage.cost_estimate).label("cost"),
+                    )
+                    .where(TokenUsage.owner_id == owner_id, TokenUsage.created_at >= since)
+                    .group_by(day_col)
+                    .order_by(day_col.asc())
                 )
-                .where(TokenUsage.owner_id == owner_id, TokenUsage.created_at >= since)
-                .group_by(day_col)
-                .order_by(day_col.asc())
-            )).mappings().all()
+            )
+            .mappings()
+            .all()
         ]
 
         model_breakdown = [
-            dict(r) for r in (await session.execute(
-                select(
-                    TokenUsage.model.label("model"),
-                    func.sum(TokenUsage.prompt_tokens).label("prompt_tokens"),
-                    func.sum(TokenUsage.completion_tokens).label("completion_tokens"),
-                    func.sum(total_expr).label("total_tokens"),
-                    func.sum(TokenUsage.reasoning_tokens).label("reasoning_tokens"),
-                    func.sum(TokenUsage.cost_estimate).label("cost"),
-                    func.count().label("call_count"),
+            dict(r)
+            for r in (
+                await session.execute(
+                    select(
+                        TokenUsage.model.label("model"),
+                        func.sum(TokenUsage.prompt_tokens).label("prompt_tokens"),
+                        func.sum(TokenUsage.completion_tokens).label("completion_tokens"),
+                        func.sum(total_expr).label("total_tokens"),
+                        func.sum(TokenUsage.reasoning_tokens).label("reasoning_tokens"),
+                        func.sum(TokenUsage.cost_estimate).label("cost"),
+                        func.count().label("call_count"),
+                    )
+                    .where(TokenUsage.owner_id == owner_id, TokenUsage.created_at >= since)
+                    .group_by(TokenUsage.model)
+                    .order_by(func.sum(TokenUsage.cost_estimate).desc())
                 )
-                .where(TokenUsage.owner_id == owner_id, TokenUsage.created_at >= since)
-                .group_by(TokenUsage.model)
-                .order_by(func.sum(TokenUsage.cost_estimate).desc())
-            )).mappings().all()
+            )
+            .mappings()
+            .all()
         ]
 
-        totals_row = (await session.execute(
-            select(
-                func.coalesce(func.sum(TokenUsage.prompt_tokens), 0).label("prompt_tokens"),
-                func.coalesce(func.sum(TokenUsage.completion_tokens), 0).label("completion_tokens"),
-                func.coalesce(func.sum(total_expr), 0).label("total_tokens"),
-                func.coalesce(func.sum(TokenUsage.reasoning_tokens), 0).label("reasoning_tokens"),
-                func.coalesce(func.sum(TokenUsage.cached_tokens), 0).label("cached_tokens"),
-                func.coalesce(func.sum(TokenUsage.cost_estimate), 0.0).label("total_cost"),
-                func.count().label("total_calls"),
+        totals_row = (
+            (
+                await session.execute(
+                    select(
+                        func.coalesce(func.sum(TokenUsage.prompt_tokens), 0).label("prompt_tokens"),
+                        func.coalesce(func.sum(TokenUsage.completion_tokens), 0).label(
+                            "completion_tokens"
+                        ),
+                        func.coalesce(func.sum(total_expr), 0).label("total_tokens"),
+                        func.coalesce(func.sum(TokenUsage.reasoning_tokens), 0).label(
+                            "reasoning_tokens"
+                        ),
+                        func.coalesce(func.sum(TokenUsage.cached_tokens), 0).label("cached_tokens"),
+                        func.coalesce(func.sum(TokenUsage.cost_estimate), 0.0).label("total_cost"),
+                        func.count().label("total_calls"),
+                    ).where(TokenUsage.owner_id == owner_id, TokenUsage.created_at >= since)
+                )
             )
-            .where(TokenUsage.owner_id == owner_id, TokenUsage.created_at >= since)
-        )).mappings().one()
+            .mappings()
+            .one()
+        )
 
     return {
         "daily": daily,

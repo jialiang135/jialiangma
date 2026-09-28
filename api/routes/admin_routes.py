@@ -1,27 +1,34 @@
 """
 管理员运维接口 — 用户管理 / 仪表盘 / 审计日志 / 熔断状态 / 队列状态
 """
+
 import asyncio
-import os
-from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 
-from core.auth import require_admin
-from core.circuit_breaker import llm_circuit_breaker, embedding_circuit_breaker
 from core.async_queue import async_queue
-from core.schemas import (
-    DashboardStats, UserAdminOut, UserRoleUpdate,
-    ChatLogAdminOut, FileAdminOut, APIResponse,
+from core.auth import require_admin
+from core.circuit_breaker import embedding_circuit_breaker, llm_circuit_breaker
+from core.database import (
+    delete_user_cascade,
+    get_all_chat_logs,
+    get_all_files,
+    get_files_by_owner,
+    get_global_stats,
+    get_user_by_id,
+    get_users_with_counts,
+    update_user_role,
 )
 from core.database import (
-    get_users_with_counts, update_user_role, delete_user_cascade,
-    get_all_chat_logs, get_all_files, get_global_stats,
-    get_user_by_id, get_files_by_owner,
     # 别名：本模块的路由函数也叫 get_audit_logs，直接同名导入会被它覆盖
     get_audit_logs as db_get_audit_logs,
 )
 from core.paths import remove_within
+from core.schemas import (
+    DashboardStats,
+    UserRoleUpdate,
+)
 
 router = APIRouter(prefix="/api/admin", tags=["运维"])
 
@@ -29,6 +36,7 @@ router = APIRouter(prefix="/api/admin", tags=["运维"])
 # ═══════════════════════════════════════════
 # 用户管理
 # ═══════════════════════════════════════════
+
 
 @router.get("/users")
 async def list_users(current_user: dict = Depends(require_admin)):
@@ -89,12 +97,14 @@ async def remove_user(
     # 清理向量库数据（Chroma 是同步的，丢线程池）
     try:
         from rag.vector_store import delete_all_by_owner
+
         await asyncio.to_thread(delete_all_by_owner, user_id)
     except Exception as e:
         logger.warning(f"[Admin] 清理用户 {user_id} 向量库失败: {e}")
 
     # 清理上传文件
     from config.settings import settings
+
     upload_dir = settings.resolve_path(settings.upload_dir)
     for record in await get_files_by_owner(user_id):
         # remove_within 保证只删 upload_dir 内的文件：
@@ -118,6 +128,7 @@ async def remove_user(
 # 仪表盘
 # ═══════════════════════════════════════════
 
+
 @router.get("/dashboard", response_model=DashboardStats)
 async def get_dashboard(current_user: dict = Depends(require_admin)):
     """
@@ -131,11 +142,12 @@ async def get_dashboard(current_user: dict = Depends(require_admin)):
 # 全局对话查询
 # ═══════════════════════════════════════════
 
+
 @router.get("/chat-logs")
 async def list_chat_logs(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    username: str = None,
+    username: str | None = None,
     current_user: dict = Depends(require_admin),
 ):
     """跨用户查询对话记录（可按用户名筛选）"""
@@ -164,11 +176,12 @@ async def list_chat_logs(
 # 全局文件查询
 # ═══════════════════════════════════════════
 
+
 @router.get("/files")
 async def list_all_files(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    username: str = None,
+    username: str | None = None,
     current_user: dict = Depends(require_admin),
 ):
     """跨用户查询文件列表（可按用户名筛选）"""
@@ -195,11 +208,12 @@ async def list_all_files(
 # 审计日志查询
 # ═══════════════════════════════════════════
 
+
 @router.get("/audit-logs")
 async def get_audit_logs(
     limit: int = Query(50, ge=1, le=500),
-    action: str = None,
-    username: str = None,
+    action: str | None = None,
+    username: str | None = None,
     current_user: dict = Depends(require_admin),
 ):
     """查询审计日志（管理员）"""
@@ -214,6 +228,7 @@ async def get_audit_logs(
 # ═══════════════════════════════════════════
 # 熔断器状态
 # ═══════════════════════════════════════════
+
 
 @router.get("/circuit-status")
 async def get_circuit_status(current_user: dict = Depends(require_admin)):
@@ -231,13 +246,14 @@ async def get_circuit_status(current_user: dict = Depends(require_admin)):
 # 异步队列状态
 # ═══════════════════════════════════════════
 
+
 @router.get("/queue-status")
 async def get_queue_status(current_user: dict = Depends(require_admin)):
     """查看异步任务队列状态"""
     return {
         "success": True,
         "queue_size": async_queue.get_queue_size(),
-        "backend": async_queue.backend_name(),   # "thread_pool" | "rq"
+        "backend": async_queue.backend_name(),  # "thread_pool" | "rq"
         "healthy": async_queue.health_check(),
     }
 

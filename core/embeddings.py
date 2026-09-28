@@ -12,10 +12,11 @@
 3. 需要保证返回顺序与输入顺序严格一致（DashScope 用 ``text_index`` 标识，
    不排序就会把向量和文本错配）。
 """
+
 from __future__ import annotations
 
-from loguru import logger
 from langchain_core.embeddings import Embeddings
+from loguru import logger
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -84,15 +85,11 @@ class DashScopeEmbeddings(Embeddings):
             input=texts,
         )
         if resp.status_code != 200:
-            raise EmbeddingError(
-                f"DashScope embedding 失败: {resp.status_code} - {resp.message}"
-            )
+            raise EmbeddingError(f"DashScope embedding 失败: {resp.status_code} - {resp.message}")
 
         items = (resp.output or {}).get("embeddings") or []
         if len(items) != len(texts):
-            raise EmbeddingError(
-                f"返回条数不符: 期望 {len(texts)}, 实际 {len(items)}"
-            )
+            raise EmbeddingError(f"返回条数不符: 期望 {len(texts)}, 实际 {len(items)}")
         # text_index 标识原始位置，必须排序后再取，否则向量与文本错配
         ordered = sorted(items, key=lambda it: it.get("text_index", 0))
         return [it["embedding"] for it in ordered]

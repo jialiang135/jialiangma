@@ -1,0 +1,108 @@
+[project]
+name = "personal-agent"
+version = "2.0.0"
+description = "个人数字分身 · 多 Agent 私有 RAG 系统"
+requires-python = ">=3.12"
+
+# ============================================================
+# 依赖
+# ============================================================
+# 声明在 requirements.txt（含成组约束的说明），此处不重复维护，
+# 避免两处版本漂移。uv/pip 都用 requirements.txt 安装。
+# 说明：langchain 系列必须成组安装，见 requirements.txt 顶部注释。
+
+# ============================================================
+# ruff —— lint 门禁
+# ============================================================
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [
+    "frontend", "assets", "logs", ".git", ".pytest_cache",
+    "__pycache__", "scripts",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes（未使用导入/变量、未定义名 —— 真正会出 bug 的一类）
+    "I",    # isort（导入顺序）
+    "UP",   # pyupgrade（旧语法升级）
+    "B",    # flake8-bugbear（可疑写法）
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff 自有规则
+]
+ignore = [
+    # FastAPI 的依赖注入惯用法就是写在默认值里（Depends/File/Query），
+    # 这不是 B008 想抓的"可变默认值"问题。
+    "B008",
+    # 刻意的宽 except：本项目在降级兜底处需要"任何失败都不影响主流程"
+    # （审计写入、缓存失效、RAGAS 指标计算等），每一处都有注释说明意图。
+    "BLE001",
+    # try/except/pass 同上，用于清理失败不该影响主流程的场景。
+    "S110",
+    # E501 行长交给 formatter 处理
+    "E501",
+    # RUF001/002/003「歧义 Unicode」：指的是中文全角标点（：，。（））与
+    # ASCII 形近。本项目注释与文档全为中文，这条规则纯属噪音（占全部告警的
+    # 89%）。中文标点是刻意用法，不是笔误。
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里允许未使用导入（部分导入是 fixture 副作用）与硬编码口令
+"tests/*" = ["F401", "S105", "S106"]
+# 让 SIM 规则不干扰 langchain 工具函数的 docstring 风格
+"agent/tools.py" = ["SIM108"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ============================================================
+# pytest
+# ============================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 默认跳过 slow 用例：它们会真实调用 LLM 与 Embedding API（慢且要花钱）。
+# 原配置只声明了 marker 却没加 addopts，导致 CI 每次都在真烧额度。
+addopts = "-m 'not slow' --strict-markers"
+markers = [
+    "slow: 需要真实联网调用 LLM/Embedding API，默认跳过",
+]
+# 测试隔离在 tests/conftest.py 里完成（把 db/上传目录/向量库指向临时目录）
+filterwarnings = [
+    "ignore::DeprecationWarning:langchain_community.*",
+    "ignore::UserWarning",
+]
+
+# ============================================================
+# coverage
+# ============================================================
+[tool.coverage.run]
+source = ["agent", "api", "config", "core", "rag"]
+branch = true
+omit = [
+    "*/__pycache__/*",
+    "*/tests/*",
+    "main.py",
+]
+
+[tool.coverage.report]
+# 门槛设在当前实测水平（约 58%）略下方，保证"不倒退"即可。
+# 提门槛时同步更新这里，别让它变成一个永远达不到的数字 ——
+# 一个永远红的门禁等于没有门禁。
+fail_under = 55
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "logger\\.(debug|info|warning|error)",
+]

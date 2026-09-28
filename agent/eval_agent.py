@@ -9,8 +9,10 @@
 1. 用户明确要求"跑评测"时 → 创建报告记录 + 提交后台任务，立刻返回
 2. 否则 → 汇报最近一次评测的结果与可用评测集
 """
+
 from __future__ import annotations
 
+import contextlib
 import json
 
 from langchain_core.messages import AIMessage
@@ -37,10 +39,8 @@ def _format_report(report: dict) -> str:
     """把报告渲染成 Markdown。"""
     metrics = {}
     if report.get("metrics_json"):
-        try:
+        with contextlib.suppress(json.JSONDecodeError):
             metrics = json.loads(report["metrics_json"])
-        except json.JSONDecodeError:
-            pass
 
     lines = [
         f"## 评测报告 #{report['id']}",
@@ -114,8 +114,12 @@ async def eval_agent_node(state: AgentState) -> dict:
             report_id = await create_eval_report(owner_id, testset, 0)
             try:
                 async_queue.enqueue(
-                    run_eval_task, report_id, owner_id, testset,
-                    DEFAULT_METRICS, DEFAULT_SAMPLE_LIMIT,
+                    run_eval_task,
+                    report_id,
+                    owner_id,
+                    testset,
+                    DEFAULT_METRICS,
+                    DEFAULT_SAMPLE_LIMIT,
                 )
             except Exception as e:
                 await update_eval_report(
@@ -156,10 +160,7 @@ async def eval_agent_node(state: AgentState) -> dict:
             reasoning.append(f"📊 最近一次评测: #{latest['id']} ({latest['status']})")
             message = _format_report(latest)
             if latest["status"] in ("pending", "running"):
-                message += (
-                    f"\n\n⏳ 该报告仍在进行中（进度 {latest['progress']}%），"
-                    f"稍后再来查看。"
-                )
+                message += f"\n\n⏳ 该报告仍在进行中（进度 {latest['progress']}%），稍后再来查看。"
 
         return {
             "final_answer": message,
@@ -174,6 +175,6 @@ async def eval_agent_node(state: AgentState) -> dict:
         return {
             "final_answer": message,
             "operation_result": message,
-            "reasoning_log": reasoning + [f"❌ 错误: {str(e)[:200]}"],
+            "reasoning_log": [*reasoning, f"❌ 错误: {str(e)[:200]}"],
             "messages": [AIMessage(content=message)],
         }

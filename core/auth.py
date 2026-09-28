@@ -1,11 +1,13 @@
 """
 JWT 鉴权 + bcrypt 密码哈希工具
 """
+
+from datetime import UTC, datetime, timedelta
+
 import bcrypt
 import jwt
-from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger
 
 from config.settings import settings
@@ -43,6 +45,7 @@ def unauthorized(detail: str) -> HTTPException:
 # 密码哈希
 # ========================================
 
+
 def hash_password(password: str) -> str:
     """对明文密码进行 bcrypt 哈希"""
     salt = bcrypt.gensalt()
@@ -62,14 +65,15 @@ def verify_password(password: str, hashed: str) -> bool:
 # JWT Token
 # ========================================
 
+
 def create_access_token(owner_id: int, username: str, role: str = "user") -> str:
     """签发 JWT access token"""
     payload = {
         "sub": str(owner_id),
         "username": username,
         "role": role,
-        "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes),
+        "iat": datetime.now(UTC),
+        "exp": datetime.now(UTC) + timedelta(minutes=settings.jwt_expire_minutes),
     }
     token = jwt.encode(
         payload,
@@ -115,14 +119,17 @@ def verify_token(token: str) -> dict:
         )
         return payload
     except jwt.ExpiredSignatureError:
-        raise unauthorized("Token 已过期，请重新登录")
+        # 原始异常对调用方没有意义（都会被转成 401），用 from None
+        # 避免日志里出现 "During handling of the above exception..." 噪音
+        raise unauthorized("Token 已过期，请重新登录") from None
     except jwt.InvalidTokenError:
-        raise unauthorized("无效的 Token")
+        raise unauthorized("无效的 Token") from None
 
 
 # ========================================
 # FastAPI 鉴权依赖
 # ========================================
+
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(security_scheme),

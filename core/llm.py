@@ -18,6 +18,7 @@ LLM 流式响应工具
 **根治办法是升级依赖**：`langchain-openai` 1.x 原生支持该字段。
 因此这里不再需要任何补丁子类，只保留一个兼容提取函数。
 """
+
 from __future__ import annotations
 
 from typing import Any

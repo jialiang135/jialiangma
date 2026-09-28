@@ -1,14 +1,15 @@
 """
 Pydantic 数据模型定义
 """
-from pydantic import BaseModel, Field
-from typing import Optional
+
 from datetime import datetime
 
+from pydantic import BaseModel, Field
 
 # ========================================
 # 用户 / 鉴权
 # ========================================
+
 
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
@@ -22,6 +23,7 @@ class UserLogin(BaseModel):
 
 class UserRegister(BaseModel):
     """用户注册——默认注册为普通用户"""
+
     username: str = Field(..., min_length=3, max_length=50)
     password: str = Field(..., min_length=6, max_length=128)
 
@@ -46,6 +48,7 @@ class TokenResponse(BaseModel):
 # ========================================
 # 文件管理
 # ========================================
+
 
 class FileMetaOut(BaseModel):
     id: int
@@ -80,21 +83,22 @@ class KnowledgeBaseStats(BaseModel):
 # 对话
 # ========================================
 
+
 class ChatRequest(BaseModel):
     message: str
     agent_mode: str = Field(default="chat", pattern="^(chat|manage|eval)$")
-    conversation_id: Optional[str] = None
+    conversation_id: str | None = None
 
 
 class ChatLogOut(BaseModel):
     id: int
     owner_id: int
     agent_mode: str
-    conversation_id: Optional[str] = None
+    conversation_id: str | None = None
     question: str
     answer: str
-    reasoning: Optional[str] = None
-    sources: Optional[str] = None
+    reasoning: str | None = None
+    sources: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -107,11 +111,12 @@ class ChatHistoryResponse(BaseModel):
 
 class ConversationSummary(BaseModel):
     """侧边栏对话摘要——每条代表一个独立对话组"""
-    group_id: str                          # conversation_id 或 '__single_xxx'
-    first_log_id: int                      # 该组第一条日志 ID（用于加载详情）
-    turn_count: int                        # 对话轮数
-    last_at: Optional[str] = None          # 最后活跃时间
-    first_question: Optional[str] = None   # 第一轮问题（作为对话标题）
+
+    group_id: str  # conversation_id 或 '__single_xxx'
+    first_log_id: int  # 该组第一条日志 ID（用于加载详情）
+    turn_count: int  # 对话轮数
+    last_at: str | None = None  # 最后活跃时间
+    first_question: str | None = None  # 第一轮问题（作为对话标题）
 
 
 class ConversationListResponse(BaseModel):
@@ -123,15 +128,17 @@ class ConversationListResponse(BaseModel):
 # 通用响应
 # ========================================
 
+
 class APIResponse(BaseModel):
     success: bool
     message: str
-    data: Optional[dict] = None
+    data: dict | None = None
 
 
 # ========================================
 # 管理员：用户管理
 # ========================================
+
 
 class UserAdminOut(BaseModel):
     id: int
@@ -152,6 +159,7 @@ class UserRoleUpdate(BaseModel):
 # 管理员：仪表盘
 # ========================================
 
+
 class DashboardStats(BaseModel):
     user_count: int
     file_count: int
@@ -167,15 +175,16 @@ class DashboardStats(BaseModel):
 # 管理员：全局查询
 # ========================================
 
+
 class ChatLogAdminOut(BaseModel):
     id: int
     owner_id: int
     username: str = ""
     agent_mode: str
-    conversation_id: Optional[str] = None
+    conversation_id: str | None = None
     question: str
     answer: str
-    reasoning: Optional[str] = None
+    reasoning: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

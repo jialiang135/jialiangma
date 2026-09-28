@@ -11,6 +11,7 @@ pytest 全局配置 —— 测试隔离
 conftest.py 的模块级代码先于测试模块执行，而 ``core.database`` 的 engine 是
 在模块导入时构建的，因此必须先改 settings。
 """
+
 import os
 import tempfile
 from pathlib import Path
@@ -32,7 +33,7 @@ for _d in (settings.upload_dir, settings.chroma_persist_dir):
     Path(_d).mkdir(parents=True, exist_ok=True)
 
 
-def pytest_sessionfinish(session, exitstatus):  # noqa: ANN001
+def pytest_sessionfinish(session, exitstatus):
     """会话结束后清理临时数据。"""
     import shutil
 
@@ -42,6 +43,7 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ANN001
 # ------------------------------------------------------------
 # 同步测试与异步数据层的桥接
 # ------------------------------------------------------------
+
 
 def run_async(coro):
     """

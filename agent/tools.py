@@ -8,19 +8,20 @@
 DashScope 的同步 HTTP）本身没有 async 版本，用 ``asyncio.to_thread`` 把它
 挪出事件循环 —— 否则一次检索就会卡住整个进程的其它请求。
 """
+
 import asyncio
 
 from langchain_core.tools import tool
 from loguru import logger
 
-from rag.retriever import retrieve, format_context_for_prompt
+from core.database import get_chat_history, get_files_by_owner
+from rag.retriever import format_context_for_prompt, retrieve
 from rag.vector_store import get_collection_stats
-from core.database import get_files_by_owner, get_chat_history
-
 
 # ========================================
 # 知识库检索工具（核心）
 # ========================================
+
 
 @tool
 async def search_knowledge_base(
@@ -50,9 +51,7 @@ async def search_knowledge_base(
     logger.info(f"[Tool] search_knowledge_base: query='{query[:80]}...', owner_id={owner_id}")
 
     # retrieve 内部是同步的（Chroma 查询 + DashScope 同步 HTTP），丢线程池执行
-    result = await asyncio.to_thread(
-        retrieve, query=query, owner_id=owner_id, top_k_rerank=top_k
-    )
+    result = await asyncio.to_thread(retrieve, query=query, owner_id=owner_id, top_k_rerank=top_k)
 
     if not result["documents"]:
         return "【检索结果】知识库中未找到相关内容。请如实告知用户，不要编造信息。"
@@ -69,6 +68,7 @@ async def search_knowledge_base(
 # ========================================
 # 文件查询工具
 # ========================================
+
 
 @tool
 async def list_my_files(owner_id: int) -> str:
@@ -91,7 +91,7 @@ async def list_my_files(owner_id: int) -> str:
         return "知识库为空，还没有上传任何文件。建议用户先上传个人简历和项目文档。"
 
     lines = [
-        f"## 知识库概况",
+        "## 知识库概况",
         f"- 📁 文件数: {len(files)}",
         f"- 🧩 向量块总数: {stats['total_chunks']}",
         "",
@@ -111,6 +111,7 @@ async def list_my_files(owner_id: int) -> str:
 # ========================================
 # 知识库摘要工具（新增）
 # ========================================
+
 
 @tool
 async def get_kb_summary(owner_id: int) -> str:
@@ -140,7 +141,7 @@ async def get_kb_summary(owner_id: int) -> str:
         # 用文件名作为查询词，检索该文件最具代表性的片段
         result = await asyncio.to_thread(
             retrieve,
-            query=f"摘要 概述 主要内容 {filename.replace('.pdf','').replace('.docx','').replace('.txt','')}",
+            query=f"摘要 概述 主要内容 {filename.replace('.pdf', '').replace('.docx', '').replace('.txt', '')}",
             owner_id=owner_id,
             top_k_rerank=3,
         )
@@ -154,16 +155,14 @@ async def get_kb_summary(owner_id: int) -> str:
         else:
             summaries.append(f"### {filename}\n  （内容较少或无文本内容）")
 
-    header = (
-        f"## 知识库全貌\n"
-        f"📁 {len(files)} 个文件 | 🧩 {stats['total_chunks']} 个向量块\n\n"
-    )
+    header = f"## 知识库全貌\n📁 {len(files)} 个文件 | 🧩 {stats['total_chunks']} 个向量块\n\n"
     return header + "\n\n".join(summaries)
 
 
 # ========================================
 # 对话历史工具（新增）
 # ========================================
+
 
 @tool
 async def get_chat_context(owner_id: int, limit: int = 10) -> str:
@@ -198,6 +197,7 @@ async def get_chat_context(owner_id: int, limit: int = 10) -> str:
 # 答案校验工具（评测用）（新增到对话工具集）
 # ========================================
 
+
 @tool
 async def verify_answer_against_kb(
     claim: str,
@@ -216,9 +216,7 @@ async def verify_answer_against_kb(
     """
     logger.info(f"[Tool] verify_answer_against_kb: claim='{claim[:100]}...'")
 
-    result = await asyncio.to_thread(
-        retrieve, query=claim, owner_id=owner_id, top_k_rerank=3
-    )
+    result = await asyncio.to_thread(retrieve, query=claim, owner_id=owner_id, top_k_rerank=3)
 
     if not result["documents"]:
         return (
@@ -269,7 +267,7 @@ def _register_all_tools() -> None:
             schema = getattr(tool_obj, "args_schema", None)
             if schema is not None and hasattr(schema, "model_json_schema"):
                 parameters = schema.model_json_schema()
-        except Exception as e:  # noqa: BLE001 - schema 取不到不影响登记
+        except Exception as e:
             logger.debug("工具 {} 参数 schema 提取失败: {}", tool_obj.name, e)
 
         # 注册表记录的是可调用实现：async 工具用 coroutine，同步工具用 func

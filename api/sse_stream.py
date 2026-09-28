@@ -28,11 +28,12 @@ ReAct 循环里模型会被调用多轮，中间轮次也可能吐出正文（"�
 因此结束时以 **agent 节点返回的 ``final_answer``** 为准下发给前端替换显示，
 并以此落库 —— 保证"用户看到的"与"存进数据库的"是同一条文本。
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
-from typing import AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
 
 from langchain_core.messages import HumanMessage
 from loguru import logger
@@ -82,8 +83,13 @@ def _initial_state(
 def _accumulate_usage(totals: dict, usage: dict) -> None:
     if not usage:
         return
-    for key in ("input_tokens", "output_tokens", "total_tokens",
-                "reasoning_tokens", "cached_tokens"):
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "reasoning_tokens",
+        "cached_tokens",
+    ):
         totals[key] = totals.get(key, 0) + usage.get(key, 0)
     totals["llm_calls"] = totals.get("llm_calls", 0) + 1
 
@@ -150,7 +156,7 @@ async def sse_chat_generator(
     owner_id: int,
     username: str = "admin",
     agent_mode: str = "chat",
-    conversation_id: Optional[str] = None,
+    conversation_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     真实流式生成器（``astream_events``）。
@@ -247,7 +253,7 @@ async def sse_chat_generator(
         logger.info("[SSE] 客户端中断，保存已生成内容")
         try:
             run_async_blocking(persist())
-        except BaseException as e:  # noqa: BLE001 - 取消路径下要吞掉一切，不能向上抛
+        except BaseException as e:
             logger.error("[SSE] 中断后保存失败: {}", e)
         raise
 
@@ -270,9 +276,13 @@ async def sse_chat_generator(
             except Exception as fallback_err:
                 logger.error("[SSE] 降级执行也失败: {}", fallback_err)
                 yield _sse_event("error", "服务暂时不可用，请稍后重试")
-                yield _sse_event("done", json.dumps(
-                    {"status": "error", "conversation_id": conversation_id or ""},
-                    ensure_ascii=False))
+                yield _sse_event(
+                    "done",
+                    json.dumps(
+                        {"status": "error", "conversation_id": conversation_id or ""},
+                        ensure_ascii=False,
+                    ),
+                )
                 return
         else:
             yield _sse_event("error", "生成过程中断，请重试")
@@ -286,15 +296,18 @@ async def sse_chat_generator(
     except Exception as e:
         logger.error("[SSE] 保存失败: {}", e)
 
-    yield _sse_event("done", json.dumps(
-        {
-            "status": "stream_complete",
-            "conversation_id": conversation_id or "",
-            "answer": authoritative_answer or "".join(answer_parts),
-            "usage": usage,
-        },
-        ensure_ascii=False,
-    ))
+    yield _sse_event(
+        "done",
+        json.dumps(
+            {
+                "status": "stream_complete",
+                "conversation_id": conversation_id or "",
+                "answer": authoritative_answer or "".join(answer_parts),
+                "usage": usage,
+            },
+            ensure_ascii=False,
+        ),
+    )
 
 
 def _sse_event(event_type: str, data: str, **extra) -> str:

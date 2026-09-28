@@ -13,6 +13,7 @@ Embedding 向量化 → ChromaDB 语义检索（owner_id 过滤）
                                                      ├──→ rerank_with_dashscope() → result
     retrieve(use_cache=True) ────→ TTLCache ────────┘
 """
+
 from loguru import logger
 
 from config.settings import rerank_with_dashscope, settings
@@ -63,7 +64,9 @@ def retrieve(
     if use_cache:
         from rag.search_cache import _cache, _make_cache_key
 
-        cache_key = _make_cache_key(query, owner_id, top_k_search, top_k_rerank, use_hybrid, bm25_weight)
+        cache_key = _make_cache_key(
+            query, owner_id, top_k_search, top_k_rerank, use_hybrid, bm25_weight
+        )
         cached = _cache.get(cache_key)
         if cached is not None:
             logger.debug("检索缓存命中: key={}", cache_key[:16])
@@ -76,7 +79,7 @@ def retrieve(
     if use_cache and result["documents"]:
         from rag.search_cache import _cache
 
-        _cache.set(cache_key, result)  # noqa: F821  (cache_key 在上面定义)
+        _cache.set(cache_key, result)
         logger.debug("检索结果已缓存: key={}, docs={}", cache_key[:16], result["count"])
 
     return result
@@ -128,14 +131,14 @@ def _retrieve_impl(
         metadata = raw_results[idx].get("metadata", {}) if idx < len(raw_results) else {}
         source = metadata.get("source", "unknown")
 
-        documents.append({
-            "content": item["text"],
-            "score": round(item["score"], 4),
-            "source": source,
-        })
-        context_parts.append(
-            f"[来源: {source} | 相关度: {item['score']:.4f}]\n{item['text']}"
+        documents.append(
+            {
+                "content": item["text"],
+                "score": round(item["score"], 4),
+                "source": source,
+            }
         )
+        context_parts.append(f"[来源: {source} | 相关度: {item['score']:.4f}]\n{item['text']}")
 
     context = "\n\n---\n\n".join(context_parts)
 

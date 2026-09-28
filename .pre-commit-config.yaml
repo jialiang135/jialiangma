@@ -1,0 +1,23 @@
+# 本地提交前门禁：与 CI 用同一套规则，避免"推上去才发现红了"
+# 安装: pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # 与本地/CI 安装的 ruff 版本保持一致，避免钩子与手动运行结果不一致
+    rev: v0.16.9
+    hooks:
+      # 与 CI 的 `ruff check .` 完全一致（规则集在 pyproject.toml）
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      # 防止误提交密钥：.env 已被 .gitignore 忽略，这里再加一道
+      - id: detect-private-key

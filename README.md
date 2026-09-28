@@ -235,10 +235,17 @@ def search_knowledge_base(query: str) -> str:
     """搜索个人知识库，获取与 query 最相关的信息片段。"""
     ...
 
+
 # Chat Agent 节点中绑定
-llm_with_tools = llm.bind_tools([search_knowledge_base, list_my_files,
-                                  get_kb_summary, get_chat_context,
-                                  verify_answer_against_kb])
+llm_with_tools = llm.bind_tools(
+    [
+        search_knowledge_base,
+        list_my_files,
+        get_kb_summary,
+        get_chat_context,
+        verify_answer_against_kb,
+    ]
+)
 ```
 
 **ReAct 循环调用流程：**
@@ -259,12 +266,12 @@ llm_with_tools = llm.bind_tools([search_knowledge_base, list_my_files,
 from langchain_deepseek import ChatDeepSeek
 
 llm = ChatDeepSeek(
-    model=settings.deepseek_model,      # 推理模型：先输出思考再输出答案
+    model=settings.deepseek_model,  # 推理模型：先输出思考再输出答案
     api_key=settings.deepseek_api_key,
     api_base=settings.deepseek_base_url,
-    temperature=0.3,                    # 低温度，减少幻觉
-    streaming=True,                     # 启用流式
-    max_tokens=settings.llm_max_tokens, # 注意：思考与答案**共享**这个预算
+    temperature=0.3,  # 低温度，减少幻觉
+    streaming=True,  # 启用流式
+    max_tokens=settings.llm_max_tokens,  # 注意：思考与答案**共享**这个预算
 )
 ```
 
@@ -381,6 +388,31 @@ docker compose up -d --build
 # 查看 Swagger 文档
 # http://服务器IP:8080/api/docs
 ```
+
+---
+
+## 本地开发
+
+```bash
+# 依赖
+pip install -r requirements.txt
+
+# 质量门禁（与 CI 完全一致）
+ruff check .                      # 规则集与豁免项见 pyproject.toml
+pytest tests/ -q --cov            # 慢测试默认跳过；覆盖率门槛 55%
+cd frontend && npm run build      # 前端构建
+
+# 可选：提交前自动跑 lint（首次运行需从 GitHub 拉钩子仓库）
+pip install pre-commit && pre-commit install
+```
+
+**几个容易踩的点：**
+
+- **配置是启动时快照**：改了 `config/.env` 必须重启进程才生效
+- **测试用独立临时库**：`tests/conftest.py` 在导入应用前把 db/上传目录/向量库
+  指向临时目录，跑测试不会碰真实数据
+- **langchain 系列必须成组安装**：混代会静默丢功能（见 requirements.txt 顶部说明）
+- **推理模型的 `max_tokens` 是思考+答案共享预算**：给太小会把答案挤空
 
 ---
 

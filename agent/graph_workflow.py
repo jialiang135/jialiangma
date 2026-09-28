@@ -2,18 +2,19 @@
 LangGraph 工作流编排
 多 Agent 状态调度、节点流转、ReAct 循环终止条件
 """
-from langgraph.graph import StateGraph, END
+
+from langgraph.graph import END, StateGraph
 from loguru import logger
 
-from agent.state import AgentState
-from agent.chat_agent import chat_agent_node, tool_executor_node, retrieve_before_chat
-from agent.manage_agent import manage_agent_node
+from agent.chat_agent import chat_agent_node, retrieve_before_chat, tool_executor_node
 from agent.eval_agent import eval_agent_node
-
+from agent.manage_agent import manage_agent_node
+from agent.state import AgentState
 
 # ========================================
 # 路由逻辑
 # ========================================
+
 
 def route_to_agent(state: AgentState) -> str:
     """
@@ -53,6 +54,7 @@ def should_continue_chat(state: AgentState) -> str:
 # 图构建
 # ========================================
 
+
 def create_agent_graph():
     """
     创建 LangGraph 多智能体状态图。
@@ -86,7 +88,7 @@ def create_agent_graph():
         "router",
         route_to_agent,
         {
-            "chat": "retrieve",     # 先检索再问答
+            "chat": "retrieve",  # 先检索再问答
             "manage": "manage_agent",
             "eval": "eval_agent",
         },

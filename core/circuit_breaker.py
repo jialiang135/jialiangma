@@ -18,6 +18,7 @@
 同时补了一个"半开态只放行一个探测请求"的正确语义：原实现 ``can_pass`` 在
 半开态会递增计数但失败时不释放，容易卡死。
 """
+
 import asyncio
 import threading
 import time
@@ -28,9 +29,9 @@ from loguru import logger
 
 
 class CircuitState(Enum):
-    CLOSED = "closed"          # 正常通行
-    OPEN = "open"              # 熔断打开，拒绝请求
-    HALF_OPEN = "half_open"    # 半开，尝试放行少量探测请求
+    CLOSED = "closed"  # 正常通行
+    OPEN = "open"  # 熔断打开，拒绝请求
+    HALF_OPEN = "half_open"  # 半开，尝试放行少量探测请求
 
 
 class CircuitOpenError(RuntimeError):
@@ -43,11 +44,11 @@ class CircuitBreaker:
     def __init__(
         self,
         name: str = "default",
-        failure_threshold: int = 5,       # 连续失败 N 次后打开熔断
-        recovery_timeout: float = 60.0,   # 熔断后 N 秒进入半开状态
-        half_open_max: int = 1,           # 半开状态允许的试探请求数
-        backoff_base: float = 2.0,        # 指数退避基数
-        max_retries: int = 3,             # 最大重试次数
+        failure_threshold: int = 5,  # 连续失败 N 次后打开熔断
+        recovery_timeout: float = 60.0,  # 熔断后 N 秒进入半开状态
+        half_open_max: int = 1,  # 半开状态允许的试探请求数
+        backoff_base: float = 2.0,  # 指数退避基数
+        max_retries: int = 3,  # 最大重试次数
     ):
         self.name = name
         self.failure_threshold = failure_threshold
@@ -72,8 +73,10 @@ class CircuitBreaker:
 
     def _maybe_half_open(self) -> None:
         """调用方需持有锁。打开态且超过恢复时间 → 进入半开。"""
-        if (self._state == CircuitState.OPEN
-                and time.time() - self._last_failure_time >= self.recovery_timeout):
+        if (
+            self._state == CircuitState.OPEN
+            and time.time() - self._last_failure_time >= self.recovery_timeout
+        ):
             self._state = CircuitState.HALF_OPEN
             self._half_open_inflight = 0
             logger.info("🔧 熔断器 [{}] 进入半开状态，尝试恢复", self.name)
@@ -97,7 +100,9 @@ class CircuitBreaker:
                 self._state = CircuitState.OPEN
                 logger.error(
                     "🚨 熔断器 [{}] 已打开！连续失败 {} 次，{}s 后尝试恢复",
-                    self.name, self._failure_count, self.recovery_timeout,
+                    self.name,
+                    self._failure_count,
+                    self.recovery_timeout,
                 )
 
     def can_pass(self) -> bool:
@@ -159,11 +164,14 @@ class CircuitBreaker:
                 last_exception = e
                 logger.warning(
                     "熔断器 [{}] 第 {}/{} 次失败: {}",
-                    self.name, attempt + 1, self.max_retries + 1, e,
+                    self.name,
+                    attempt + 1,
+                    self.max_retries + 1,
+                    e,
                 )
                 if attempt < self.max_retries:
                     # 必须是 asyncio.sleep：time.sleep 会阻塞整个事件循环
-                    await asyncio.sleep(self.backoff_base ** attempt)
+                    await asyncio.sleep(self.backoff_base**attempt)
 
         self.on_failure()
         raise last_exception
@@ -187,10 +195,13 @@ class CircuitBreaker:
                 last_exception = e
                 logger.warning(
                     "熔断器 [{}] 第 {}/{} 次失败: {}",
-                    self.name, attempt + 1, self.max_retries + 1, e,
+                    self.name,
+                    attempt + 1,
+                    self.max_retries + 1,
+                    e,
                 )
                 if attempt < self.max_retries:
-                    time.sleep(self.backoff_base ** attempt)
+                    time.sleep(self.backoff_base**attempt)
 
         self.on_failure()
         raise last_exception
@@ -201,8 +212,7 @@ class CircuitBreaker:
         """返回降级兜底回答。"""
         prefix = f"（原始问题：{original_query[:50]}…）\n\n" if original_query else ""
         return (
-            prefix
-            + "抱歉，AI 服务暂时不可用，请稍后重试。\n\n"
+            prefix + "抱歉，AI 服务暂时不可用，请稍后重试。\n\n"
             "可能的原因：\n"
             "• 大模型 API 调用暂时失败\n"
             "• 系统正在自动恢复中\n\n"
@@ -239,6 +249,7 @@ def with_circuit_breaker(cb: CircuitBreaker, fallback_value=None):
 
     熔断打开或重试耗尽时返回 ``fallback_value``（未提供则抛出原异常）。
     """
+
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
@@ -256,4 +267,5 @@ def with_circuit_breaker(cb: CircuitBreaker, fallback_value=None):
                 raise
 
         return wrapper
+
     return decorator
