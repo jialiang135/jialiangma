@@ -25,6 +25,8 @@ htmlcov/
 assets/chroma_db/
 assets/upload_docs/*
 !assets/upload_docs/.gitkeep
+# 知识库种子内容：含个人信息（手机号/邮箱），仓库是公开的，不能提交
+assets/seed_kb/
 assets/personal_agent.db
 assets/test_data/*.json
 !assets/test_data/sample_eval_testset.json
