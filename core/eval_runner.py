@@ -37,7 +37,11 @@ RAGAS 侧（每条问题的回答 + 检索到的上下文 + 期望答案）：
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
+import math
+import re
 import sys
 import time
 import types
@@ -66,11 +70,220 @@ _REFUSAL_MARKERS = (
     "无法回答",
 )
 
+# 除拒绝话术之外、"不算实质内容"的措辞:道歉、建议、引导用户补充信息的话术。
+# 这些词本身不构成"回答了问题"，统计残差时要剔除，否则会把一句啰嗦的
+# 拒绝误判成"给了内容"。
+_NON_CONTENT_MARKERS = (
+    "很抱歉",
+    "抱歉",
+    "对不起",
+    "不好意思",
+    "感谢",
+    "谢谢",
+    "我的",
+    "建议",
+    "请您",
+    "请你",
+    "您可以",
+    "你可以",
+    "请先",
+    "请尝试",
+    "请",
+    "上传",
+    "提供",
+    "补充",
+    "告知",
+    "说明",
+    "联系",
+    "咨询",
+    "提问",
+    "询问",
+    "这方面",
+    "相关",
+    "的信息",
+    "信息",
+    "暂时",
+    "目前",
+    "当前",
+)
+
+# 去掉话术后，残留的实义字符达到多少就算"确实给了内容"。
+# 取 10 是小样本权衡后的值:纯拒绝 / 啰嗦拒绝的残差通常 ≤ 9（见 _looks_like_refusal
+# 的说明），而"先拒后答"的实质句子一般在 15 字以上，两者之间有充足余量。
+_MIN_SUBSTANTIVE_CHARS = 10
+
+# 归一化残差时要去掉的标点与空白
+_PUNCT_RE = re.compile(r"[\s，。！？、；：,.!?;:（）()【】\[\]「」『』\-—…~·\"'“”‘’]")
+
 # ── 默认参数（API 路由与评测 Agent 共用同一份，避免两处漂移）──
 DEFAULT_TESTSET = "auto_eval"
 DEFAULT_METRICS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
 # 单次评测默认只跑前 N 条：全量评测很慢（每条要跑一次完整问答 + LLM 判定）
 DEFAULT_SAMPLE_LIMIT = 5
+
+# ── 检索参数覆盖（A/B 评测用）──
+#
+# 需求背景:评测要能"只改一个变量"做 A/B（例如同一评测集分别跑
+# ``use_hybrid_search=true`` 与 ``false``，再看指标差异）。检索参数原先全走
+# 全局 ``settings``，而评测任务跑在**线程池**里 —— 直接改 settings 会串味
+# （同时在跑的用户请求会读到被改的值），因此**不能**改 settings。
+#
+# 做法:``contextvars`` + 给 ``retrieve()`` 打一层"覆盖感知"包装。retrieve
+# 内部是从 ``settings`` 读默认值的（``rag/`` 不在本任务可改范围内），没法用
+# 显式传参把覆盖送进去；于是退一步:包装函数从当前**上下文**读覆盖参数。
+# contextvars 按线程/上下文隔离，评测线程设的值不会泄漏到别的线程，全局
+# settings 也一字未动（见 tests/test_eval_reporting.py 的断言）。
+#
+# 局限（如实说明）:
+#   1. 只有 retrieve() 形参里存在的参数能生效（下表 APPLICABLE_OVERRIDE_KEYS）。
+#   2. ``retrieval_min_score`` 是 retrieve 内部直接读 settings 的、注入不进；
+#      ``chunk_size`` / ``chunk_overlap`` / ``use_semantic_splitter`` 属于
+#      **建库时**的分块参数，改了要重建知识库才有效 —— 这些会被记进配置快照，
+#      但明确标为"未生效"（ignored_overrides），不假装起了作用。
+#   3. 包装是"进程内一次性安装"的模块属性替换，本身是全局动作；但它无状态，
+#      只做 contextvar 查表 + 透传，未设覆盖时行为与原来完全一致，因此线程安全。
+
+# 请求里的 settings 风格名字 → retrieve() 的形参名
+_OVERRIDE_TO_KWARG = {
+    "top_k_search": "top_k_search",
+    "top_k_rerank": "top_k_rerank",
+    "use_hybrid_search": "use_hybrid",
+    "bm25_weight": "bm25_weight",
+    "use_search_cache": "use_cache",
+}
+# 能真正作用到本次检索的覆盖键
+APPLICABLE_OVERRIDE_KEYS = frozenset(_OVERRIDE_TO_KWARG)
+# 只记录、不生效的覆盖键（要么 retrieve 内部直接读 settings，要么属建库参数）
+SNAPSHOT_ONLY_OVERRIDE_KEYS = frozenset(
+    {"retrieval_min_score", "chunk_size", "chunk_overlap", "use_semantic_splitter"}
+)
+
+# retrieve() 的默认形参值（见 rag/retriever.py 签名）。settings 里没有这几项，
+# 所以"本次真正生效的值"在没有覆盖时就是这几个默认值。
+_RETRIEVE_DEFAULTS = {"top_k_search": 10, "top_k_rerank": 5, "bm25_weight": 0.3}
+
+# 逐题判"答对"时 faithfulness 的及格线（与诊断建议里的阈值一致）
+_FAITHFULNESS_PASS = 0.8
+
+# 当前上下文里的检索覆盖参数；None = 未设覆盖，走默认/配置
+_RETRIEVE_OVERRIDES: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "eval_retrieve_overrides", default=None
+)
+
+
+def _make_override_aware(retrieve_fn):
+    """
+    把 retrieve() 包成"覆盖感知"版本:调用时把当前上下文的覆盖并入关键字参数。
+
+    覆盖**优先于**调用方显式传入的值（agent 里写死 ``top_k_rerank=5``，但 A/B
+    里我们要能把它改成 10），也优先于 settings 默认值。
+    """
+
+    def wrapper(*args, **kwargs):
+        overrides = _RETRIEVE_OVERRIDES.get()
+        if overrides:
+            for key, value in overrides.items():
+                kwarg = _OVERRIDE_TO_KWARG.get(key)
+                if kwarg is not None:
+                    kwargs[kwarg] = value
+        return retrieve_fn(*args, **kwargs)
+
+    wrapper.__name__ = getattr(retrieve_fn, "__name__", "retrieve")
+    wrapper._eval_override_aware = True  # type: ignore[attr-defined]
+    return wrapper
+
+
+def _install_retrieve_override_hook() -> None:
+    """
+    安装检索覆盖钩子（幂等）。
+
+    agent 模块用 ``from rag.retriever import retrieve`` 在**导入时**绑定了原函数，
+    只改 ``rag.retriever.retrieve`` 不会影响它们，必须把 agent 里那两个名字一并换成
+    包装 —— 否则覆盖"看起来生效了，实际没进检索"。
+    """
+    import rag.retriever as retriever
+
+    current = retriever.retrieve
+    if getattr(current, "_eval_override_aware", False):
+        return
+    wrapped = _make_override_aware(current)
+    retriever.retrieve = wrapped
+
+    import agent.chat_agent as chat_agent
+    import agent.tools as tools
+
+    chat_agent.retrieve = wrapped
+    tools.retrieve = wrapped
+
+
+@contextlib.contextmanager
+def applied_retrieve_overrides(overrides: dict[str, Any] | None):
+    """
+    在上下文里临时启用一组检索覆盖参数。
+
+    进入时安装钩子并把覆盖写进 contextvar；退出时**务必重置**（token reset）——
+    线程池会复用线程，不重置会把覆盖泄漏给排在后面的评测任务。
+    """
+    _install_retrieve_override_hook()
+    token = _RETRIEVE_OVERRIDES.set(overrides or None)
+    try:
+        yield
+    finally:
+        _RETRIEVE_OVERRIDES.reset(token)
+
+
+def validate_retrieve_overrides(overrides: dict[str, Any] | None) -> dict[str, Any]:
+    """校验覆盖键；未知键（多半是拼错）抛 ValueError，让路由层 400 报错。"""
+    if not overrides:
+        return {}
+    unknown = set(overrides) - APPLICABLE_OVERRIDE_KEYS - SNAPSHOT_ONLY_OVERRIDE_KEYS
+    if unknown:
+        raise ValueError(f"未知的检索覆盖字段: {', '.join(sorted(unknown))}")
+    return dict(overrides)
+
+
+def build_config_snapshot(
+    testset: str,
+    metrics: list[str],
+    sample_limit: int | None,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    构造本次评测的**配置快照** —— 记录"这次到底用的是哪套检索配置"。
+
+    基线 = 全局 settings + retrieve 默认值；再叠加本次覆盖得到"真正生效"的
+    检索配置。同时把"请求了但没生效"的字段单列（ignored_overrides），
+    避免快照把没起作用的东西记成已生效。
+    """
+    overrides = overrides or {}
+    base: dict[str, Any] = {
+        "top_k_search": _RETRIEVE_DEFAULTS["top_k_search"],
+        "top_k_rerank": _RETRIEVE_DEFAULTS["top_k_rerank"],
+        "bm25_weight": _RETRIEVE_DEFAULTS["bm25_weight"],
+        "use_hybrid_search": settings.use_hybrid_search,
+        "use_search_cache": settings.use_search_cache,
+        "retrieval_min_score": settings.retrieval_min_score,
+        "use_semantic_splitter": settings.use_semantic_splitter,
+        "chunk_size": settings.chunk_size,
+        "chunk_overlap": settings.chunk_overlap,
+        "model": settings.deepseek_model,
+    }
+    effective = dict(base)
+    applied: dict[str, Any] = {}
+    for key, value in overrides.items():
+        if key in APPLICABLE_OVERRIDE_KEYS:
+            effective[key] = value
+            applied[key] = value
+    ignored = {k: v for k, v in overrides.items() if k not in APPLICABLE_OVERRIDE_KEYS}
+    return {
+        **effective,
+        "testset": testset,
+        "sample_limit": sample_limit,
+        "metrics": list(metrics),
+        "retrieve_overrides": dict(overrides),
+        "applied_overrides": applied,
+        "ignored_overrides": ignored,
+    }
 
 
 def _install_ragas_compat_shim() -> None:
@@ -201,9 +414,62 @@ def _answer_one_sync(question: str, owner_id: int) -> tuple[str, list[str], list
     return answer, contexts, steps
 
 
+def _has_substantive_content(answer: str) -> bool:
+    """
+    去掉拒绝话术与"非内容"措辞后，判断还剩下多少实义字符。
+
+    返回 True 表示"除了说不知道，还额外讲了实质内容"（即先拒后答）。
+    """
+    residual = answer
+    for marker in _REFUSAL_MARKERS:
+        residual = residual.replace(marker, "")
+    for marker in _NON_CONTENT_MARKERS:
+        residual = residual.replace(marker, "")
+    residual = _PUNCT_RE.sub("", residual)
+    return len(residual) >= _MIN_SUBSTANTIVE_CHARS
+
+
 def _looks_like_refusal(answer: str) -> bool:
-    """回答是否属于"如实说不知道"。"""
-    return any(m in answer for m in _REFUSAL_MARKERS)
+    """
+    回答是否属于"如实说不知道"。
+
+    旧实现是**裸子串匹配**:只要出现拒绝话术就算拒答。它会被"先拒后答"骗过 ——
+    "知识库中没有这方面的信息。不过据我所知，他曾在字节跳动做算法工程师。"
+    命中了"知识库中没有"，于是编造内容被判成**诚实拒答**，honesty_rate 虚高、
+    幻觉被掩盖。这比崩溃更危险（产出一个看似合理、实则错的指标）。
+
+    新判据:**既要命中拒绝话术，又要"没剩下实质内容"**。
+
+    召回/精确权衡:
+      - 精确（不把幻觉误判成拒答）优先 —— 这是 honesty_rate 的意义所在。
+      - 代价是"很啰嗦的拒绝"若在话术之外还残留 ≥ _MIN_SUBSTANTIVE_CHARS 个
+        实义字符（例如多讲了一句具体建议），会被判成非拒答（漏判）。我们用
+        一份"非内容措辞"白名单（道歉/建议/引导用户补充信息）压低这种误伤。
+      - 更稳的做法是让判定 LLM 输出结构化标签（{refused: bool, reason}），
+        精确度和召回都更好；但那要多一次 LLM 调用、依赖联网、且无法离线测试，
+        故此处选用可离线、可断言的启发式。
+    """
+    text = (answer or "").strip()
+    if not text:
+        return False
+    if not any(marker in text for marker in _REFUSAL_MARKERS):
+        return False
+    return not _has_substantive_content(text)
+
+
+def _as_number(value: Any) -> float | None:
+    """
+    把 RAGAS 结果里的单个值转成数字;NaN / 非数字（含 bool）返回 None。
+
+    为什么必须挡 NaN:pandas 对"该题指标算不出来"会填 NaN，而 ``isinstance(NaN,
+    float)`` 为真 —— 旧实现直接把它当数字参与平均，一个 NaN 就把整条指标污染成
+    NaN。这里显式剔除，只让真实数值进入聚合。
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return float(value)
 
 
 # ------------------------------------------------------------
@@ -242,15 +508,40 @@ def _select_samples(questions: list[dict], limit: int | None) -> list[dict]:
 
 
 def run_eval_task(
-    report_id: int, owner_id: int, testset_name: str, metrics: list[str], limit: int | None = None
+    report_id: int,
+    owner_id: int,
+    testset_name: str,
+    metrics: list[str],
+    limit: int | None = None,
+    retrieve_overrides: dict[str, Any] | None = None,
 ) -> None:
     """
     执行一次评测并落库。**同步函数**，由线程池调度。
 
     评测很慢（每条问题要跑一次完整问答图，RAGAS 判定又要额外调多次 LLM），
     因此必须作为后台任务，且默认只跑前 N 条。
+
+    ``retrieve_overrides``:本次评测专用的检索参数覆盖（A/B 用）。它经
+    ``contextvars`` 注入检索链路，**不改全局 settings**，因此不会影响同时
+    在跑的其它请求。真正生效的配置会连同基线一起写进报告的快照
+    （``config_json``），使两次评测的差异可直接 diff。
+
+    报告状态语义（前端据此判断报告可信度）:
+
+    - ``done``    —— 请求的 RAGAS 指标**全部**算出，且没有题目因检索为空被排除。
+                    报告完整可信，可以直接拿去做对比。
+    - ``partial`` —— 跑完了、结果可用，但有已知降级:某个 RAGAS 指标没算出来
+                    （``rag_error`` 非空但仍有其它指标），或有题目因检索为空被
+                    排除（这些题没进指标聚合，会拉低有效样本量）。``error``
+                    字段写明原因。
+    - ``failed``  —— 没有任何可用指标产出（RAGAS 抛异常或未产出指标 —— 再也
+                    **不会**像旧实现那样照样报 ``done``），或任务整体异常、
+                    评测集为空。
+
+    ``pending`` / ``running`` 是提交后、开跑前的中间态，含义不变。
     """
     started = time.time()
+    retrieve_overrides = validate_retrieve_overrides(retrieve_overrides) or None
     try:
         run_async_from_thread(update_eval_report(report_id, status="running", progress=5))
 
@@ -263,100 +554,145 @@ def run_eval_task(
                     status="failed",
                     error="评测集为空",
                     progress=100,
+                    config_json=json.dumps(
+                        build_config_snapshot(testset_name, metrics, limit, retrieve_overrides),
+                        ensure_ascii=False,
+                    ),
                 )
             )
             return
 
+        # 配置快照尽早写库:即使后面整段跑挂，也能看出"这次用的哪套配置"。
+        config_snapshot = build_config_snapshot(testset_name, metrics, limit, retrieve_overrides)
         run_async_from_thread(
             update_eval_report(
                 report_id,
                 total_questions=len(questions),
                 progress=10,
+                config_json=json.dumps(config_snapshot, ensure_ascii=False),
             )
         )
 
         # ── 1. 逐题生成回答 ──
+        # 整段包在 applied_retrieve_overrides 里:contextvar 只在**本线程/本上下文**
+        # 生效，检索链路（含 agent 里 asyncio.to_thread 派生的子线程）都能读到，
+        # 但不会污染全局 settings，也不会串到别的评测任务或用户请求上。
         samples: list[dict] = []
+        sample_qidx: list[int] = []  # samples[i] 对应 per_question[sample_qidx[i]]
         per_question: list[dict] = []
-        for i, item in enumerate(questions, start=1):
-            question = item.get("question", "")
-            expected = item.get("expected_answer", "") or ""
-            category = item.get("category", "")
-            try:
-                with span("eval.question", category=category, qid=str(item.get("id", ""))):
-                    answer, contexts, _steps = _answer_one_sync(question, owner_id)
-            except Exception as e:
-                logger.error("[Eval] 生成回答失败: {} - {}", question[:40], e)
-                answer, contexts = "", []
+        retrieval_failed_count = 0
+        with applied_retrieve_overrides(retrieve_overrides):
+            for i, item in enumerate(questions, start=1):
+                question = item.get("question", "")
+                expected = item.get("expected_answer", "") or ""
+                category = item.get("category", "")
+                try:
+                    with span("eval.question", category=category, qid=str(item.get("id", ""))):
+                        answer, contexts, _steps = _answer_one_sync(question, owner_id)
+                except Exception as e:
+                    logger.error("[Eval] 生成回答失败: {} - {}", question[:40], e)
+                    answer, contexts = "", []
 
-            refused = _looks_like_refusal(answer)
-            per_question.append(
-                {
-                    "id": item.get("id"),
-                    "category": category,
-                    "question": question,
-                    "expected_answer": expected,
-                    "answer": answer,
-                    "contexts_count": len(contexts),
-                    "refused": refused,
-                }
-            )
-            samples.append(
-                {
-                    "user_input": question,
-                    "response": answer or "（无回答）",
-                    "retrieved_contexts": contexts or ["（未检索到任何上下文）"],
-                    "reference": expected or "（无期望答案）",
-                }
-            )
+                # 检索为空 = 这道题**没有可用于判定的上下文**。标记它，并把它排除
+                # 出 RAGAS 聚合 —— 旧实现给它塞占位串 "（未检索到任何上下文）"，
+                # 占位串会被当成真实上下文去算 faithfulness/relevancy，产出一个
+                # 看似合理、实则无意义的分数（比崩溃更糟）。这里改为"标记 + 排除"。
+                retrieval_failed = len(contexts) == 0
+                if retrieval_failed:
+                    retrieval_failed_count += 1
+                    logger.info("[Eval] 检索为空，已排除出指标聚合: {}", question[:40])
 
-            progress = 10 + int(45 * i / len(questions))
-            run_async_from_thread(update_eval_report(report_id, progress=progress))
-            logger.info("[Eval] 已生成 {}/{} : {}", i, len(questions), question[:40])
+                refused = _looks_like_refusal(answer)
+                qidx = len(per_question)
+                per_question.append(
+                    {
+                        "id": item.get("id"),
+                        "category": category,
+                        "question": question,
+                        "expected_answer": expected,
+                        "answer": answer,
+                        "contexts_count": len(contexts),
+                        "retrieval_failed": retrieval_failed,
+                        "refused": refused,
+                    }
+                )
+                if not retrieval_failed:
+                    samples.append(
+                        {
+                            "user_input": question,
+                            "response": answer or "（无回答）",
+                            "retrieved_contexts": contexts,
+                            "reference": expected or "（无期望答案）",
+                        }
+                    )
+                    sample_qidx.append(qidx)
+
+                progress = 10 + int(45 * i / len(questions))
+                run_async_from_thread(update_eval_report(report_id, progress=progress))
+                logger.info("[Eval] 已生成 {}/{} : {}", i, len(questions), question[:40])
 
         # ── 2. RAGAS 指标 ──
         metric_scores: dict[str, Any] = {}
+        rag_error: str | None = None
         try:
-            rag = _load_ragas()
-            from config.settings import get_dashscope_embeddings, get_deepseek_llm
+            if not samples:
+                rag_error = "所有题目的检索结果均为空，没有可判定的样本，RAGAS 指标未计算"
+            else:
+                rag = _load_ragas()
+                from config.settings import get_dashscope_embeddings, get_deepseek_llm
 
-            judge_llm = rag["LangchainLLMWrapper"](
-                get_deepseek_llm(temperature=0.0, streaming=False)
-            )
-            judge_emb = rag["LangchainEmbeddingsWrapper"](get_dashscope_embeddings())
+                judge_llm = rag["LangchainLLMWrapper"](
+                    get_deepseek_llm(temperature=0.0, streaming=False)
+                )
+                judge_emb = rag["LangchainEmbeddingsWrapper"](get_dashscope_embeddings())
 
-            selected = [rag["metrics"][m] for m in metrics if m in rag["metrics"]]
-            if selected:
-                dataset = rag["EvaluationDataset"].from_list(samples)
-                result = rag["evaluate"](
-                    dataset=dataset,
-                    metrics=selected,
-                    llm=judge_llm,
-                    embeddings=judge_emb,
-                )
-                # ragas 返回的结果对象可转 dict；只保留数值型指标
-                raw = (
-                    result.to_pandas().to_dict(orient="list")
-                    if hasattr(result, "to_pandas")
-                    else dict(result)
-                )
-                for key, value in raw.items():
-                    if key in ("user_input", "response", "retrieved_contexts", "reference"):
-                        continue
-                    try:
-                        vals = [v for v in value if isinstance(v, (int, float))]
+                selected = [rag["metrics"][m] for m in metrics if m in rag["metrics"]]
+                if not selected:
+                    rag_error = "未选择任何有效的 RAGAS 指标"
+                else:
+                    dataset = rag["EvaluationDataset"].from_list(samples)
+                    result = rag["evaluate"](
+                        dataset=dataset,
+                        metrics=selected,
+                        llm=judge_llm,
+                        embeddings=judge_emb,
+                    )
+                    # ragas 返回的结果对象可转 dict；只保留数值型指标
+                    raw = (
+                        result.to_pandas().to_dict(orient="list")
+                        if hasattr(result, "to_pandas")
+                        else dict(result)
+                    )
+                    per_metric_rows: dict[str, list] = {}
+                    for key, value in raw.items():
+                        if key in ("user_input", "response", "retrieved_contexts", "reference"):
+                            continue
+                        try:
+                            rows = list(value)
+                        except TypeError:
+                            continue
+                        nums = [_as_number(v) for v in rows]
+                        vals = [v for v in nums if v is not None]
                         if vals:
                             metric_scores[key] = round(sum(vals) / len(vals), 4)
-                    except TypeError:
-                        continue
+                            per_metric_rows[key] = nums
+                    # 把逐题分数挂回 per_question（compare 接口按题对比要用它）
+                    for pos, qidx in enumerate(sample_qidx):
+                        for key, nums in per_metric_rows.items():
+                            if pos < len(nums) and nums[pos] is not None:
+                                per_question[qidx][key] = round(nums[pos], 4)
+                    if not metric_scores:
+                        rag_error = "RAGAS 未产出任何指标"
         except Exception as e:
             logger.error("[Eval] RAGAS 指标计算失败: {}", e)
-            metric_scores["_error"] = str(e)[:300]
+            rag_error = f"RAGAS 指标计算失败: {str(e)[:300]}"
 
         run_async_from_thread(update_eval_report(report_id, progress=85))
 
         # ── 3. 自建指标：诚实度 ──
-        # "幻觉检测" 类问题 = 知识库中本就没有答案，正确行为是如实说不知道
+        # "幻觉检测" 类问题 = 知识库中本就没有答案，正确行为是如实说不知道。
+        # 注意:诚实度**不**按"检索是否为空"排除题目 —— 它衡量的是行为（该不该
+        # 拒答），与有没有检索到上下文无关；知识库外问题本来就不该检索到东西。
         hallucination_items = [q for q in per_question if "幻觉" in (q["category"] or "")]
         if hallucination_items:
             honest = sum(1 for q in hallucination_items if q["refused"])
@@ -369,7 +705,28 @@ def run_eval_task(
         answered = [q for q in per_question if q["answer"]]
         avg_ctx = round(sum(q["contexts_count"] for q in per_question) / len(per_question), 2)
 
-        # ── 4. 诊断建议 ──
+        # ── 4. 状态判定（语义见 docstring）──
+        # 旧实现无论 RAGAS 成功与否都报 done:一次"成功"的评测可能一个新指标都
+        # 没有（错误只塞进 metric_scores["_error"]），调用方据此以为拿到了结果。
+        # 现在按"请求的指标是否真的产出、有没有题被排除"如实分档。
+        requested_count = len(metrics)
+        produced_count = sum(1 for m in metrics if isinstance(metric_scores.get(m), (int, float)))
+        excluded = retrieval_failed_count
+        if produced_count == 0:
+            status = "failed"
+        elif produced_count < requested_count or excluded > 0:
+            status = "partial"
+        else:
+            status = "done"
+
+        reasons: list[str] = []
+        if rag_error:
+            reasons.append(rag_error)
+        if excluded:
+            reasons.append(f"{excluded} 题因检索为空被排除，未计入 RAGAS 指标聚合")
+        status_error = "；".join(reasons) if status != "done" else ""
+
+        # ── 5. 诊断建议 ──
         recommendations: list[str] = []
         if metric_scores.get("faithfulness") is not None and metric_scores["faithfulness"] < 0.8:
             recommendations.append(
@@ -403,25 +760,31 @@ def run_eval_task(
         run_async_from_thread(
             update_eval_report(
                 report_id,
-                status="done",
+                status=status,
                 progress=100,
                 completed=len(per_question),
                 results_json=json.dumps(per_question, ensure_ascii=False),
                 recommendations_json=json.dumps(recommendations, ensure_ascii=False),
                 metrics_json=json.dumps(metric_scores, ensure_ascii=False),
+                config_json=json.dumps(config_snapshot, ensure_ascii=False),
                 honesty_rate=honesty_rate,
                 hallucination_count=hallucination_count,
                 avg_match_score=metric_scores.get("faithfulness"),
-                poor_retrieval_count=sum(1 for q in per_question if q["contexts_count"] == 0),
+                # poor_retrieval_count = 因检索为空被排除、未计入指标聚合的题数
+                poor_retrieval_count=retrieval_failed_count,
                 answered_count=len(answered),
                 duration_seconds=duration,
+                error=status_error,
             )
         )
         logger.info(
-            "[Eval] 评测完成 report={}: {} 题, 指标={}, 耗时 {}s",
+            "[Eval] 评测{} report={}: {} 题（排除 {} 题）, 指标={}, 状态={}, 耗时 {}s",
+            "完成" if status == "done" else "结束（降级）",
             report_id,
             len(per_question),
+            retrieval_failed_count,
             metric_scores,
+            status,
             duration,
         )
 
@@ -438,3 +801,191 @@ def run_eval_task(
             )
         except Exception as inner:
             logger.error("[Eval] 标记评测失败也失败了: {}", inner)
+
+
+# ------------------------------------------------------------
+# A/B 对比（GET /api/eval/compare 的纯逻辑，可离线单测）
+# ------------------------------------------------------------
+
+
+def _load_json_field(value: Any, default: Any) -> Any:
+    """把库里的 JSON-in-TEXT 字段解析出来;空/坏值统一回退到 default。"""
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return default
+
+
+# 配置差异里不逐字段展开的结构性字段（它们的内容已在 a.config / b.config 里，
+# 展开成 "字段: {a: {...}, b: {...}}" 只会让前端表难渲染）
+_CONFIG_DIFF_SKIP = frozenset(
+    {"retrieve_overrides", "applied_overrides", "ignored_overrides", "metrics"}
+)
+
+
+def _config_diff(ca: dict, cb: dict) -> dict:
+    """逐字段对比两份配置快照，只返回**有差异**的标量字段（便于表格展示）。"""
+    diff: dict[str, Any] = {}
+    for key in sorted(set(ca) | set(cb)):
+        if key in _CONFIG_DIFF_SKIP:
+            continue
+        va, vb = ca.get(key), cb.get(key)
+        if va != vb:
+            diff[key] = {"a": va, "b": vb}
+    return diff
+
+
+def _metric_diff(ma: dict, mb: dict) -> dict:
+    """逐指标对比 A/B，给出 delta = B - A（A 为基线）。"""
+    out: dict[str, Any] = {}
+    for key in sorted(set(ma) | set(mb)):
+        if key.startswith("_"):  # 旧的错误占位键，不是指标
+            continue
+        va, vb = ma.get(key), mb.get(key)
+        delta = None
+        if (
+            isinstance(va, (int, float))
+            and isinstance(vb, (int, float))
+            and not isinstance(va, bool)
+            and not isinstance(vb, bool)
+        ):
+            delta = round(vb - va, 4)
+        out[key] = {"a": va, "b": vb, "delta": delta}
+    return out
+
+
+def _question_correct(q: dict) -> bool | None:
+    """
+    单题"答对"的判定规则（逐题对比用，规则刻意保持简单、可解释）:
+
+    - 检索为空 → ``None``:没有上下文无从判定，不计入胜负。
+    - "幻觉检测"类（知识库外问题）→ 正确 = **如实拒答**。
+    - 其余题目 → 有逐题 ``faithfulness`` 就以 ``>= _FAITHFULNESS_PASS`` 为准;
+      没有（RAGAS 失败）则退回"给了回答且没拒答"。
+    """
+    if q.get("retrieval_failed"):
+        return None
+    if "幻觉" in (q.get("category") or ""):
+        return bool(q.get("refused"))
+    faith = q.get("faithfulness")
+    if isinstance(faith, (int, float)) and not (isinstance(faith, float) and math.isnan(faith)):
+        return faith >= _FAITHFULNESS_PASS
+    return bool(q.get("answer")) and not q.get("refused")
+
+
+def _index_questions(questions: list[dict]) -> dict:
+    """按 id 建索引（无 id 时退化为用问题文本），用于逐题对齐。"""
+    out: dict[Any, dict] = {}
+    for q in questions:
+        key = q.get("id")
+        if key is None:
+            key = q.get("question", "")
+        out[key] = q
+    return out
+
+
+def _question_entry(qa_: dict, qb_: dict, correct_a: bool | None, correct_b: bool | None) -> dict:
+    return {
+        "id": qa_.get("id", qb_.get("id")),
+        "category": qa_.get("category") or qb_.get("category"),
+        "question": qa_.get("question") or qb_.get("question"),
+        "a": {
+            "correct": correct_a,
+            "refused": bool(qa_.get("refused")),
+            "retrieval_failed": bool(qa_.get("retrieval_failed")),
+            "faithfulness": qa_.get("faithfulness"),
+        },
+        "b": {
+            "correct": correct_b,
+            "refused": bool(qb_.get("refused")),
+            "retrieval_failed": bool(qb_.get("retrieval_failed")),
+            "faithfulness": qb_.get("faithfulness"),
+        },
+    }
+
+
+def _report_summary(report: dict, config: dict, count: int) -> dict:
+    return {
+        "report_id": report.get("id"),
+        "status": report.get("status"),
+        "testset": report.get("testset_name"),
+        "sample_count": count,
+        "created_at": str(report.get("created_at", "")),
+        "config": config,
+    }
+
+
+def build_report_comparison(a: dict, b: dict) -> dict:
+    """
+    对比两次评测报告（A/B）。入参是 ``get_eval_report`` 返回的 dict。
+
+    返回结构:
+
+    - ``comparable`` / ``comparability_notes``:样本数或评测集不同 → 明确"不可
+      直接比较"（comparable=False）并给出原因;状态非 done/partial 只算警告。
+    - ``config_diff``:两次配置快照的差异字段（A/B 值）。
+    - ``metrics``:各指标的 A/B 值与 delta = B - A。
+    - ``per_question``:逐题差异 —— A 对 B 错、B 对 A 错、拒答变化、检索变化。
+    """
+    ca = _load_json_field(a.get("config_json"), {})
+    cb = _load_json_field(b.get("config_json"), {})
+    ma = _load_json_field(a.get("metrics_json"), {})
+    mb = _load_json_field(b.get("metrics_json"), {})
+    qa = _load_json_field(a.get("results_json"), [])
+    qb = _load_json_field(b.get("results_json"), [])
+
+    count_a = int(a.get("total_questions") or 0)
+    count_b = int(b.get("total_questions") or 0)
+
+    blockers: list[str] = []
+    warnings: list[str] = []
+    if count_a != count_b:
+        blockers.append(f"两次样本数不同（A={count_a}, B={count_b}），指标不可直接比较")
+    if ca.get("testset") != cb.get("testset"):
+        blockers.append(
+            f"两次评测集不同（A={ca.get('testset')}, B={cb.get('testset')}），不可直接比较"
+        )
+    for label, report in (("A", a), ("B", b)):
+        if report.get("status") not in ("done", "partial"):
+            warnings.append(f"{label} 状态为 {report.get('status')}（非成功完成），结果可能不完整")
+
+    ia, ib = _index_questions(qa), _index_questions(qb)
+    common = [k for k in ia if k in ib]
+    a_correct_b_wrong: list[dict] = []
+    b_correct_a_wrong: list[dict] = []
+    refusal_changed: list[dict] = []
+    retrieval_changed: list[dict] = []
+    for key in common:
+        qa_, qb_ = ia[key], ib[key]
+        correct_a, correct_b = _question_correct(qa_), _question_correct(qb_)
+        entry = None
+        if correct_a is True and correct_b is False:
+            entry = _question_entry(qa_, qb_, correct_a, correct_b)
+            a_correct_b_wrong.append(entry)
+        elif correct_b is True and correct_a is False:
+            entry = _question_entry(qa_, qb_, correct_a, correct_b)
+            b_correct_a_wrong.append(entry)
+        if bool(qa_.get("refused")) != bool(qb_.get("refused")):
+            refusal_changed.append(_question_entry(qa_, qb_, correct_a, correct_b))
+        if bool(qa_.get("retrieval_failed")) != bool(qb_.get("retrieval_failed")):
+            retrieval_changed.append(_question_entry(qa_, qb_, correct_a, correct_b))
+
+    return {
+        "comparable": not blockers,
+        "comparability_notes": blockers + warnings,
+        "a": _report_summary(a, ca, count_a),
+        "b": _report_summary(b, cb, count_b),
+        "config_diff": _config_diff(ca, cb),
+        "metrics": _metric_diff(ma, mb),
+        "per_question": {
+            "common_count": len(common),
+            "only_in_a": sorted(str(k) for k in ia if k not in ib),
+            "only_in_b": sorted(str(k) for k in ib if k not in ia),
+            "a_correct_b_wrong": a_correct_b_wrong,
+            "b_correct_a_wrong": b_correct_a_wrong,
+            "refusal_changed": refusal_changed,
+            "retrieval_changed": retrieval_changed,
+        },
+    }

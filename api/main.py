@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from api.routes.admin_routes import router as admin_router
 from api.routes.auth_routes import router as auth_router
@@ -152,12 +153,19 @@ def create_app() -> FastAPI:
     # --- 请求限流（真实客户端 IP 级别，每分钟 N 次） ---
     # 不能用 slowapi 默认的 get_remote_address：它取 request.client.host，
     # 经 Nginx 反代后拿到的是代理容器 IP，会让全站共享一个计数器、限流实际失效。
+    #
+    # ⚠️ **必须挂 SlowAPIMiddleware 才会生效**。原来这里只创建了 Limiter、
+    # 注册了异常处理器，却没有 add_middleware —— 而 slowapi 的 `default_limits`
+    # 是**由中间件执行**的。结果是限流完全没在跑（README 里却写着"slowapi 限流"），
+    # 且没有任何测试能发现，因为测试里连一个 429 用例都没有。
+    # 现在补上中间件，并用 tests/test_rate_limit.py 守住"它确实在跑"。
     limiter = Limiter(
         key_func=client_ip,
         default_limits=[f"{app_settings.rate_limit_per_minute}/minute"],
     )
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
 
     # --- 请求日志中间件 ---
     @app.middleware("http")

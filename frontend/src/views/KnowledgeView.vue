@@ -228,6 +228,7 @@ function progressTone(status) {
   if (status === 'done') return 'success'
   if (status === 'failed') return 'danger'
   if (status === 'skipped') return 'neutral'
+  if (status === 'partial') return 'warning'
   return 'accent'
 }
 
@@ -290,11 +291,16 @@ const STATUS_META = {
   pending: { label: '排队中', tone: 'warning' },
   processing: { label: '处理中', tone: 'info' },
   done: { label: '完成', tone: 'success' },
+  // 后端新增的"部分完成"：有文件成功、也有文件失败/为空，知识库可用但不完整。
+  // ⚠️ 前端必须认识这个状态 —— 否则 usePolling 永远等不到终态，
+  //    会一直轮询到 30 分钟上限，然后显示"重建仍在进行中"。
+  partial: { label: '部分完成', tone: 'warning' },
   failed: { label: '失败', tone: 'danger' },
   skipped: { label: '已跳过', tone: 'neutral' },
 }
 const statusMeta = (s) => STATUS_META[s] || { label: s || '未知', tone: 'neutral' }
-const isTerminal = (s) => s === 'done' || s === 'failed' || s === 'skipped'
+const isTerminal = (s) =>
+  s === 'done' || s === 'failed' || s === 'skipped' || s === 'partial'
 
 // ── 上传 ──
 const fileInput = ref(null)
@@ -460,7 +466,8 @@ async function doRebuild() {
       {
         interval: 1500,
         maxAttempts: 1200, // 约 30 分钟
-        isDone: (st) => st?.status === 'done' || st?.status === 'failed',
+        isDone: (st) =>
+          st?.status === 'done' || st?.status === 'failed' || st?.status === 'partial',
         onTick: (st) => {
           if (typeof st?.progress === 'number') rebuildProgress.value = st.progress
         },
@@ -471,6 +478,14 @@ async function doRebuild() {
       toast.warning('重建仍在进行中，可稍后刷新页面查看结果')
     } else if (final.status === 'done') {
       toast.success(`重建完成（${final.chunk_count ?? 0} 个向量块）`)
+      await refreshFiles({ silent: true })
+    } else if (final.status === 'partial') {
+      // 部分成功：知识库能用但不完整。必须让用户看到是**哪些文件**出了问题，
+      // 否则他会以为重建干净地成功了（这正是"静默失效"要消灭的那种情况）。
+      toast.warning(
+        `重建部分完成（${final.chunk_count ?? 0} 个向量块）：${final.error || '部分文件未能处理'}`,
+        8000,
+      )
       await refreshFiles({ silent: true })
     } else {
       toast.error(`重建失败：${final.error || '未知错误'}`)

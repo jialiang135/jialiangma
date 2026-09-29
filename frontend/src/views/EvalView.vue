@@ -336,8 +336,22 @@ function metricLabel(key) {
   return METRIC_LABELS[key] || key
 }
 
-const STATUS_LABELS = { pending: '排队中', running: '评测中', done: '完成', failed: '失败' }
-const STATUS_TONES = { pending: 'warning', running: 'info', done: 'success', failed: 'danger' }
+// partial = 跑完了但结果有已知降级（某指标没算出来，或有题目因检索为空被排除）。
+// ⚠️ 必须认识它 —— 否则 usePolling 等不到终态，会一直轮询到 40 分钟上限。
+const STATUS_LABELS = {
+  pending: '排队中',
+  running: '评测中',
+  done: '完成',
+  partial: '部分完成',
+  failed: '失败',
+}
+const STATUS_TONES = {
+  pending: 'warning',
+  running: 'info',
+  done: 'success',
+  partial: 'warning',
+  failed: 'danger',
+}
 
 const statusLabel = (s) => STATUS_LABELS[s] || s || '—'
 const statusTone = (s) => STATUS_TONES[s] || 'neutral'
@@ -547,7 +561,8 @@ async function poll(reportId) {
     {
       interval: 1500,
       maxAttempts: 1600, // 约 40 分钟
-      isDone: (rep) => !!rep && (rep.status === 'done' || rep.status === 'failed'),
+      isDone: (rep) =>
+        !!rep && ['done', 'failed', 'partial'].includes(rep.status),
       onTick: (rep) => {
         if (rep) activeReport.value = rep
       },
@@ -564,8 +579,15 @@ async function poll(reportId) {
 
   await loadReports()
   await showDetail(reportId)
-  if (final.status === 'done') toast.success('评测完成')
-  else toast.error(`评测失败: ${final.error || '未知错误'}`)
+  if (final.status === 'done') {
+    toast.success('评测完成')
+  } else if (final.status === 'partial') {
+    // 结果可用但有降级（例如有题目因检索为空被排除），把原因如实说出来，
+    // 不要让用户拿一个"看着完整"的数字去做结论
+    toast.warning(`评测部分完成：${final.error || '部分指标未算出'}`, 8000)
+  } else {
+    toast.error(`评测失败: ${final.error || '未知错误'}`)
+  }
 }
 
 /* ── 详情 ── */

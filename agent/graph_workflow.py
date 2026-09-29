@@ -6,7 +6,12 @@ LangGraph 工作流编排
 from langgraph.graph import END, StateGraph
 from loguru import logger
 
-from agent.chat_agent import chat_agent_node, retrieve_before_chat, tool_executor_node
+from agent.chat_agent import (
+    MAX_REACT_ITERATIONS,
+    chat_agent_node,
+    retrieve_before_chat,
+    tool_executor_node,
+)
 from agent.eval_agent import eval_agent_node
 from agent.manage_agent import manage_agent_node
 from agent.state import AgentState
@@ -35,19 +40,27 @@ def route_to_agent(state: AgentState) -> str:
 def should_continue_chat(state: AgentState) -> str:
     """
     判断是否需要继续 ReAct 循环。
-    如果 LLM 请求了工具调用且未超限 → "tools"
-    否则 → "end"
-    """
-    needs_tool = state.get("needs_tool_call", False)
-    iteration = state.get("iteration_count", 0)
+    如果 LLM 请求了工具调用 → "tools"，否则 → "end"。
 
-    if needs_tool and iteration < 5:
-        logger.info(f"[Graph] ReAct 继续: iteration={iteration + 1}")
-        return "tools"
-    else:
-        if iteration >= 5:
-            logger.warning("[Graph] ReAct 达到最大迭代次数，强制结束")
+    **轮次上限由 chat_agent 节点自己把守**：它在 `iteration_count` 达到
+    `MAX_REACT_ITERATIONS` 且模型仍要工具时，会给出兜底 `final_answer` 并把
+    `needs_tool_call` 置回 False。
+
+    原实现在这里用 `iteration < 5` 抢先把超限的那一轮判给 END，导致 chat_agent
+    根本没机会产出兜底答案，`final_answer` 始终为空 —— 上层于是拿过渡语凑答案。
+    所以这里只跟随 `needs_tool_call`，不再自己截断。
+    """
+    if not state.get("needs_tool_call", False):
         return "end"
+
+    iteration = state.get("iteration_count", 0)
+    if iteration > MAX_REACT_ITERATIONS:
+        # 防御性硬上限：正常不会走到（chat_agent 到上限时已收敛并清掉 needs_tool_call）。
+        logger.warning("[Graph] 超出 ReAct 硬上限({})，强制结束", MAX_REACT_ITERATIONS)
+        return "end"
+
+    logger.info(f"[Graph] ReAct 继续: iteration={iteration}")
+    return "tools"
 
 
 # ========================================

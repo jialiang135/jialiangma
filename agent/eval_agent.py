@@ -93,7 +93,8 @@ async def eval_agent_node(state: AgentState) -> dict:
     - 用户要求跑评测 → 提交后台任务并立刻返回
     - 否则 → 汇报最近一次结果
     """
-    owner_id = state.get("owner_id", 1)
+    # 默认 0（匿名）而不是 1：缺 owner_id 时不该回落到管理员
+    owner_id = state.get("owner_id", 0)
     query = state.get("user_query", "") or ""
     logger.info("[EvalAgent] owner_id={}, query='{}'", owner_id, query[:60])
 

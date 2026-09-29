@@ -10,6 +10,14 @@
    c. **定长递归分块** —— ``RecursiveCharacterTextSplitter``（兜底）
 3. ``SemanticTextSplitter`` — 自动按结构感知策略分块
 4. ``process_document()`` / ``process_documents_batch()`` — 完整流水线
+
+关于 ``chunk_overlap``（重要，别被参数名骗了）：它**只对"定长兜底"路径生效**
+（``create_text_splitter``，即无结构信息时的兜底、大块二次切分、以及
+``use_semantic_splitter=False`` 的纯定长分块）。默认走的语义分块
+（标题 / 中文编号 / 段落）**刻意不做块间重叠** —— 它按结构边界切块，边界本身
+就保证语义单元不被切断；硬加"上一块的尾部"反而会把标题和正文混进相邻块、
+污染检索。这是"按结构切"与"加重叠"两种互斥思路的选择，不可兼得。
+详见 ``config/settings.py`` 的 ``chunk_overlap`` 注释。
 """
 
 import re
@@ -61,11 +69,15 @@ def filter_short_chunks(chunks: list[str], min_length: int = 20) -> list[str]:
     return [c for c in chunks if len(c.strip()) >= min_length]
 
 
-def deduplicate_chunks(chunks: list[str], threshold: float = 0.9) -> list[str]:
+def deduplicate_chunks(chunks: list[str]) -> list[str]:
     """
-    去重：移除高度相似的文本块。
+    去重：移除**内容完全相同**（忽略首尾空白）的文本块。
 
-    当前策略：完全相同的内容直接去重；未来可引入 fuzzy matching。
+    注意：这里只做精确去重，**不做模糊去重**。原函数签名上挂着一个
+    ``threshold=0.9`` 参数，但实现里从没用过它（docstring 也自认"未来可引入
+    fuzzy matching"）—— 留着这种死参数会让人误以为有模糊去重，故删除。
+    真要做近似去重，应引入明确的相似度算法（如 MinHash / 句向量余弦），
+    那是另一个函数的事。
     """
     seen = set()
     unique = []
@@ -217,9 +229,13 @@ class SemanticTextSplitter:
     当高层级策略产生 1 个块时自动降级；若块内容超出 ``chunk_size`` 则对该块
     进一步按低层级策略切分。
 
+    **结构分块路径（标题 / 中文编号 / 段落）不产生块间重叠**：相邻块直接由
+    结构边界切开，既不重复上一块的尾部，也不重复标题。只有"定长兜底"分支
+    （``__init__`` 的 ``chunk_size`` / ``chunk_overlap`` 仅在此生效）才做重叠。
+
     Args:
         chunk_size:      定长兜底时的目标块大小（字符数）。
-        chunk_overlap:   定长兜底时的块间重叠字符数。
+        chunk_overlap:   定长兜底时的块间重叠字符数（不回填到结构分块路径）。
         min_chunk_length: 过滤短块的最小字符数。
     """
 
@@ -375,8 +391,12 @@ def process_document(
 
     Args:
         content:               原始文本内容。
-        chunk_size:            定长分块大小（不使用语义分块时生效）。
-        chunk_overlap:         定长分块重叠。
+        chunk_size:            定长分块大小（不使用语义分块、或语义分块走到
+                               定长兜底时生效）。
+        chunk_overlap:         定长分块的块间重叠。**仅对定长兜底路径生效**；
+                               语义分块的"标题/编号/段落"路径不做重叠（见模块
+                               docstring 的说明），因此这里传它不会给这些路径
+                               带来重叠。
         min_chunk_length:      最短块长度。
         use_semantic_splitter: 是否使用 ``SemanticTextSplitter``（按结构分块）。
 
@@ -398,7 +418,7 @@ def process_document(
         )
         chunks = splitter.split_text(cleaned)
         logger.info(
-            "语义分块完成: {} 块 (chunk_size={}, overlap={})",
+            "语义分块完成: {} 块 (chunk_size={}; overlap={} 仅定长兜底路径生效)",
             len(chunks),
             chunk_size,
             chunk_overlap,

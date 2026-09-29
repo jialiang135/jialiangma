@@ -21,7 +21,11 @@ from core.database import (
     get_file_by_id,
     get_files_by_owner,
 )
-from core.kb_tasks import process_file_sync, rebuild_knowledge_base
+from core.kb_tasks import (
+    _rebuild_knowledge_base_report,
+    _summarize_rebuild,
+    process_file_sync,
+)
 from core.paths import remove_within
 
 
@@ -35,7 +39,8 @@ async def manage_agent_node(state: AgentState) -> dict:
     - rebuild: 重建知识库
     """
     operation = state.get("operation", "list")
-    owner_id = state.get("owner_id", 1)
+    # 默认 0（匿名）而不是 1：缺 owner_id 时不该回落到管理员
+    owner_id = state.get("owner_id", 0)
     logger.info("[ManageAgent] 执行操作: {}, owner_id={}", operation, owner_id)
 
     result_message = ""
@@ -249,10 +254,33 @@ async def _handle_rebuild(state: AgentState, owner_id: int) -> tuple[str, list]:
         return "知识库中没有文件，无需重建。请先上传文档。", ["📭 知识库为空，无需重建"]
 
     reasoning = ["🔄 开始重建知识库...", f"📁 待处理文件: {len(files)} 个"]
-    total_chunks = await asyncio.to_thread(rebuild_knowledge_base, owner_id)
-    reasoning.append(f"✅ 重建完成: {total_chunks} 个向量块")
 
+    # 用**带明细的报告版本**，而不是只返回块数的 `rebuild_knowledge_base`：
+    # 后者在"所有文件都解析失败"时也只返回 0，这里无从区分"重建成功但没有内容"
+    # 和"重建失败了"。原来的实现就是无条件回一句"✅ 重建完成: 0 个向量块" ——
+    # 那正是"全部失败却报成功"这类静默失效的典型。
+    #
+    # 注：这两个函数带下划线前缀，但 `rebuild_knowledge_base` 只是它的一层
+    # 薄封装（供不需要明细的调用方使用），跨模块用不算越界。
+    report = await asyncio.to_thread(_rebuild_knowledge_base_report, owner_id)
+    status, error = _summarize_rebuild(report)
+    total_chunks = report.get("total_chunks", 0)
+
+    if status == "done":
+        reasoning.append(f"✅ 重建完成: {total_chunks} 个向量块")
+        return (
+            f"## 知识库重建完成\n\n- 处理文件: {len(files)} 个\n- 总向量块: {total_chunks} 块",
+            reasoning,
+        )
+
+    # partial / failed 都必须如实说明，不能声称成功
+    label = "部分完成" if status == "partial" else "失败"
+    logger.warning("[ManageAgent] 重建{}: {} 个向量块；{}", label, total_chunks, error)
+    reasoning.append(f"⚠️ 重建{label}: {total_chunks} 个向量块；{error}")
     return (
-        f"## 知识库重建完成\n\n- 处理文件: {len(files)} 个\n- 总向量块: {total_chunks} 块",
+        f"## 知识库重建{label}\n\n"
+        f"- 处理文件: {len(files)} 个\n"
+        f"- 总向量块: {total_chunks} 块\n"
+        f"- 问题: {error}",
         reasoning,
     )

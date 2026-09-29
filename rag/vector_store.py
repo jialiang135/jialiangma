@@ -26,6 +26,17 @@ _chroma_client: chromadb.PersistentClient | None = None
 _vector_store: Chroma | None = None
 
 
+class VectorStoreError(RuntimeError):
+    """
+    向量库检索/统计链路故障（Chroma 挂了 / embedding 挂了 / filter 写错等）。
+
+    为什么用异常而不是返回 ``[]``：空列表与"知识库里本来就没有相关内容"
+    **完全无法区分**，上层会把故障当成"没找到"，自信地答"我的知识库中没有
+    这方面的信息" —— 用户得到一个错误结论。抛异常能让 ``retrieve()`` 把故障
+    如实透出给调用方（见 ``rag/retriever.py`` 的 ``_retrieve_impl``）。
+    """
+
+
 def _get_chroma_client() -> chromadb.PersistentClient:
     """获取 ChromaDB 持久化客户端（懒加载）"""
     global _chroma_client
@@ -158,10 +169,14 @@ def search_by_owner(
     按 owner_id 过滤检索。
     只返回当前用户的文档，实现数据隔离。
     返回: [{"content": str, "metadata": dict, "score": float}, ...]
-    """
-    vector_store = get_vector_store()
 
+    Raises:
+        VectorStoreError: 检索链路故障（Chroma 客户端初始化 / 向量检索 / filter
+            出错）。注意"检索成功但该用户没有文档"返回的是**空列表、不抛异常**
+            —— 两者语义不同，上层必须能区分。
+    """
     try:
+        vector_store = get_vector_store()
         results = vector_store.similarity_search_with_score(
             query,
             k=top_k,
@@ -177,7 +192,7 @@ def search_by_owner(
         ]
     except Exception as e:
         logger.error(f"向量检索失败: {e}")
-        return []
+        raise VectorStoreError(f"向量检索失败: {e}") from e
 
 
 def delete_by_file(filename: str, owner_id: int) -> int:
@@ -238,7 +253,19 @@ def _get_or_create_collection():
 
 
 def get_collection_stats(owner_id: int) -> dict:
-    """获取某用户的向量库统计信息"""
+    """
+    获取某用户的向量库统计信息。
+
+    返回值在原有键（``total_chunks`` / ``unique_files`` / ``files``）之外
+    **新增 ``error`` 键**（向后兼容，老调用方读旧键不受影响）：
+
+    - 成功：``error`` 为 ``None``（哪怕该用户一条数据都没有，也是成功的空）。
+    - 失败：``error`` 为错误描述字符串。
+
+    原实现异常时直接返回 ``{"total_chunks": 0, ...}``，把"查询失败"伪装成
+    "知识库为空" —— 上层会看到"向量块总数: 0"而以为知识库真的空。加了 ``error``
+    之后调用方能区分这两种情况（本次不改各调用点，只把能力暴露出来）。
+    """
     try:
         collection = _get_or_create_collection()
         existing = collection.get(
@@ -257,7 +284,13 @@ def get_collection_stats(owner_id: int) -> dict:
             "total_chunks": total_chunks,
             "unique_files": len(sources),
             "files": sorted(sources),
+            "error": None,
         }
     except Exception as e:
         logger.warning(f"获取向量库统计失败: {e}")
-        return {"total_chunks": 0, "unique_files": 0, "files": []}
+        return {
+            "total_chunks": 0,
+            "unique_files": 0,
+            "files": [],
+            "error": f"获取向量库统计失败: {e}",
+        }

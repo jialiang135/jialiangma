@@ -98,12 +98,48 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 50  # 单文件大小上限（须小于 nginx client_max_body_size）
 
     # --- 访问控制 ---
-    # 是否允许公开注册。私有知识库场景默认关闭：注册后虽拿不到 owner_id=1 的知识库，
-    # 但能调用 LLM，公网部署下等于把 API 额度开放给任意人。
+    # 是否允许公开注册。
+    #
+    # ⚠️ 打开后**注册者能读到本知识库的全部内容**（面试官注册账号来问分身问题，
+    # 这正是产品本意）。所以公网部署 + 开放注册 = 你的简历、手机号、邮箱等
+    # 个人信息对任何愿意注册的人开放。演示时打开，**公网必须关掉或加邀请码**。
+    #
+    # 这条注释原先写的是"注册后虽拿不到 owner_id=1 的知识库"——那是错的：
+    # 检索层当时把 owner_id 写死成 1，注册用户和匿名访客都能读到。
     allow_registration: bool = False
+
+    # 知识库的所有者。本系统是"单管理员的个人数字分身"，知识库属于管理员，
+    # 所有**已登录**用户共享这一份。
+    shared_kb_owner_id: int = 1
+
+    # 匿名（未登录）用户能否检索知识库。默认**禁止**。
+    #
+    # 为什么要有这个开关：`POST /api/chat/stream/public` 的文档写着
+    # "未登录用户无知识库访问权限"，但它传下去的 owner_id=0 被检索层无视了
+    # （那里写死查 owner_id=1），结果匿名访客能直接问出手机号、邮箱。
+    # 现在访问规则收在 core/kb_access.py 里，匿名默认拿不到知识库。
+    # 只有在"这个分身本就该公开可问"的场景下才该打开。
+    allow_anonymous_kb_access: bool = False
 
     # --- Redis（会话缓存 + 向量缓存 + 异步队列）---
     redis_url: str = "redis://localhost:6379/0"
+
+    # --- LLM 成本费率（每 100 万 token 的美元价）---
+    # JSON 字符串，覆盖 core/token_tracker.py 的内置费率表。留空则只用内置表。
+    #
+    # 为什么做成配置而不是写死在代码里：本项目走的是第三方 DeepSeek 代理，
+    # 各家定价不同，写死必然与实际账单不符。而原实现的内置表里**根本没有
+    # 实际使用的 `deepseek-flash`**，导致每次调用都命中"未知模型"、成本记 0 ——
+    # 界面上显示的费用全部来自更早的历史记录。
+    #
+    # 格式（只需填你实际在用的模型）：
+    #   LLM_COST_RATES={"deepseek-flash": {"input": 0.28, "output": 1.10}}
+    # 可选字段 cached_input：命中 prompt 缓存的输入单价（不填则这部分按 0 计，
+    # 宁可低估也不假装知道缓存价）。
+    #
+    # 查不到费率的模型**不会套用默认价**，而是记 0 + 告警，并在统计接口里
+    # 以 `unmapped_models` 暴露出来，界面据此提示"成本未知"。
+    llm_cost_rates: str = ""
 
     # --- 异步任务队列 ---
     # 默认用进程内线程池：单机部署下 RQ 需要额外 worker 进程，且对 Redis
@@ -114,6 +150,16 @@ class Settings(BaseSettings):
 
     # --- 文档处理 ---
     chunk_size: int = 1000
+    # 块间重叠字符数。**仅对"定长兜底"路径生效** —— 即
+    # ``rag/text_splitter.py`` 里 ``SemanticTextSplitter`` 在"无结构信息"或
+    # "大块二次切分"时走的 ``create_text_splitter``，以及 ``use_semantic_splitter``
+    # 为 False 时的纯定长分块。
+    #
+    # 默认走的语义分块（Markdown 标题 / 中文编号章节 / 段落）**刻意不做重叠**：
+    # 它按结构边界切块，边界本身就保证一个语义单元不被切断，硬加"上一块的尾部"
+    # 反而会把标题和正文混进相邻块、污染检索。所以"按结构切"和"加重叠"是两种
+    # 互斥的思路，不能同时要。原实现声称 overlap=200 但在默认（语义）路径下
+    # 根本没有重叠，注释与实现不一致；现按"B 方案"明确：overlap 只属于定长兜底。
     chunk_overlap: int = 200
     # 是否用结构感知分块（Markdown 标题 / 中文编号章节 / 段落 → 定长兜底）。
     # 简历、项目文档这类有层级的材料，按结构切块能保住"章节语义"，
@@ -123,6 +169,22 @@ class Settings(BaseSettings):
     # 原实现两者都写好了，但默认关闭且没有任何调用点传过参数 —— 等于死代码。
     use_hybrid_search: bool = True
     use_search_cache: bool = True
+
+    # --- 检索相关性阈值 ---
+    # rerank 之后相关性分数（0~1）低于此值的结果会被丢弃，不再拼进 prompt。
+    #
+    # 为什么需要它：没有阈值时，只要向量库 / BM25 返回任何一条（哪怕相关度
+    # 只有 0.01），就会被塞进上下文让 LLM 硬答 —— 用户问一个知识库里根本
+    # 没有的问题时，会召回"最接近的垃圾块"然后编造。这是 RAG 最容易被击穿的点。
+    #
+    # 默认 0.05 的来历：这是**拍脑袋的经验值，不是实验测出来的**，别当真理。
+    # 依据仅是：gte-rerank-v2 这类交叉编码器在 0~1 上打分，明显不相关的片段
+    # 通常落在 0.0~0.05，相关的多在 0.3 以上，中间是模糊带。**应当按自己的
+    # 语料调**：怕误杀就调低（如 0.02），怕垃圾就调高（如 0.1）。设为 0 或负数
+    # 等于关闭过滤。改这里不需要动代码。
+    # 注意：rerank 降级（分数未知为 None）时此阈值**不生效**，取舍见
+    # ``rag/retriever.py`` 的 ``_retrieve_impl``。
+    retrieval_min_score: float = 0.05
 
     model_config = {
         "env_file": os.path.join(os.path.dirname(__file__), ".env"),
@@ -277,8 +339,14 @@ def get_dashscope_embeddings():
 
 def rerank_with_dashscope(query: str, documents: list[str], top_n: int = 5) -> list[dict]:
     """
-    使用阿里云 DashScope rerank API 对检索结果重排
-    返回: [{"index": int, "score": float, "text": str}, ...]
+    使用阿里云 DashScope rerank API 对检索结果重排。
+
+    Returns:
+        ``[{"index": int, "score": float | None, "text": str, "degraded": bool}, ...]``
+
+        - 正常：``score`` 是真实的 ``relevance_score``（0~1），``degraded`` 为 False。
+        - 降级（API 返回异常 / 调用抛错）：保留输入顺序，但 ``score`` 为 ``None``
+          （明确表示"未评分"），``degraded`` 为 True。
     """
     import dashscope
 
@@ -302,16 +370,32 @@ def rerank_with_dashscope(query: str, documents: list[str], top_n: int = 5) -> l
                     "text": item["document"]
                     if isinstance(item["document"], str)
                     else item["document"]["text"],
+                    "degraded": False,
                 }
                 for item in result.output["results"]
             ]
         else:
             logger.warning(f"Rerank API 返回异常: {result.status_code} - {result.message}")
-            # 降级：返回原始排序
-            return [
-                {"index": i, "score": 1.0, "text": doc} for i, doc in enumerate(documents[:top_n])
-            ]
+            return _degraded_rerank(documents, top_n)
     except Exception as e:
         logger.error(f"Rerank API 调用失败: {e}")
-        # 降级
-        return [{"index": i, "score": 1.0, "text": doc} for i, doc in enumerate(documents[:top_n])]
+        return _degraded_rerank(documents, top_n)
+
+
+def _degraded_rerank(documents: list[str], top_n: int) -> list[dict]:
+    """
+    rerank 不可用时的降级结果。
+
+    保留输入顺序（该顺序来自"混合检索的 RRF 序"或"纯向量的距离升序"，
+    两者都是合理的排序 —— **问题从来不在顺序，而在分数语义**），
+    但 ``score`` 一律为 ``None``，明确表示"这次没有真正评分"。
+
+    为什么不能再填 ``1.0``（原实现的做法）：那个假分数会被拼进上下文、
+    显示成"相关度: 1.0000"，既误导 LLM 与用户，又让相关性阈值过滤彻底失效
+    （假 1.0 永远高于阈值，什么都拦不住）。``None`` 让上层能如实说"分数未知"，
+    并让阈值过滤在降级时**跳过**而不是被假分数骗过。
+    """
+    return [
+        {"index": i, "score": None, "text": doc, "degraded": True}
+        for i, doc in enumerate(documents[:top_n])
+    ]

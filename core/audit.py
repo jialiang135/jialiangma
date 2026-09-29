@@ -5,6 +5,7 @@
 
 import time
 
+from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # 建表语句已收归 core/database.py 的 AuditLog 模型，
@@ -67,17 +68,31 @@ class AuditMiddleware(BaseHTTPMiddleware):
         duration = (time.time() - start) * 1000
 
         # 跳过健康检查的审计，避免日志噪音
+        #
+        # 审计写入**绝不能影响业务请求**：原实现直接 await，一旦审计表写失败
+        # （SQLite busy、磁盘满、表结构变更），异常会在 call_next 成功返回之后
+        # 抛出，客户端拿到 500 —— 而操作其实已经成功了。
+        # 这是"日志把成功变成失败"的典型，所以这里吞掉异常，但**留下错误日志**，
+        # 而不是静默丢弃（否则审计坏了也没人知道）。
         if request.url.path != "/api/health":
-            await log_audit(
-                action=f"{request.method} {request.url.path}",
-                user_id=user_id,
-                username=username,
-                resource=request.url.path,
-                detail=f"status={response.status_code}",
-                ip_address=ip,
-                user_agent=request.headers.get("User-Agent", ""),
-                duration_ms=round(duration, 2),
-                status="success" if response.status_code < 400 else "failure",
-            )
+            try:
+                await log_audit(
+                    action=f"{request.method} {request.url.path}",
+                    user_id=user_id,
+                    username=username,
+                    resource=request.url.path,
+                    detail=f"status={response.status_code}",
+                    ip_address=ip,
+                    user_agent=request.headers.get("User-Agent", ""),
+                    duration_ms=round(duration, 2),
+                    status="success" if response.status_code < 400 else "failure",
+                )
+            except Exception as e:
+                logger.error(
+                    "[Audit] 审计写入失败（不影响本次请求）: {} {} - {}",
+                    request.method,
+                    request.url.path,
+                    e,
+                )
 
         return response

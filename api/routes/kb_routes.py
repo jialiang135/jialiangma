@@ -170,12 +170,19 @@ def _clear_upload_dir(upload_dir: Path) -> None:
 
 @router.get("/files", response_model=KnowledgeBaseStats)
 async def list_files(user: dict = Depends(get_current_user)):
-    """列出知识库文件"""
-    KB_OWNER_ID = 1
-    files = await get_files_by_owner(KB_OWNER_ID)
+    """
+    列出知识库文件。
+
+    知识库属于管理员（`settings.shared_kb_owner_id`），这里的归属不再写死 1。
+    注意本端点只要求登录、不要求管理员 —— 也就是说**任何已登录用户都能看到
+    文件名列表**。前端「知识库」页对所有用户开放，所以这是当前的既定行为；
+    若希望只让管理员看到，需要改 `require_admin` 并同时调整前端导航。
+    """
+    kb_owner = settings.shared_kb_owner_id
+    files = await get_files_by_owner(kb_owner)
     from rag.vector_store import get_collection_stats
 
-    stats = await asyncio.to_thread(get_collection_stats, KB_OWNER_ID)
+    stats = await asyncio.to_thread(get_collection_stats, kb_owner)
 
     return KnowledgeBaseStats(
         total_files=len(files),

@@ -286,6 +286,15 @@ class EvalReport(Base):
     metrics_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     results_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     recommendations_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 本次评测真正生效的配置快照（JSON-in-TEXT，与 metrics_json 同款做法）。
+    # **为什么必须有它**：原先报告只存结果、不存"这次用的是哪套检索参数"，
+    # 跑两次得到的两个分数于是无法解释差异 —— 只能改 .env、重跑、人肉对照，
+    # 评测因此"证明不了任何事"。落一份配置快照后，A/B 两次的差异字段可以
+    # 直接 diff 出来（见 ``api/routes/eval_routes.py`` 的 compare 接口）。
+    #
+    # 加列不需要数据库迁移：新库由 Base.metadata.create_all 建好，旧库由
+    # core/database.py 的 _LEGACY_COLUMNS 在 init_database 时 ALTER TABLE 补齐。
+    config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str] = mapped_column(Text, server_default=text("''"))
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, server_default=text("CURRENT_TIMESTAMP")
@@ -455,6 +464,7 @@ _LEGACY_COLUMNS = {
         "honesty_rate": "REAL",
         "duration_seconds": "REAL",
         "metrics_json": "TEXT",
+        "config_json": "TEXT",
         "error": "TEXT DEFAULT ''",
     },
 }
@@ -1251,6 +1261,7 @@ def _eval_to_dict(report: EvalReport) -> dict:
         "metrics_json": report.metrics_json,
         "results_json": report.results_json,
         "recommendations_json": report.recommendations_json,
+        "config_json": report.config_json,
         "error": report.error,
         "created_at": report.created_at,
     }
@@ -1272,6 +1283,7 @@ _EVAL_UPDATABLE = {
     "metrics_json",
     "results_json",
     "recommendations_json",
+    "config_json",
     "error",
 }
 

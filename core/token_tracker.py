@@ -3,25 +3,69 @@ Token 使用统计与费用估算
 跟踪每次 LLM 调用的 token 消耗，支持按用户、按天、按模型聚合统计
 """
 
+import json
 from datetime import timedelta
 
 from loguru import logger
 from sqlalchemy import func, select
 
+from config.settings import settings
 from core.database import TokenUsage, session_scope, utcnow
 
-# Cost rates per 1M tokens (USD)。
-# 只填**确知**的费率：表里没有的模型不会套用"默认费率"编一个数字，
-# 而是记为 0 并打告警 —— 编造成本比没有成本更糟。
-COST_RATES = {
+# 内置费率表（每 100 万 token 的美元价）—— **只是兜底**。
+#
+# 真实费率应当通过 `settings.llm_cost_rates` 配置：不同渠道 / 代理的定价
+# 各不相同（本项目走的是第三方 DeepSeek 代理），把某一家的价格写死在代码里
+# 必然与实际账单不符。
+#
+# 原状：表里只有 `deepseek-v4-pro` / `deepseek-chat`，而实际配置的模型是
+# `deepseek-flash` —— 于是**每一次调用都命中"未知模型"、成本记 0**，
+# 管理页显示的费用全部来自更早的历史记录。token 在记，钱没在算。
+#
+# 原则不变：查不到费率的模型**不编造数字**，记 0 并告警；同时把"有哪些模型
+# 没匹配上"暴露给统计接口，让界面能显示"成本未知"而不是一个会让人误读的 $0。
+_BUILTIN_COST_RATES: dict[str, dict[str, float]] = {
     "deepseek-v4-pro": {"input": 0.28, "output": 1.10},
     "deepseek-chat": {"input": 0.28, "output": 1.10},
     "qwen-turbo": {"input": 0.50, "output": 0.50},
     "glm-4": {"input": 0.50, "output": 0.50},
 }
 
+
+def _load_cost_rates() -> dict[str, dict[str, float]]:
+    """
+    内置费率 ⊕ `settings.llm_cost_rates` 的覆盖。
+
+    在导入时算一次（配置是启动时快照，与项目其它配置一致）。
+    """
+    rates = {m: dict(r) for m, r in _BUILTIN_COST_RATES.items()}
+    raw = (getattr(settings, "llm_cost_rates", "") or "").strip()
+    if not raw:
+        return rates
+    try:
+        overrides = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error("settings.llm_cost_rates 不是合法 JSON，已忽略: {}", e)
+        return rates
+
+    for model, rate in (overrides or {}).items():
+        if isinstance(rate, dict) and "input" in rate and "output" in rate:
+            entry = {"input": float(rate["input"]), "output": float(rate["output"])}
+            # cached_input 是可选的，别漏掉 —— 漏了就等于"缓存命中不省钱"
+            if rate.get("cached_input") is not None:
+                entry["cached_input"] = float(rate["cached_input"])
+            rates[model] = entry
+        else:
+            logger.warning("llm_cost_rates 里 {} 的格式不对（需 input/output），已跳过", model)
+    return rates
+
+
+COST_RATES = _load_cost_rates()
+
 # 每个未知模型只告警一次，避免刷日志
 _warned_unknown_models: set[str] = set()
+# 未匹配到费率的模型 —— 由 get_usage_stats 暴露出去，界面据此提示"成本未知"
+_unmapped_models: set[str] = set()
 
 
 def estimate_tokens(text: str) -> int:
@@ -40,25 +84,46 @@ def estimate_tokens(text: str) -> int:
     return max(estimated, 1)
 
 
-def calculate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+def calculate_cost(
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int = 0,
+) -> float:
     """
     根据模型费率计算单次调用费用（美元）。
 
     费率表中没有该模型时返回 0 并首次告警，不套用默认费率 ——
-    宁可显示"成本未知"，也不要显示一个编造的数字。
+    宁可显示"成本未知"，也不要显示一个编造的数字。**未匹配的模型会被记进
+    `_unmapped_models`**，由 `get_usage_stats` 暴露出去。
+
+    Args:
+        cached_tokens: 命中 prompt 缓存的输入 token 数。**缓存命中的输入更便宜**，
+            所以从全价的输入里扣掉这部分。若费率里给了 `cached_input`
+            就按它计价，否则这部分按 0 计（宁可低估，也不假装知道缓存价）。
     """
     rates = COST_RATES.get(model)
     if rates is None:
+        _unmapped_models.add(model)
         if model not in _warned_unknown_models:
             _warned_unknown_models.add(model)
             logger.warning(
-                "模型 {} 不在 COST_RATES 费率表中，成本记为 0。"
-                "如需成本统计，请在 core/token_tracker.py 补充其真实费率",
+                "模型 {} 不在费率表中，成本记为 0（不会套用默认价）。"
+                "如需成本统计，请在 config/.env 里设 LLM_COST_RATES，"
+                '例如 {{"{}": {{"input": 0.28, "output": 1.10}}}}',
+                model,
                 model,
             )
         return 0.0
 
-    input_cost = (prompt_tokens / 1_000_000) * rates["input"]
+    # 缓存命中的输入不计全价
+    cached = max(0, min(int(cached_tokens or 0), int(prompt_tokens)))
+    full_price_input = max(0, int(prompt_tokens) - cached)
+    cached_rate = rates.get("cached_input")
+
+    input_cost = (full_price_input / 1_000_000) * rates["input"]
+    if cached and cached_rate is not None:
+        input_cost += (cached / 1_000_000) * float(cached_rate)
     output_cost = (completion_tokens / 1_000_000) * rates["output"]
     return round(input_cost + output_cost, 8)
 
@@ -81,7 +146,7 @@ async def track_usage(
         reasoning_tokens:  其中用于思考的 token 数，单独留档便于分析。
         cached_tokens:     命中 prompt 缓存的输入 token 数。
     """
-    cost = calculate_cost(model, prompt_tokens, completion_tokens)
+    cost = calculate_cost(model, prompt_tokens, completion_tokens, cached_tokens=cached_tokens)
     try:
         async with session_scope() as session:
             session.add(
@@ -194,4 +259,7 @@ async def get_usage_stats(owner_id: int, days: int = 7) -> dict:
         "model_breakdown": model_breakdown,
         "totals": dict(totals_row),
         "period_days": days,
+        # 未匹配到费率的模型。前端据此提示"成本未知" —— 否则用户会把
+        # 一个因为查不到价而永远是 0 的数字，误读成"没花钱"。
+        "unmapped_models": sorted(_unmapped_models),
     }

@@ -578,26 +578,16 @@ class TestIntegration:
 
         os.unlink(tmp_path)
 
-    @pytest.mark.slow
-    def test_kb_isolation(self, client, auth_headers):
-        """验证 owner_id 隔离：未登录用户搜不到知识库内容"""
-        resp = client.post(
-            "/api/chat/stream/public",
-            json={
-                "message": "李四的职业是什么？",
-                "agent_mode": "chat",
-            },
-        )
-        assert resp.status_code == 200
-        body = ""
-        for chunk in resp.iter_bytes(chunk_size=1024):
-            text = chunk.decode("utf-8", errors="replace")
-            body += text
-            if '"done"' in body:
-                break
-        # 公开接口不需要登录，但 owner_id=0，应该搜不到知识库
-        # 不验证具体内容，只验证返回了 SSE 格式
-        assert "data:" in body
+    # 原 `test_kb_isolation` 已删除。它号称"验证 owner_id 隔离：未登录用户
+    # 搜不到知识库内容"，实际只断言 `"data:" in body` —— **永远不会因为泄漏而
+    # 失败**，而且还标了 @pytest.mark.slow（默认跳过）。假测试比没有测试更危险：
+    # 它让"我测过隔离了"成为一个错觉。
+    #
+    # 真正的隔离用例在 tests/test_kb_access.py：
+    #   - 匿名时连检索都不发起（用哨兵证明 retrieve 未被调用）
+    #   - 已登录用户用的是配置里的共享 owner，不是硬编码 1
+    #   - 工具执行器拒绝匿名的知识库工具调用
+    #   - 检索「故障」不会被说成「知识库里没有」
 
 
 # ============================================================

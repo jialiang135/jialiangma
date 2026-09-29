@@ -44,13 +44,39 @@ def compute_file_hash(filepath: str) -> str:
     return h.hexdigest()
 
 
+# kb_tasks 自己产生的原因码（rag/document_loader 之外的入库/分块阶段）。
+_PIPELINE_REASON_LABELS = {
+    "split_error": "分块失败",
+    "embed_error": "向量化失败",
+    "no_chunks": "分块后没有可用文本",
+}
+# 这些原因光有标签不够，还要把细节带上（否则"失败"了但不知失败在哪）。
+_DETAIL_REASONS = {"parse_error", "split_error", "embed_error", "zip_limit_exceeded"}
+
+
+def _problem_label(reason: str, detail: str = "") -> str:
+    """
+    把原因码（+细节）转成一句人话，用于任务状态与错误信息。
+
+    标签统一来自 ``rag.document_loader.REASON_LABELS``，避免在调用方各写一份、
+    日后漂移；detail 只在"标签说不清"的原因上附带。
+    """
+    from rag.document_loader import REASON_LABELS
+
+    label = _PIPELINE_REASON_LABELS.get(reason) or REASON_LABELS.get(reason) or reason
+    detail = (detail or "").strip()
+    if reason in _DETAIL_REASONS and detail:
+        return f"{label}: {detail[:80]}"
+    return label
+
+
 def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
     """
     处理单个文件：解析 → 分块 → 向量化 → 落库。
 
     **同步函数**，应在工作线程中执行。
     """
-    from rag.document_loader import load_documents_from_paths
+    from rag.document_loader import load_document_detailed
     from rag.text_splitter import process_documents_batch
     from rag.vector_store import add_documents
 
@@ -59,10 +85,23 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
 
     # 解析（PDF/OCR 可能是分钟级）与分块各记一个 span，便于定位慢在哪一步
     with span("document.parse", filename=filename, file_size=file_size):
-        docs = load_documents_from_paths([file_path], upload_dir)
-    if not docs or not docs[0].get("content", "").strip():
-        return {"success": False, "error": "无法解析文件内容"}
+        outcome = load_document_detailed(file_path, upload_dir)
+    # 失败原因必须透出：以前对"引擎缺失 / 扫描件无文字层 / 文件本来就空"
+    # 三种原因都只回一句"无法解析文件内容"，用户与日志都看不出所以然。
+    if outcome.status == "failed":
+        return {
+            "success": False,
+            "error": f"无法解析文件内容（{_problem_label(outcome.reason, outcome.detail)}）",
+        }
+    if outcome.status == "empty":
+        return {
+            "success": False,
+            "error": f"文件无可索引内容（{_problem_label(outcome.reason, outcome.detail)}）",
+        }
 
+    docs = [
+        {"filepath": outcome.filepath, "filename": outcome.filename, "content": outcome.content}
+    ]
     with span(
         "document.split",
         filename=filename,
@@ -72,7 +111,7 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
             docs, use_semantic_splitter=settings.use_semantic_splitter
         )
     if not processed or not processed[0].get("chunks"):
-        return {"success": False, "error": "内容为空"}
+        return {"success": False, "error": "文件无可索引内容（分块后没有可用文本）"}
 
     chunks = processed[0]["chunks"]
 
@@ -166,14 +205,90 @@ def process_file_task(task_id: str, tmp_path: str, filename: str, owner_id: int)
             os.unlink(tmp_path)
 
 
-def rebuild_knowledge_base(owner_id: int) -> int:
-    """
-    重建整个知识库，返回总向量块数。
+# ============================================================
+# 重建任务的状态语义（前端轮询 / UI 依赖这几个值，别改含义）
+# ============================================================
+#   done    —— 所有待重建文件都成功入库，未出现解析失败或空内容；
+#              知识库与文件表一致。（**无任何文件时也是 done**：
+#              "空知识库"是合法状态，不是失败。）
+#   partial —— 至少一个文件成功入库，但存在解析失败 / 内容为空的文件。
+#              知识库可用但**不完整**；error 字段列出受影响文件及原因。
+#   failed  —— 一个向量块都没写进去，但确实有待重建的文件
+#              （全部失败 / 全部为空）。error 字段说明原因，
+#              前端应提示用户检查文件或 OCR 环境。
+#
+# 为什么不再无条件写 done：早期实现对每个文件的失败都只 `continue`，
+# 循环结束后照样写 `status="done"`。于是**全部文件解析失败时界面显示
+# "重建完成 0 块"**，没有任何 failed —— 用户以为重建成功，实际知识库是空的。
+REBUILD_STATUS_DONE = "done"
+REBUILD_STATUS_PARTIAL = "partial"
+REBUILD_STATUS_FAILED = "failed"
 
-    **同步函数**，应在工作线程中执行 —— 这个操作可能耗时数分钟到数小时
-    （PDF 解析 + OCR + 逐块向量化），绝不能进事件循环。
+#: 任务 error 里最多逐条列出的问题文件数（超出用"等共 N 个"概括）。
+_MAX_LISTED_PROBLEMS = 8
+
+
+def _describe_problem(item: dict) -> str:
+    """把一条问题记录渲染成 ``文件名 [原因]``。"""
+    return f"{item['filename']} [{_problem_label(item['reason'], item.get('detail', ''))}]"
+
+
+def _format_file_problems(failed_files: list[dict], empty_files: list[dict]) -> str:
+    """把失败 / 无内容文件汇总成一句可读的原因说明（含文件名 + 简短原因）。"""
+    parts = []
+    for label, items in (("解析失败", failed_files), ("无内容", empty_files)):
+        if not items:
+            continue
+        shown = "；".join(_describe_problem(it) for it in items[:_MAX_LISTED_PROBLEMS])
+        if len(items) > _MAX_LISTED_PROBLEMS:
+            shown += f"；等共 {len(items)} 个"
+        parts.append(f"{label} {len(items)} 个: {shown}")
+    return " | ".join(parts)
+
+
+def _summarize_rebuild(report: dict) -> tuple[str, str]:
     """
-    from rag.document_loader import load_documents_from_paths
+    由重建报告推导 ``(status, error)``。**纯函数**，便于单测。
+
+    规则（对应上面的状态语义）：
+        - 无文件 → done（空知识库合法）；
+        - 有文件但 0 块入库 → failed；
+        - 有块入库但存在失败 / 空内容文件 → partial；
+        - 其余 → done。
+    """
+    total_files = report["total_files"]
+    total_chunks = report["total_chunks"]
+    failed_files = report["failed_files"]
+    empty_files = report["empty_files"]
+
+    if total_files == 0:
+        return REBUILD_STATUS_DONE, ""
+
+    if total_chunks == 0:
+        status = REBUILD_STATUS_FAILED
+    elif failed_files or empty_files:
+        status = REBUILD_STATUS_PARTIAL
+    else:
+        status = REBUILD_STATUS_DONE
+
+    if status == REBUILD_STATUS_DONE:
+        return status, ""
+
+    header = f"成功 {report['succeeded_files']}/{total_files} 个文件，共 {total_chunks} 块"
+    prefix = "重建失败" if status == REBUILD_STATUS_FAILED else "重建部分成功"
+    error = f"{prefix}：{header}。{_format_file_problems(failed_files, empty_files)}"
+    return status, error[:1000]
+
+
+def _rebuild_knowledge_base_report(owner_id: int) -> dict:
+    """
+    重建整个知识库，返回**带失败明细的报告**（同步，应在工作线程执行）。
+
+    Returns:
+        ``{total_chunks, total_files, succeeded_files, failed_files, empty_files}``；
+        后两者是 ``[{"filename", "reason", "detail"}, ...]``。
+    """
+    from rag.document_loader import load_document_detailed
     from rag.text_splitter import process_documents_batch
     from rag.vector_store import add_documents, delete_all_by_owner, reset_vector_store
 
@@ -182,54 +297,128 @@ def rebuild_knowledge_base(owner_id: int) -> int:
 
     files = run_async_from_thread(get_files_by_owner(owner_id))
     upload_dir = str(settings.resolve_path(settings.upload_dir))
+
     total_chunks = 0
+    succeeded = 0
+    failed_files: list[dict] = []
+    empty_files: list[dict] = []
 
     for file_record in files:
         filepath = file_record["filepath"]
-        if not os.path.exists(filepath):
-            continue
-        try:
-            docs = load_documents_from_paths([filepath], upload_dir)
-            if not docs:
-                continue
-            processed = process_documents_batch(
-                docs, use_semantic_splitter=settings.use_semantic_splitter
+        filename = file_record["filename"]
+
+        # 解析：区分「失败」（引擎缺失/不存在/不支持/异常）与「为空」（没文字）。
+        outcome = load_document_detailed(filepath, upload_dir)
+        if outcome.status == "failed":
+            failed_files.append(
+                {"filename": filename, "reason": outcome.reason, "detail": outcome.detail}
             )
-            if not processed or not processed[0].get("chunks"):
-                continue
-            chunks = processed[0]["chunks"]
-            metadatas = [
-                {
-                    "owner_id": owner_id,
-                    "source": file_record["filename"],
-                    "chunk_idx": i,
-                    "filepath": filepath,
-                }
-                for i in range(len(chunks))
-            ]
+            logger.warning(
+                "[KB] 重建失败(跳过): {} - {} [{}]", filename, outcome.detail, outcome.reason
+            )
+            continue
+        if outcome.status == "empty":
+            empty_files.append(
+                {"filename": filename, "reason": outcome.reason, "detail": outcome.detail}
+            )
+            logger.warning(
+                "[KB] 重建无内容(跳过): {} - {} [{}]", filename, outcome.detail, outcome.reason
+            )
+            continue
+
+        try:
+            processed = process_documents_batch(
+                [{"filepath": filepath, "filename": filename, "content": outcome.content}],
+                use_semantic_splitter=settings.use_semantic_splitter,
+            )
+        except Exception as e:
+            failed_files.append({"filename": filename, "reason": "split_error", "detail": str(e)})
+            logger.error("[KB] 重建分块失败: {} - {}", filename, e)
+            continue
+
+        if not processed or not processed[0].get("chunks"):
+            empty_files.append(
+                {"filename": filename, "reason": "no_chunks", "detail": "分块后没有可用文本"}
+            )
+            logger.warning("[KB] 重建无分块(跳过): {}", filename)
+            continue
+
+        chunks = processed[0]["chunks"]
+        metadatas = [
+            {
+                "owner_id": owner_id,
+                "source": filename,
+                "chunk_idx": i,
+                "filepath": filepath,
+            }
+            for i in range(len(chunks))
+        ]
+        try:
             add_documents(chunks, metadatas)
             run_async_from_thread(update_file_chunk_count(file_record["id"], len(chunks)))
-            total_chunks += len(chunks)
         except Exception as e:
-            logger.error("[KB] 重建失败: {} - {}", file_record["filename"], e)
+            failed_files.append({"filename": filename, "reason": "embed_error", "detail": str(e)})
+            logger.error("[KB] 重建向量化/入库失败: {} - {}", filename, e)
+            continue
 
-    return total_chunks
+        total_chunks += len(chunks)
+        succeeded += 1
+
+    return {
+        "total_chunks": total_chunks,
+        "total_files": len(files),
+        "succeeded_files": succeeded,
+        "failed_files": failed_files,
+        "empty_files": empty_files,
+    }
+
+
+def rebuild_knowledge_base(owner_id: int) -> int:
+    """
+    重建整个知识库，返回总向量块数。
+
+    **同步函数**，应在工作线程中执行 —— 这个操作可能耗时数分钟到数小时
+    （PDF 解析 + OCR + 逐块向量化），绝不能进事件循环。
+
+    保留返回 ``int`` 的签名（``agent/manage_agent.py`` 依赖它）；需要失败明细
+    时用 ``_rebuild_knowledge_base_report``。存在未成功文件时会打 WARNING，
+    保证即使走的是只认 int 的旧调用方，日志里也能看到"重建并非全成功"。
+    """
+    report = _rebuild_knowledge_base_report(owner_id)
+    if report["failed_files"] or report["empty_files"]:
+        logger.warning(
+            "[KB] 重建存在未成功文件: 成功 {}/{}，失败 {}，无内容 {}",
+            report["succeeded_files"],
+            report["total_files"],
+            len(report["failed_files"]),
+            len(report["empty_files"]),
+        )
+    return report["total_chunks"]
 
 
 def rebuild_task(task_id: str, owner_id: int) -> None:
     """重建任务包装：更新 upload_tasks 状态。同步，线程池执行。"""
     try:
         run_async_from_thread(update_upload_task(task_id, status="processing", progress=10))
-        total_chunks = rebuild_knowledge_base(owner_id)
+        report = _rebuild_knowledge_base_report(owner_id)
+        status, error = _summarize_rebuild(report)
         run_async_from_thread(
             update_upload_task(
                 task_id,
-                status="done",
+                status=status,
                 progress=100,
-                chunk_count=total_chunks,
+                chunk_count=report["total_chunks"],
+                error=error,
             )
         )
-        logger.info("[KB] 重建完成: {} 块", total_chunks)
+        logger.info(
+            "[KB] 重建结束: status={} 成功 {}/{} 文件, {} 块; {}",
+            status,
+            report["succeeded_files"],
+            report["total_files"],
+            report["total_chunks"],
+            error or "无异常",
+        )
     except Exception as e:
         logger.error("[KB] 重建失败: {}", e)
         try:
