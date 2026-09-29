@@ -308,15 +308,25 @@ def _install_ragas_compat_shim() -> None:
 def _load_ragas():
     """延迟导入 ragas（它依赖较重，且需要先装垫片）。"""
     _install_ragas_compat_shim()
-    from ragas import EvaluationDataset, evaluate
-    from ragas.embeddings import LangchainEmbeddingsWrapper
-    from ragas.llms import LangchainLLMWrapper
-    from ragas.metrics import (
-        answer_relevancy,
-        context_precision,
-        context_recall,
-        faithfulness,
-    )
+    try:
+        from ragas import EvaluationDataset, evaluate
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        from ragas.llms import LangchainLLMWrapper
+        from ragas.metrics import (
+            answer_relevancy,
+            context_precision,
+            context_recall,
+            faithfulness,
+        )
+    except ImportError as e:
+        # ragas 被拆到 requirements-eval.txt：它的依赖（instructor → jiter<0.15）
+        # 与主依赖树的 openai（→ jiter>=0.16）互斥，混在一起会让整份
+        # requirements.txt 都装不上。所以评测是可选功能，缺了就明确说出来。
+        raise RuntimeError(
+            "评测依赖未安装（ragas）。它不在主依赖里，因为与 langchain/openai "
+            "存在无法调和的版本冲突。需要评测功能时单独安装："
+            "pip install -r requirements-eval.txt"
+        ) from e
 
     return {
         "EvaluationDataset": EvaluationDataset,

@@ -19,8 +19,13 @@ __pycache__
 .gitignore
 .gitattributes
 
-# --- 前端构建产物（镜像内重新构建）---
-frontend/dist
+# --- 前端构建产物 ---
+# 注意：**这里刻意不再排除 frontend/dist**。
+# 它随仓库提交，是本地 `npm run build` 的产物；Dockerfile 默认直接用它
+# （见 Dockerfile 顶部说明），从而省掉 `npm ci` + `vite build` 这段
+# 在 2G 小机器上极易 OOM 的重活。排除它会让那条路径失效。
+# 换来的代价只是构建上下文多几百 KB。
+# frontend/dist
 
 # --- 日志（运行时 volume 挂载）---
 logs/*.log

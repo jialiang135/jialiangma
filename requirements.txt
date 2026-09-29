@@ -72,7 +72,12 @@ redis==5.2.1
 rq==2.9.1                         # 可选：USE_RQ_QUEUE=true 时才走 RQ，需独立 worker
 
 # --- 可观测性与调度 ---
-prometheus-fastapi-instrumentator==8.0.2
+# ⚠️ 必须钉在 7.x：8.0.0 起它要求 starlette>=1.0.0，而 fastapi 0.115.6 要求
+# starlette<0.42.0 —— 两者互斥，pip 会直接 ResolutionImpossible，
+# 整份 requirements 一个包装不上（实测：Docker 构建在这一步失败）。
+# 本机环境里"8.0.2 和 starlette 0.41.3 共存"是因为它是历史上一个个装上去的，
+# pip 从没一次性解过整张表 —— 所以本机跑得通不代表这份文件装得上。
+prometheus-fastapi-instrumentator==7.1.0
 opentelemetry-api==1.41.1         # core/telemetry.py 里是可选导入，没装也能跑
 opentelemetry-sdk==1.41.1
 apscheduler==3.11.0
@@ -82,8 +87,18 @@ psutil==7.2.2
 loguru==0.7.3
 
 # --- 评测（RAGAS）---
-# 注意：ragas 的依赖 pin 很松，装它可能把 langchain-openai 降到 1.1.x。
-# 功能不受影响（已实测该版本下 reasoning 流式正常），但你要知道会发生这件事。
-# 另外它仍绑定 langchain-core 0.3.x 世代（顶层导入了一个已被移除的模块），
-# core/eval_runner.py 里为此注入了兼容垫片，详见该文件说明。
-ragas==0.4.3
+# ⚠️ ragas 不在这个文件里，它在 requirements-eval.txt —— 原因是**装不上**：
+#
+#   ragas 0.4.3 → instructor → 要求 jiter<0.15
+#   而 langchain-openai 1.6.2 → openai → 要求 jiter>=0.16
+#
+# 两者互斥，没有交集，pip 会直接 ResolutionImpossible 让**整份文件**装不上。
+# 本机环境里它们能共存，是因为那是历史上一个个装上去的，pip 从没一次性
+# 解过整张表 —— 所以"我本机能跑"不等于"这份文件装得上"。
+#
+# 评测功能因此改为**可选**：不装 ragas 时应用照常运行，只是执行评测会给出
+# "评测依赖未安装"的明确提示。需要时单独装：
+#   pip install -r requirements-eval.txt
+#
+# 另外 ragas 会拖进 datasets / pandas / pyarrow(50MB) / instructor 一整套，
+# 装上后镜像会大几百 MB、构建时间翻倍 —— 这也是把它拆出去的另一个理由。
