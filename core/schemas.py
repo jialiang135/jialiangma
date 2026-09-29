@@ -6,14 +6,27 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from config.settings import settings
+
 # ========================================
-# 用户 / 鉴权
+# 用户名 / 密码的长度约束 —— 集中在这里
+# ----------------------------------------
+# 为什么要有这组常量：原先 `UserCreate` / `UserRegister` 各自写死
+# `min_length=6`，而 `core.auth.validate_password_strength` 要求的是
+# `settings.password_min_length`（默认 8）。结果是 6~7 位的密码**能通过
+# schema 校验、再被处理器打回**，而且报错格式还不一样（422 vs 400）。
+# 现在两处引用同一组常量，注册页展示的规则也从这组常量出（见 AuthRequirements）。
 # ========================================
+
+USERNAME_MIN_LENGTH = 3
+USERNAME_MAX_LENGTH = 50
+PASSWORD_MAX_LENGTH = 128
+PASSWORD_MIN_LENGTH = settings.password_min_length
 
 
 class UserCreate(BaseModel):
-    username: str = Field(..., min_length=3, max_length=50)
-    password: str = Field(..., min_length=6, max_length=128)
+    username: str = Field(..., min_length=USERNAME_MIN_LENGTH, max_length=USERNAME_MAX_LENGTH)
+    password: str = Field(..., min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
 
 
 class UserLogin(BaseModel):
@@ -24,8 +37,27 @@ class UserLogin(BaseModel):
 class UserRegister(BaseModel):
     """用户注册——默认注册为普通用户"""
 
-    username: str = Field(..., min_length=3, max_length=50)
-    password: str = Field(..., min_length=6, max_length=128)
+    username: str = Field(..., min_length=USERNAME_MIN_LENGTH, max_length=USERNAME_MAX_LENGTH)
+    password: str = Field(..., min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
+
+
+class AuthRequirements(BaseModel):
+    """
+    登录/注册页需要展示的校验规则（公开端点，无需鉴权）。
+
+    存在的意义是**让前端不必再抄一份规则**：注册页的"实时校验清单"
+    直接照这个渲染，后端改了规则前端自动跟着变，不会出现两处漂移。
+    `allow_registration` 同理 —— 注册关掉时前端据此直接显示"未开放注册"，
+    而不是让用户填完表单才收到 403。
+    """
+
+    allow_registration: bool
+    username_min_length: int
+    username_max_length: int
+    password_min_length: int
+    password_max_length: int
+    password_require_digit: bool
+    password_require_letter: bool
 
 
 class UserOut(BaseModel):

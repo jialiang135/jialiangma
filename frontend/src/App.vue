@@ -12,8 +12,8 @@
  *   统一用 `--header-h` 变量，并且**对话页独占高度、其余页面自然滚动**
  * - Toast 宿主挂在这里（一次），各页面调 `useToast()` 即可，不用自己渲染提示条
  */
-import { computed, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import GuideModal from './components/GuideModal.vue'
 import LoginBar from './components/LoginBar.vue'
@@ -22,10 +22,19 @@ import UiToastHost from './components/ui/UiToastHost.vue'
 import { useAuthStore } from './stores/auth.js'
 
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 
-const showGuide = ref(!localStorage.getItem('guide_seen'))
 const showMobileNav = ref(false)
+
+/**
+ * 使用指南改为**登录之后**才自动弹。
+ *
+ * 原先是"首次访问就弹"，而登录页现在是入口 —— 那样访客一进来
+ * 先被一个"如何使用"的弹窗盖住，而他连账号都还没有。
+ * 现在进到应用内（已登录）且没看过时再弹。
+ */
+const showGuide = ref(false)
 
 const navItems = computed(() => [
   { to: '/chat', icon: 'chat', label: '对话' },
@@ -37,6 +46,38 @@ const navItems = computed(() => [
 // 对话页自己管滚动（消息区独立滚动、输入框固定在底部），
 // 其余页面由外壳提供滚动容器
 const isFullHeight = computed(() => route.name === 'chat')
+/** 登录页是独立整页，不套应用外壳 */
+const isAuthPage = computed(() => route.name === 'login')
+
+/**
+ * 登录态失效时立刻回登录页。
+ *
+ * 路由守卫只在**导航时**执行，而 401 是在页面停留期间发生的 ——
+ * 没有这个 watch 的话，token 过期后用户会停在一个所有请求都失败、
+ * 但看起来仍然"已登录"的页面上。
+ *
+ * 两个细节：
+ * - **不加 `immediate`**。初始加载时登录态本来就是 false，此刻 router 还没
+ *   解析出路由，贸然 replace 会把路由守卫刚写上的 `?redirect=...` 覆盖掉
+ *   （踩过：登录后回不到原本要去的页面）。初始跳转交给守卫。
+ * - 只在**从已登录变为未登录**时跳，避免无谓的重复导航。
+ */
+watch(
+  () => auth.isLoggedIn,
+  (loggedIn, wasLoggedIn) => {
+    if (wasLoggedIn && !loggedIn) {
+      router.replace({ name: 'login' })
+    }
+  },
+)
+
+// 使用指南：进到应用内（已登录）且没看过时弹一次。
+// 放在 onMounted 而不是 watch 里，理由同上 —— 不想让初始态触发路由动作。
+onMounted(() => {
+  if (auth.isLoggedIn && !localStorage.getItem('guide_seen')) {
+    showGuide.value = true
+  }
+})
 
 function closeGuide() {
   showGuide.value = false
@@ -46,7 +87,7 @@ function closeGuide() {
 
 <template>
   <div class="app">
-    <header class="app-header">
+    <header v-if="!isAuthPage" class="app-header">
       <div class="header-inner">
         <button
           class="hamburger"
@@ -94,7 +135,11 @@ function closeGuide() {
     <!-- 移动端导航抽屉 -->
     <Teleport to="body">
       <Transition name="drawer">
-        <div v-if="showMobileNav" class="drawer-overlay" @click.self="showMobileNav = false">
+        <div
+          v-if="!isAuthPage && showMobileNav"
+          class="drawer-overlay"
+          @click.self="showMobileNav = false"
+        >
           <nav class="drawer">
             <button
               v-for="item in navItems"
@@ -115,7 +160,7 @@ function closeGuide() {
       </Transition>
     </Teleport>
 
-    <GuideModal :show="showGuide" @close="closeGuide" />
+    <GuideModal v-if="!isAuthPage" :show="showGuide" @close="closeGuide" />
     <UiToastHost />
   </div>
 </template>

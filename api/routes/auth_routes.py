@@ -28,9 +28,42 @@ from core.database import (
     record_login_attempt,
 )
 from core.net import client_ip
-from core.schemas import TokenResponse, UserLogin, UserRegister
+from core.schemas import (
+    PASSWORD_MAX_LENGTH,
+    PASSWORD_MIN_LENGTH,
+    USERNAME_MAX_LENGTH,
+    USERNAME_MIN_LENGTH,
+    AuthRequirements,
+    TokenResponse,
+    UserLogin,
+    UserRegister,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["鉴权"])
+
+
+@router.get("/requirements", response_model=AuthRequirements)
+async def get_auth_requirements():
+    """
+    公开端点（无需鉴权）：返回登录/注册页要展示的校验规则。
+
+    前端的"实时校验清单"和"是否开放注册"都照这个渲染，**规则只有后端这一份**。
+    前身是前端自己写 `if (password.length < 8)`，与后端 `validate_password_strength`
+    各存一份，改一处必漏另一处。
+
+    注意：`password_require_digit` / `password_require_letter` 目前恒为 True，
+    因为 `core.auth.validate_password_strength` 里就是硬编码的这两条。
+    **如果那边改了规则，这里要同步**（两处相距很近，改的时候一起看）。
+    """
+    return AuthRequirements(
+        allow_registration=settings.allow_registration,
+        username_min_length=USERNAME_MIN_LENGTH,
+        username_max_length=USERNAME_MAX_LENGTH,
+        password_min_length=PASSWORD_MIN_LENGTH,
+        password_max_length=PASSWORD_MAX_LENGTH,
+        password_require_digit=True,
+        password_require_letter=True,
+    )
 
 
 @router.post("/login", response_model=TokenResponse)
