@@ -167,7 +167,7 @@ import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { streamChat, getConversations, getConversation, deleteConversation } from '../api/chat.js'
 import { useAuthStore } from '../stores/auth.js'
 // 推理数据的解析放共享模块：管理页也要用同一套，避免两处漂移
-import { parseStoredReasoning } from '../utils/reasoning.js'
+import { parseStepLine, parseStoredReasoning } from '../utils/reasoning.js'
 import TokenStats from '../components/TokenStats.vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'

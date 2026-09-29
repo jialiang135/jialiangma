@@ -57,7 +57,16 @@ class Settings(BaseSettings):
 
     # --- 安全 ---
     cors_origins: str = "*"  # 生产环境改为具体域名，如 "https://your-domain.com"
-    rate_limit_per_minute: int = 60  # 每 IP 每分钟最大请求数
+    # 每 IP 每分钟最大请求数。
+    # 原先 60 —— 实测一次正常使用（问一个问题 + 页面轮询任务进度）
+    # 单分钟就到 58 次，余量只剩 2 次，随时会 429。
+    # 原因是进度查询是**轮询**接口：上传/重建/评测的进度每 1.5 秒查一次
+    # 就是 40 次/分钟，再叠加正常浏览必然超。
+    # 提到 240：仍能拦住脚本化的滥用（人手动操作不可能到 240/分钟），
+    # 但给轮询留出了余量。
+    # 更讲究的做法是给轮询接口单独豁免、给昂贵接口（对话）单独收紧，
+    # 那需要按路由配置限流策略。
+    rate_limit_per_minute: int = 240
     password_min_length: int = 8  # 密码最小长度
     max_login_attempts: int = 5  # 最大登录失败次数
     login_lockout_minutes: int = 30  # 登录锁定时间（分钟）
