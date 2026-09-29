@@ -50,7 +50,7 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
-from core.tts import strip_markdown, synthesize_stream, tts_available
+from core.tts import has_speakable_content, strip_markdown, synthesize_stream, tts_available
 
 router = APIRouter(prefix="/api/tts", tags=["语音"])
 
@@ -103,6 +103,15 @@ async def _synth_worker(
         if not speak_text:
             # 整段都是代码块/图片这类不可朗读内容，跳过且不报错
             logger.debug("[TTS] 任务 {} 剥离后无内容，跳过", job_id)
+            await _send_json(ws, {"type": "done", "id": job_id})
+            continue
+
+        # 再挡一道：**纯标点/空白/符号也会被上游拒绝**。
+        # 实测 "。" "——" "、" "\n" 纯 emoji 都返回
+        # `InvalidParameter: Please ensure input text is valid`；
+        # 剥离 Markdown 恰好会制造这种碎片（例如 "**——**" 剥完只剩 "——"）。
+        if not has_speakable_content(speak_text):
+            logger.info("[TTS] 任务 {} 无可朗读内容（纯符号/空白），跳过", job_id)
             await _send_json(ws, {"type": "done", "id": job_id})
             continue
 

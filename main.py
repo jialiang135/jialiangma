@@ -10,7 +10,7 @@ from pathlib import Path
 # 确保项目根目录在 Python 路径中
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
@@ -35,13 +35,27 @@ def mount_frontend():
     if assets_dir.exists():
         fastapi_app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="frontend_assets")
 
-    # SPA 页面路由
-    @fastapi_app.get("/")
-    @fastapi_app.get("/chat")
-    @fastapi_app.get("/knowledge")
-    @fastapi_app.get("/admin")
-    @fastapi_app.get("/eval")
-    async def serve_spa():
+    # SPA 路由兜底
+    #
+    # ⚠️ **不要**在这里逐个列前端页面名。原来就是这么写的
+    # （"/"、"/chat"、"/knowledge"、"/admin"、"/eval"），有两个问题：
+    #   1. **每加一个前端页面都要改后端**，漏一个就是 404
+    #      （加 /stats 用量页时就漏了，直接 404）
+    #   2. **/login 从来就不在列表里** —— 它平时能用只是因为前端路由是
+    #      **客户端跳转**、没真正请求服务器；一旦在登录页刷新或直接输网址，
+    #      就是 404
+    #
+    # 改成 catch-all：所有没被前面路由匹配到的 GET 都返回 index.html，
+    # 由 vue-router 决定渲染哪一页 —— 前端加页面不再需要动后端。
+    #
+    # 顺序上安全：API 路由在 api/main.py 的 create_app() 里注册，
+    # 早于本函数调用；/assets 是上面的 Mount，也注册在前面。
+    @fastapi_app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # /api 下没匹配到的路径要**正常 404**，不能返回 index.html ——
+        # 否则接口路径写错时会拿到一个 200 的 HTML，排查半天看不出问题
+        if full_path.startswith(("api/", "docs", "redoc", "openapi.json")):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
         if index_path.exists():
             return FileResponse(str(index_path))
         return {"message": "前端未构建"}

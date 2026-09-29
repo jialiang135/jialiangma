@@ -20,7 +20,6 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import Composer from '../components/chat/Composer.vue'
 import ConversationSidebar from '../components/chat/ConversationSidebar.vue'
 import MessageItem from '../components/chat/MessageItem.vue'
-import TokenStats from '../components/TokenStats.vue'
 import UiButton from '../components/ui/UiButton.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiIcon from '../components/ui/UiIcon.vue'
@@ -248,7 +247,7 @@ onMounted(() => {
           @send="send"
           @stop="stopStream"
         />
-        <TokenStats v-if="auth.isLoggedIn" />
+        <!-- 用量统计已独立成页（导航里的「用量」），不再占对话页底部一行 -->
       </div>
     </div>
 
@@ -366,13 +365,9 @@ onMounted(() => {
   padding: 0 var(--sp-5) var(--sp-3);
 }
 /* 输入区与消息区宽度对齐，视觉上是一条中轴线 */
-.chat-foot :deep(.composer),
-.chat-foot :deep(.token-stats) {
-  max-width: var(--content-max);
-  margin: 0 auto;
-}
 .chat-foot :deep(.composer) {
-  margin-bottom: var(--sp-2);
+  max-width: var(--content-max);
+  margin: 0 auto var(--sp-2);
 }
 
 .scroll-anchor {

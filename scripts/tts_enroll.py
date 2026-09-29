@@ -127,11 +127,19 @@ def _synth_with_voice(text: str, voice: str) -> bytes:
         settings.tts_voice = original
 
 
-def _create_voice(url: str, prefix: str) -> str | None:
-    """创建音色，返回 voice_id；失败返回 None 并打印排查方向。"""
+def _create_voice(url: str, prefix: str, prompt_seconds: float | None = None) -> str | None:
+    """创建音色，返回 voice_id；失败返回 None 并打印排查方向。
+
+    Args:
+        prompt_seconds: 提示音取多少秒。None = 用 DashScope 默认值（10 秒）。
+            样本够长时**调大它**能明显改善相似度 —— 默认只取前 10 秒，
+            30 秒的样本会有 2/3 被丢掉。
+    """
     from dashscope.audio.tts_v2 import VoiceEnrollmentException
 
     print(f"创建音色（target_model={settings.tts_model}, prefix={prefix}）…")
+    if prompt_seconds:
+        print(f"  提示音长度: {prompt_seconds} 秒（默认只取 10 秒）")
     print("  注意：这一步是计费操作")
     try:
         voice_id = _service().create_voice(
@@ -139,6 +147,7 @@ def _create_voice(url: str, prefix: str) -> str | None:
             prefix=prefix,
             url=url,
             language_hints=["zh"],
+            max_prompt_audio_length=prompt_seconds,
         )
     except VoiceEnrollmentException as e:
         print(f"  [FAIL] 创建失败: {e}")
@@ -247,7 +256,7 @@ def cmd_enroll(args) -> int:
     _check_url(args.url)
 
     print(f"用 {args.url} 复刻音色（前缀 {args.name}）\n")
-    voice_id = _create_voice(args.url, args.name)
+    voice_id = _create_voice(args.url, args.name, prompt_seconds=args.prompt_seconds)
     if not voice_id:
         return 1
 
@@ -348,6 +357,11 @@ def main() -> int:
     p_enroll.add_argument(
         "--test-only", action="store_true",
         help="建完验证通过就删除，用来测地址能不能用",
+    )
+    p_enroll.add_argument(
+        "--prompt-seconds", type=float, default=None,
+        help="提示音取多少秒（默认只取 10 秒）。样本够长时调大能明显改善相似度 —— "
+             "比如录了 40 秒，默认会有 30 秒被丢掉。建议设成样本时长的 70%% 左右。",
     )
     p_enroll.set_defaults(fn=cmd_enroll)
 

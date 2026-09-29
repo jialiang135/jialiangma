@@ -94,6 +94,26 @@ def strip_markdown(text: str) -> str:
     return out.strip()
 
 
+def has_speakable_content(text: str) -> bool:
+    """
+    文本里有没有「可以朗读的内容」——即至少一个字母/数字/汉字。
+
+    为什么需要这道判断：**DashScope 的 TTS 拒绝纯标点/空白/符号的输入**，
+    直接返回 ``InvalidParameter: Please ensure input text is valid``。
+    实测（2026-09）：
+
+        "。"  "——"  "、"  "   "  "\\n"  "..."  "（）"  纯 emoji  → 全部被拒
+        "好的。"（2 字）  "你好😀"  "1."                        → 通过
+
+    而 LLM 的回答里常出现 ``---`` 分隔线、成串标点，切句后会产生**纯符号碎片**，
+    送进去就报错、那一段直接没声音。所以在送合成前先挡掉。
+
+    用 ``str.isalnum()`` 而不是正则：它对汉字和全角数字都返回 True，
+    对标点/空白/emoji 返回 False，正好是我们要的语义，且不引入依赖。
+    """
+    return any(ch.isalnum() for ch in text)
+
+
 # 句子边界：中文句末标点 + 换行；英文句末标点后必须跟空白，避免切在 "3.5" 上
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？；!?;])\s*|\n+")
 

@@ -40,6 +40,7 @@ const navItems = computed(() => [
   { to: '/chat', icon: 'chat', label: '对话' },
   { to: '/knowledge', icon: 'book', label: '知识库' },
   { to: '/eval', icon: 'chart', label: '评测' },
+  { to: '/stats', icon: 'activity', label: '用量' },
   ...(auth.isAdmin ? [{ to: '/admin', icon: 'shield', label: '管理' }] : []),
 ])
 

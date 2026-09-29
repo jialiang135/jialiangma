@@ -17,7 +17,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from core.tts import split_sentences, strip_markdown
+from core.tts import has_speakable_content, split_sentences, strip_markdown
 
 # ============================================================
 # 纯函数层
@@ -69,6 +69,28 @@ class TestSplitSentences:
 
     def test_empty_input(self):
         assert split_sentences("") == []
+
+
+class TestHasSpeakableContent:
+    """
+    上游 TTS **拒绝纯标点/空白/符号**的输入，报
+    ``InvalidParameter: Please ensure input text is valid``。
+
+    这不是猜的——2026-09 实测过：下面 reject 那组全部被拒，accept 那组全部通过。
+    而切句 + 剥 Markdown 恰好会制造这种碎片（``**——**`` 剥完只剩 ``——``），
+    送进去那一段就没声音。所以送合成前必须挡一道。
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        ["。", "——", "、", "   ", "\n", "...", "（）", "😀", "**——、、", "　"],
+    )
+    def test_rejects_text_without_words(self, text):
+        assert has_speakable_content(text) is False
+
+    @pytest.mark.parametrize("text", ["好的。", "你好😀", "1.", "a", "中", "A1"])
+    def test_accepts_text_with_at_least_one_word(self, text):
+        assert has_speakable_content(text) is True
 
 
 # ============================================================
@@ -160,6 +182,22 @@ class TestTtsWebSocket:
             ws.send_json({"type": "speak", "id": 7, "text": "```\nmkdir -p /tmp\n```"})
             assert ws.receive_json() == {"type": "done", "id": 7}
             assert called == []
+        finally:
+            ws.__exit__(None, None, None)
+
+    def test_symbol_only_text_skipped_without_error(self, ws_client, routes, monkeypatch):
+        """
+        纯符号的碎片也不能送去合成 —— 上游会拒（实测 ``"。"`` ``"——"`` 都返回
+        ``InvalidParameter``）。剥离 Markdown 恰好会制造这种碎片：
+        ``**——**`` 剥完只剩 ``——``。
+        """
+        called = []
+        monkeypatch.setattr(routes, "synthesize_stream", _fake_stream(called))
+        ws = _connect_auth(ws_client)
+        try:
+            ws.send_json({"type": "speak", "id": 8, "text": "**——**"})
+            assert ws.receive_json() == {"type": "done", "id": 8}
+            assert called == [], "纯符号碎片被送去合成了，上游会拒"
         finally:
             ws.__exit__(None, None, None)
 

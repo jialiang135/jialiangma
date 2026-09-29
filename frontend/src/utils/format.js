@@ -19,12 +19,21 @@ export function formatTokens(n) {
  * 费用格式化：成本通常极小，固定小数位会显示成一串零。
  * 按量级选择精度，既读得出来又不占宽度。
  */
+/**
+ * 费用格式化。
+ *
+ * **带货币符号，且符号只在这里出现一次** —— 原来各处各写各的（有写 `$` 的、
+ * 有忘了写的），改币种要满仓库找。
+ *
+ * 单位是**人民币**：DeepSeek 官方按元计价，分空闲/高峰两档。
+ * 成本通常极小，固定小数位会显示成一串零，所以按量级选精度。
+ */
 export function formatCost(v) {
   const n = Number(v) || 0
-  if (n === 0) return '0'
-  if (n < 0.01) return n.toFixed(4)
-  if (n < 1) return n.toFixed(3)
-  return n.toFixed(2)
+  if (n === 0) return '¥0'
+  if (n < 0.01) return `¥${n.toFixed(4)}`
+  if (n < 1) return `¥${n.toFixed(3)}`
+  return `¥${n.toFixed(2)}`
 }
 
 /**

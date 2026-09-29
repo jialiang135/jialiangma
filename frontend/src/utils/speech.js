@@ -70,5 +70,23 @@ export function toSpeechChunks(text, { minLength = 4, maxLength = 300 } = {}) {
     if (rest.trim()) result.push(rest.trim())
   }
 
-  return result.filter(Boolean)
+  return result.filter(Boolean).filter(hasSpeakableContent)
+}
+
+/**
+ * 片段里有没有「可朗读的内容」——至少一个字母/数字/汉字。
+ *
+ * 为什么必须挡：**服务端的 TTS 拒绝纯标点/空白/符号的输入**（返回
+ * `InvalidParameter: Please ensure input text is valid`）。实测
+ * `"。"` `"——"` `"、"` `"\n"` 纯 emoji 全部被拒，而 `"好的。"` 这种
+ * 只要有一个实字就通过。
+ *
+ * 切句恰好会制造这种碎片：LLM 回答里的 `---` 分隔线、成串标点，
+ * 切开后就是纯符号。挡在这里可以省掉一次无用的往返
+ * （服务端也有一道同样的判断，两处一致——服务端那道是权威的，
+ * 因为客户端不止一个）。
+ */
+const SPEAKABLE_RE = /[\p{L}\p{N}]/u
+function hasSpeakableContent(text) {
+  return SPEAKABLE_RE.test(text)
 }

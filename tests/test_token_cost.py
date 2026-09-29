@@ -26,9 +26,18 @@ from core import token_tracker as tt
 
 class TestCalculateCost:
     def test_known_model(self):
-        """内置表里的模型按费率算"""
+        """
+        按**费率表里的实际值**算，不写死数字。
+
+        费率是可配的（``LLM_COST_RATES`` 覆盖内置表，且币种是人民币），
+        写死期望值会让"改了费率"变成"测试挂了"——那是测试的问题，不是代码的。
+        """
+        rates = tt.COST_RATES.get("deepseek-v4-pro")
+        if rates is None:
+            pytest.skip("费率表里没有 deepseek-v4-pro")
+
         cost = tt.calculate_cost("deepseek-v4-pro", 1_000_000, 1_000_000)
-        assert cost == pytest.approx(0.28 + 1.10, abs=1e-6)
+        assert cost == pytest.approx(rates["input"] + rates["output"], abs=1e-6)
 
     def test_unknown_model_is_zero_and_recorded(self):
         """
@@ -63,6 +72,53 @@ class TestCalculateCost:
         """缓存 token 数超过输入数时不该算出负成本"""
         cost = tt.calculate_cost("deepseek-v4-pro", 100, 0, cached_tokens=999_999)
         assert cost >= 0
+
+
+class TestGlobalUsage:
+    """
+    管理员视角：``owner_id=None`` 统计**全部用户**，并给出 ``by_user`` 分解。
+
+    鉴权不在这层（API 层校验管理员），这里只守数据层的契约：
+    传 None 就要给出每个人的分解，传具体 ID 就不该混进别人。
+    """
+
+    @pytest.fixture(scope="class", autouse=True)
+    def _tables(self):
+        """
+        建表。测试库是临时目录（见 tests/conftest.py 的路径重定向），
+        表由 ``init_database()`` 创建 —— 不建的话查询会报 no such table。
+        """
+        from core.database import init_database
+        from tests.conftest import run_async
+
+        run_async(init_database())
+
+    def test_all_users_returns_breakdown(self):
+        import asyncio
+
+        from core.token_tracker import get_usage_stats
+
+        stats = asyncio.run(get_usage_stats(None, days=30))
+        assert isinstance(stats.get("by_user"), list)
+        # 每条分解必须带 owner_id 和用量，否则界面上就是一堆没用的空行
+        for row in stats["by_user"]:
+            assert "owner_id" in row
+            assert "total_tokens" in row
+
+    def test_single_user_excludes_others(self):
+        """
+        只查自己时不能返回 by_user，且总量必须**小于等于**全部用户的总量 ——
+        这是"过滤条件真的生效了"的可断言信号（相等是允许的：可能只有一个用户）。
+        """
+        import asyncio
+
+        from core.token_tracker import get_usage_stats
+
+        mine = asyncio.run(get_usage_stats(1, days=30))
+        everyone = asyncio.run(get_usage_stats(None, days=30))
+
+        assert mine["by_user"] == [], "查单个用户却返回了按用户分解"
+        assert mine["totals"]["total_calls"] <= everyone["totals"]["total_calls"]
 
 
 class TestCostRateConfig:

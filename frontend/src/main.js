@@ -8,6 +8,7 @@ import ChatView from './views/ChatView.vue'
 import EvalView from './views/EvalView.vue'
 import KnowledgeView from './views/KnowledgeView.vue'
 import LoginView from './views/LoginView.vue'
+import StatsView from './views/StatsView.vue'
 import { useAuthStore } from './stores/auth.js'
 
 // 样式分两层加载，顺序不能反：
@@ -23,6 +24,9 @@ const routes = [
   { path: '/chat', component: ChatView, name: 'chat' },
   { path: '/knowledge', component: KnowledgeView, name: 'knowledge' },
   { path: '/eval', component: EvalView, name: 'eval' },
+  // 用量统计原先是对话页底部的一条折叠横条 —— 那是"偶尔看一眼"的信息，
+  // 却常年占着一行高度，而且和"对话"本来就是两件事。现在独立成页。
+  { path: '/stats', component: StatsView, name: 'stats' },
   { path: '/admin', component: AdminView, name: 'admin' },
 ]
 

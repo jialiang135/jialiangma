@@ -455,7 +455,7 @@ const subStats = computed(() => {
   const d = dashData.value || {}
   return [
     { key: 'total_tokens', label: '总 Token', value: formatTokens(d.total_tokens), icon: 'zap' },
-    { key: 'total_cost', label: '总费用', value: `$${formatCost(d.total_cost)}`, icon: 'chart' },
+    { key: 'total_cost', label: '总费用', value: formatCost(d.total_cost), icon: 'chart' },
     { key: 'file_count', label: '文件总数', value: formatTokens(d.file_count), icon: 'file' },
     { key: 'disk', label: '上传文件', value: formatSize((d.disk_used_mb || 0) * 1024 * 1024), icon: 'upload' },
     { key: 'chroma', label: '向量库', value: formatSize((d.chroma_db_mb || 0) * 1024 * 1024), icon: 'database' },

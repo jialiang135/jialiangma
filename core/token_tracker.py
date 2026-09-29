@@ -10,9 +10,9 @@ from loguru import logger
 from sqlalchemy import func, select
 
 from config.settings import settings
-from core.database import TokenUsage, session_scope, utcnow
+from core.database import TokenUsage, User, session_scope, utcnow
 
-# 内置费率表（每 100 万 token 的美元价）—— **只是兜底**。
+# 内置费率表（每 **100 万 token 的人民币价**）—— **只是兜底**。
 #
 # 真实费率应当通过 `settings.llm_cost_rates` 配置：不同渠道 / 代理的定价
 # 各不相同（本项目走的是第三方 DeepSeek 代理），把某一家的价格写死在代码里
@@ -91,7 +91,7 @@ def calculate_cost(
     cached_tokens: int = 0,
 ) -> float:
     """
-    根据模型费率计算单次调用费用（美元）。
+    根据模型费率计算单次调用费用（**人民币**，与 DeepSeek 官方计价单位一致）。
 
     费率表中没有该模型时返回 0 并首次告警，不套用默认费率 ——
     宁可显示"成本未知"，也不要显示一个编造的数字。**未匹配的模型会被记进
@@ -175,9 +175,14 @@ async def track_usage(
         logger.error(f"Failed to track token usage: {e}")
 
 
-async def get_usage_stats(owner_id: int, days: int = 7) -> dict:
+async def get_usage_stats(owner_id: int | None, days: int = 7) -> dict:
     """
-    获取用户 token 使用统计：每日分解、模型分解、总计。
+    获取 token 使用统计：每日分解、模型分解、总计。
+
+    Args:
+        owner_id: ``None`` 表示**全部用户**（管理员视角）。给具体 ID 则只统计该用户。
+            传 None 时会额外返回 ``by_user``（按用户分解）—— 只对管理员开放该模式，
+            鉴权在 API 层做，这一层只负责查询。
 
     时间过滤交给数据库比较（用 UTC，与库中写入一致），
     不再手工拼字符串 —— 原实现用 ``isoformat()`` 生成带 'T' 的值去比
@@ -187,6 +192,11 @@ async def get_usage_stats(owner_id: int, days: int = 7) -> dict:
     since = utcnow() - timedelta(days=days)
     day_col = func.date(TokenUsage.created_at).label("day")
     total_expr = TokenUsage.prompt_tokens + TokenUsage.completion_tokens
+
+    # owner_id 为 None 时不加归属过滤 = 统计全部用户
+    filters = [TokenUsage.created_at >= since]
+    if owner_id is not None:
+        filters.append(TokenUsage.owner_id == owner_id)
 
     async with session_scope() as session:
         daily = [
@@ -201,7 +211,7 @@ async def get_usage_stats(owner_id: int, days: int = 7) -> dict:
                         func.sum(TokenUsage.reasoning_tokens).label("reasoning_tokens"),
                         func.sum(TokenUsage.cost_estimate).label("cost"),
                     )
-                    .where(TokenUsage.owner_id == owner_id, TokenUsage.created_at >= since)
+                    .where(*filters)
                     .group_by(day_col)
                     .order_by(day_col.asc())
                 )
@@ -223,7 +233,7 @@ async def get_usage_stats(owner_id: int, days: int = 7) -> dict:
                         func.sum(TokenUsage.cost_estimate).label("cost"),
                         func.count().label("call_count"),
                     )
-                    .where(TokenUsage.owner_id == owner_id, TokenUsage.created_at >= since)
+                    .where(*filters)
                     .group_by(TokenUsage.model)
                     .order_by(func.sum(TokenUsage.cost_estimate).desc())
                 )
@@ -247,12 +257,39 @@ async def get_usage_stats(owner_id: int, days: int = 7) -> dict:
                         func.coalesce(func.sum(TokenUsage.cached_tokens), 0).label("cached_tokens"),
                         func.coalesce(func.sum(TokenUsage.cost_estimate), 0.0).label("total_cost"),
                         func.count().label("total_calls"),
-                    ).where(TokenUsage.owner_id == owner_id, TokenUsage.created_at >= since)
+                    ).where(*filters)
                 )
             )
             .mappings()
             .one()
         )
+
+        # 按用户分解 —— 只有管理员视角（owner_id=None）才需要。
+        # 必须 join User 拿用户名：否则界面上只有一堆数字 owner_id，看不出是谁。
+        by_user = []
+        if owner_id is None:
+            by_user = [
+                dict(r)
+                for r in (
+                    await session.execute(
+                        select(
+                            TokenUsage.owner_id.label("owner_id"),
+                            User.username.label("username"),
+                            func.sum(TokenUsage.prompt_tokens).label("prompt_tokens"),
+                            func.sum(TokenUsage.completion_tokens).label("completion_tokens"),
+                            func.sum(total_expr).label("total_tokens"),
+                            func.sum(TokenUsage.cost_estimate).label("cost"),
+                            func.count().label("call_count"),
+                        )
+                        .join(User, User.id == TokenUsage.owner_id, isouter=True)
+                        .where(*filters)
+                        .group_by(TokenUsage.owner_id)
+                        .order_by(func.sum(total_expr).desc())
+                    )
+                )
+                .mappings()
+                .all()
+            ]
 
     return {
         "daily": daily,
@@ -262,4 +299,7 @@ async def get_usage_stats(owner_id: int, days: int = 7) -> dict:
         # 未匹配到费率的模型。前端据此提示"成本未知" —— 否则用户会把
         # 一个因为查不到价而永远是 0 的数字，误读成"没花钱"。
         "unmapped_models": sorted(_unmapped_models),
+        # 按用户分解（仅管理员视角，owner_id=None 时）。需要 join User 拿用户名，
+        # 否则界面上只会是一堆数字 ID。
+        "by_user": by_user,
     }
