@@ -21,6 +21,9 @@
 fastapi==0.115.6
 starlette==0.41.3
 uvicorn==0.29.0
+# 语音合成的 /api/tts/stream 是 WebSocket —— uvicorn 只有装上它才支持 WS 协议，
+# 否则握手直接被拒（本地环境巧合已有此包，Docker 里没写就会 404）
+websockets==16.0
 python-multipart==0.0.17
 
 # --- LangChain / LangGraph（同一世代，勿混代，见顶部说明）---

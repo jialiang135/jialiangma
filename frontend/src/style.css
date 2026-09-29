@@ -472,6 +472,44 @@ body {
 .msg.user .msg-text { background: var(--primary); color: #fff; }
 .msg.assistant .msg-text { background: #f1f5f9; }
 
+/* 朗读按钮（TTS）：默认低调，hover 才显眼 —— 不抢对答案本身的注意力 */
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding-left: 2px;
+}
+
+.btn-speak {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.btn-speak:hover {
+  color: var(--primary);
+  border-color: var(--primary-border);
+  background: var(--primary-soft);
+}
+
+/* 播放中：主色实心，一眼看出"在播的是这条" */
+.btn-speak.speaking {
+  color: #fff;
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.speak-error { font-size: 12px; color: var(--danger); }
+
 /* markdown 内容样式 */
 .msg-text p { margin: 0 0 8px; }
 .msg-text p:last-child { margin-bottom: 0; }

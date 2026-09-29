@@ -21,6 +21,7 @@ from api.routes.eval_routes import router as eval_router
 from api.routes.kb_routes import router as kb_router
 from api.routes.token_routes import router as token_router
 from api.routes.tool_routes import router as tool_router
+from api.routes.tts_routes import router as tts_router
 from config.settings import settings
 from core.auth import hash_password
 from core.database import create_admin_user, init_database
@@ -203,6 +204,7 @@ def create_app() -> FastAPI:
     app.include_router(tool_router)
     app.include_router(admin_router)
     app.include_router(eval_router)
+    app.include_router(tts_router)
 
     # --- 健康检查 ---
     @app.get("/api/health")

@@ -17,6 +17,9 @@ export default defineConfig({
       '/api': {
         target: `http://127.0.0.1:${API_PORT}`,
         changeOrigin: true,
+        // 语音合成的 WebSocket 也走 /api/tts/stream，必须显式开启 ws 代理，
+        // 否则开发模式下握手会被当成普通 HTTP 请求而失败
+        ws: true,
       },
     },
   },

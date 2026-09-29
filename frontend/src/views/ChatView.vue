@@ -61,6 +61,18 @@
           <div class="msg-avatar">{{ msg.role === 'user' ? '👤' : '🤖' }}</div>
           <div class="msg-content">
             <div class="msg-text" v-html="renderMarkdown(msg.content)"></div>
+            <!-- 朗读按钮：仅在登录后出现（合成接口要鉴权） -->
+            <div v-if="msg.role === 'assistant' && msg.content && auth.isLoggedIn" class="msg-actions">
+              <button
+                class="btn-speak"
+                :class="{ speaking: speakingIndex === i }"
+                :title="speakingIndex === i ? '停止朗读' : '朗读这条回答'"
+                @click="toggleSpeak(msg, i)"
+              >
+                {{ speakingIndex === i ? '⏹ 停止' : '🔊 朗读' }}
+              </button>
+              <span v-if="speakError && speakingIndex === i" class="speak-error">{{ speakError }}</span>
+            </div>
             <div v-if="msg.role === 'assistant' && (msg.steps?.length || msg.thinking)"
                  class="msg-reasoning">
               <!-- 最新一条默认展开：流式期间用户正看着实时思考，
@@ -165,6 +177,8 @@
 <script setup>
 import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { streamChat, getConversations, getConversation, deleteConversation } from '../api/chat.js'
+import { TtsClient } from '../api/tts.js'
+import { SpeechPlayer } from '../utils/audioPlayer.js'
 import { useAuthStore } from '../stores/auth.js'
 // 推理数据的解析放共享模块：管理页也要用同一套，避免两处漂移
 import { parseStepLine, parseStoredReasoning } from '../utils/reasoning.js'
@@ -207,6 +221,98 @@ const thinkingText = ref('')
 const msgContainer = ref(null)
 const msgEnd = ref(null)
 let abortController = null
+
+// —— 朗读（TTS）——
+// speakingIndex 是**消息下标**而不是布尔值：只有一条在播，但要知道是哪一条
+// 才能把按钮切成"停止"态，切换朗读时也才知道该停谁。
+const speakingIndex = ref(-1)
+const speakError = ref('')
+let ttsClient = null
+let speechPlayer = null
+
+/** 停止朗读并释放音频/连接资源（幂等，可随时调用）。 */
+function stopSpeaking() {
+  if (ttsClient) {
+    // 先让服务端丢弃排队中的句子，再断开，避免它继续合成没人听的音频
+    ttsClient.cancel()
+    ttsClient.close()
+    ttsClient = null
+  }
+  if (speechPlayer) {
+    speechPlayer.stop()
+    speechPlayer = null
+  }
+  speakingIndex.value = -1
+  speakError.value = ''
+}
+
+/**
+ * 朗读某条回答 / 停止正在播的那条。
+ *
+ * 顺序有讲究：**先 start() 播放器再 connect()**，因为播放器的 play() 必须
+ * 与用户点击处在同一任务里，await 连接会把手势"用掉"，导致浏览器拒播。
+ */
+async function toggleSpeak(msg, index) {
+  if (speakingIndex.value === index) {
+    stopSpeaking()
+    return
+  }
+  stopSpeaking()
+  speakingIndex.value = index
+
+  // 末句编号：句子的 done 回来要靠它判断整段是否发完
+  let lastId = -1
+
+  const player = new SpeechPlayer({
+    onEnded: () => {
+      if (speakingIndex.value === index) stopSpeaking()
+    },
+    onError: (e) => {
+      speakError.value = e.message || '播放失败'
+    },
+  })
+  speechPlayer = player
+
+  const client = new TtsClient({
+    onAudio: (chunk) => player.feed(chunk),
+    onSentenceEnd: (id) => {
+      player.endSentence()
+      if (id === lastId) player.finish()
+    },
+    onError: (m) => {
+      speakError.value = m
+    },
+    onClose: () => {
+      // 非主动关闭（服务端断开）：收尾，避免按钮卡在"停止"态
+      if (speakingIndex.value === index) stopSpeaking()
+    },
+  })
+  ttsClient = client
+
+  try {
+    await player.start()
+    await client.connect()
+    lastId = client.speakAll(msg.content) - 1
+    if (lastId < 0) {
+      // 整条回答都是代码块之类不可朗读的内容
+      stopSpeaking()
+      speakError.value = '这条回答没有可朗读的内容'
+      speakingIndex.value = index
+    }
+  } catch (e) {
+    // 失败细节要留住：stopSpeaking() 会清空 speakError，所以这里手动释放
+    if (speechPlayer) {
+      speechPlayer.stop()
+      speechPlayer = null
+    }
+    if (ttsClient) {
+      ttsClient.close()
+      ttsClient = null
+    }
+    speakingIndex.value = index
+    speakError.value = e.message || '语音服务不可用'
+  }
+}
 
 // 历史对话
 const showHistory = ref(true)
@@ -252,6 +358,8 @@ function autoResize(e) {
 async function send() {
   const text = input.value.trim()
   if (!text || streaming.value) return
+  // 新提问时停掉正在朗读的上一条：新旧声音叠在一起听不清，也白烧合成配额
+  stopSpeaking()
   input.value = ''
 
   messages.value.push({ role: 'user', content: text })
@@ -353,6 +461,8 @@ function stopStream() {
 }
 
 function clearChat() {
+  // 切换/清空对话时正在播的音频属于上一条对话，必须停掉
+  stopSpeaking()
   messages.value = []
   streamingText.value = ''
   liveSteps.value = []
@@ -463,5 +573,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (abortController) abortController.abort()
+  stopSpeaking()
 })
 </script>

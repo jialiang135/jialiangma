@@ -31,6 +31,18 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-v4"
     rerank_model: str = "gte-rerank-v2"
 
+    # --- 语音合成（TTS，阿里云 DashScope CosyVoice）---
+    # 实测（2026-09）：cosyvoice-v2 可用，流式首包约 0.79 秒；
+    # cosyvoice-v3.5-flash / cosyvoice-v3-flash 在本账号返回 "Engine return
+    # error code: 418"，不可用 —— 换模型前先跑 scripts/tts_check.py 自检。
+    # 音色：longxiaochun_v2 / longwan_v2 均实测可用。
+    tts_enabled: bool = True
+    tts_model: str = "cosyvoice-v2"
+    tts_voice: str = "longxiaochun_v2"
+    # 单连接同时进行的合成数上限。DashScope 侧对并发有配额，
+    # 而且合成是"一句话一个请求"，并发过高会被限流。
+    tts_max_concurrent: int = 2
+
     # --- 管理员 ---
     admin_username: str = "admin"
     admin_password: str = "admin123456"
