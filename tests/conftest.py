@@ -56,3 +56,36 @@ def run_async(coro):
     import asyncio
 
     return asyncio.run(coro)
+
+
+# ------------------------------------------------------------
+# 隔离生效性自检
+# ------------------------------------------------------------
+# 这些断言存在的理由：测试套件里有一个**破坏性用例**（test_clear_noop
+# 用管理员 token 调 DELETE /api/kb/clear，会真的清空文件记录 + 向量库 +
+# 上传目录）。一旦上面那段路径重定向失效，它就会清掉真实的个人知识库。
+#
+# 这不是假想——本项目的真实知识库确实被这样清空过：
+# 审计日志里 5 次 "DELETE /api/kb/clear" 全部来自 testclient（pytest），
+# 最后一次是 2026-09-28。所以这里让"隔离失效"直接变成**测试失败**，
+# 而不是静默地删数据。
+
+
+def pytest_configure(config):
+    """会话开始时校验重定向确实生效，否则立即中止。"""
+    from config.settings import PROJECT_ROOT, settings
+
+    real_assets = (PROJECT_ROOT / "assets").resolve()
+
+    def _guard(label: str, value: str) -> None:
+        resolved = settings.resolve_path(value)
+        if real_assets in resolved.parents or resolved == real_assets:
+            raise RuntimeError(
+                f"测试隔离失效：{label} 仍指向真实目录 {resolved}。"
+                f"测试套件包含会清空知识库的破坏性用例，此处必须中止运行，"
+                f"否则会删掉真实数据。请检查本文件顶部的重定向是否生效。"
+            )
+
+    _guard("db_path", settings.db_path)
+    _guard("chroma_persist_dir", settings.chroma_persist_dir)
+    _guard("upload_dir", settings.upload_dir)
