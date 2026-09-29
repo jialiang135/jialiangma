@@ -15,10 +15,10 @@
         <UiSpinner :size="24" label="加载中" />
       </div>
       <UiAlert v-else-if="dashError" tone="danger">
-        <div class="alert-inner">
-          <span class="alert-text">仪表盘加载失败：{{ dashError }}</span>
-          <UiButton size="sm" @click="loadDashboard">重试</UiButton>
-        </div>
+        仪表盘加载失败：{{ dashError }}
+        <template #action>
+          <UiButton size="sm" variant="secondary" @click="loadDashboard">重试</UiButton>
+        </template>
       </UiAlert>
       <template v-else>
         <div class="kpi-hero">
@@ -42,10 +42,10 @@
     <!-- ═══ 用户管理 ═══ -->
     <section v-if="activeTab === 'users'" class="page-body">
       <UiAlert v-if="usersError" tone="danger">
-        <div class="alert-inner">
-          <span class="alert-text">用户列表加载失败：{{ usersError }}</span>
-          <UiButton size="sm" @click="loadUsers">重试</UiButton>
-        </div>
+        用户列表加载失败：{{ usersError }}
+        <template #action>
+          <UiButton size="sm" variant="secondary" @click="loadUsers">重试</UiButton>
+        </template>
       </UiAlert>
       <UiTable
         v-else
@@ -93,79 +93,75 @@
       </div>
 
       <UiAlert v-if="chatError" tone="danger">
-        <div class="alert-inner">
-          <span class="alert-text">对话日志加载失败：{{ chatError }}</span>
-          <UiButton size="sm" @click="loadChatLogs">重试</UiButton>
-        </div>
+        对话日志加载失败：{{ chatError }}
+        <template #action>
+          <UiButton size="sm" variant="secondary" @click="loadChatLogs">重试</UiButton>
+        </template>
       </UiAlert>
-      <div v-else-if="chatLoading && !chatLogs.length" class="center">
-        <UiSpinner :size="22" label="加载中" />
-      </div>
-      <UiEmpty
-        v-else-if="!chatLogs.length"
-        icon="chat"
-        title="暂无对话记录"
-        :description="chatFilterUser ? `没有匹配「${chatFilterUser}」的记录` : '系统里还没有任何对话记录'"
-        compact
+      <!-- 展开/收起由 UiTable 内部维护（accordion = 同时只展开一行）；
+           @expand 只在某行**首次展开**时触发，在那里按需解析该行 reasoning。 -->
+      <UiTable
+        v-else
+        :columns="chatLogColumns"
+        :rows="chatLogs"
+        :loading="chatLoading"
+        row-key="id"
+        expandable
+        accordion
+        expand-on-row-click
+        empty-title="暂无对话记录"
+        :empty-description="chatEmptyDescription"
+        empty-icon="chat"
+        @expand="onExpandLog"
       >
-        <UiButton v-if="chatFilterUser" size="sm" @click="clearChatFilter">清除筛选</UiButton>
-      </UiEmpty>
-      <div v-else class="log-list">
-        <UiCard v-for="log in chatLogs" :key="log.id" :padded="false" class="log-card">
-          <button
-            type="button"
-            class="log-head"
-            :aria-expanded="expandedLogId === log.id"
-            @click="toggleLog(log)"
-          >
-            <UiIcon name="user" :size="14" class="log-head-icon" />
-            <span class="log-user">{{ log.username || '匿名' }}</span>
-            <UiBadge v-if="log.agent_mode" tone="info">{{ log.agent_mode }}</UiBadge>
-            <span class="log-time" :title="formatDateTime(log.created_at)">
-              {{ formatRelativeTime(log.created_at) }}
-            </span>
-            <UiIcon
-              :name="expandedLogId === log.id ? 'chevron-down' : 'chevron-right'"
-              :size="16"
-              class="log-caret"
-            />
-          </button>
+        <template #cell-username="{ row }">{{ row.username || '匿名' }}</template>
+        <template #cell-agent_mode="{ value }">
+          <UiBadge v-if="value" tone="info">{{ value }}</UiBadge>
+          <span v-else>-</span>
+        </template>
+        <template #cell-question="{ row }">{{ truncate(row.question, 40) }}</template>
+        <template #cell-answer="{ row }">{{ truncate(row.answer, 40) }}</template>
+        <template #cell-created_at="{ value }">
+          <span :title="formatDateTime(value)">{{ formatRelativeTime(value) }}</span>
+        </template>
 
-          <div class="log-body">
+        <template #empty-action>
+          <UiButton v-if="chatFilterUser" size="sm" @click="clearChatFilter">清除筛选</UiButton>
+        </template>
+
+        <!-- 展开后的内容：完整问答 + 推理过程 -->
+        <template #expanded="{ row }">
+          <div class="log-detail">
             <div class="log-line">
               <span class="qa-tag">Q</span>
-              <p class="log-text">
-                {{ expandedLogId === log.id ? log.question : truncate(log.question, 150) }}
-              </p>
+              <p class="log-text">{{ row.question }}</p>
             </div>
             <div class="log-line">
               <span class="qa-tag">A</span>
-              <p class="log-text">
-                {{ expandedLogId === log.id ? log.answer : truncate(log.answer, 200) }}
-              </p>
+              <p class="log-text">{{ row.answer }}</p>
             </div>
 
-            <!-- 展开时显示完整推理过程。reasoning 落库有两种历史格式，
-                 统一交给 parseStoredReasoning 解析，模板只消费解析后的结构。 -->
-            <div v-if="expandedLogId === log.id && log.reasoning" class="reason-panel">
+            <!-- reasoning 落库有两种历史格式，统一交给 parseStoredReasoning
+                 解析（@expand 时已解析并按行 id 缓存），模板只消费解析后的结构。 -->
+            <div v-if="row.reasoning" class="reason-panel">
               <div class="reason-head">
                 <UiIcon name="zap" :size="14" />
                 <span>推理过程</span>
-                <UiBadge v-if="expandedReasoning.steps.length" tone="accent" mono>
-                  {{ expandedReasoning.steps.length }} 步
+                <UiBadge v-if="reasoningFor(row).steps.length" tone="accent" mono>
+                  {{ reasoningFor(row).steps.length }} 步
                 </UiBadge>
-                <UiBadge v-if="expandedReasoning.legacy" tone="neutral">旧格式</UiBadge>
+                <UiBadge v-if="reasoningFor(row).legacy" tone="neutral">旧格式</UiBadge>
               </div>
 
-              <div v-if="expandedReasoning.thinking" class="reason-thinking">
+              <div v-if="reasoningFor(row).thinking" class="reason-thinking">
                 <div class="reason-thinking-label">
                   <UiIcon name="message" :size="13" /> 模型思考
                 </div>
-                <p class="reason-thinking-text">{{ expandedReasoning.thinking }}</p>
+                <p class="reason-thinking-text">{{ reasoningFor(row).thinking }}</p>
               </div>
 
-              <div v-if="expandedReasoning.steps.length" class="reason-steps">
-                <div v-for="(st, si) in expandedReasoning.steps" :key="si" class="reason-step">
+              <div v-if="reasoningFor(row).steps.length" class="reason-steps">
+                <div v-for="(st, si) in reasoningFor(row).steps" :key="si" class="reason-step">
                   <UiIcon :name="st.iconName" :size="14" class="reason-step-icon" />
                   <span class="reason-step-text">{{ st.text }}</span>
                 </div>
@@ -173,13 +169,13 @@
 
               <!-- 证据轨只在非旧格式（真正带 evidence 的 JSON）下出现 -->
               <div
-                v-if="!expandedReasoning.legacy && expandedReasoning.evidence.length"
+                v-if="!reasoningFor(row).legacy && reasoningFor(row).evidence.length"
                 class="reason-evidence"
               >
                 <div class="reason-evidence-label">
-                  <UiIcon name="layers" :size="13" /> 检索证据（{{ expandedReasoning.evidence.length }}）
+                  <UiIcon name="layers" :size="13" /> 检索证据（{{ reasoningFor(row).evidence.length }}）
                 </div>
-                <div v-for="ev in expandedReasoning.evidence" :key="ev.key" class="evidence-item">
+                <div v-for="ev in reasoningFor(row).evidence" :key="ev.key" class="evidence-item">
                   <div class="evidence-head">
                     <UiIcon name="file" :size="13" />
                     <span class="evidence-source">{{ ev.source }}</span>
@@ -190,11 +186,14 @@
               </div>
 
               <!-- 两种格式都解析不出内容时兜底显示原文，避免"展开是空的" -->
-              <pre v-if="!expandedReasoning.steps.length && !expandedReasoning.thinking" class="reason-raw">{{ log.reasoning }}</pre>
+              <pre
+                v-if="!reasoningFor(row).steps.length && !reasoningFor(row).thinking"
+                class="reason-raw"
+              >{{ row.reasoning }}</pre>
             </div>
           </div>
-        </UiCard>
-      </div>
+        </template>
+      </UiTable>
     </section>
 
     <!-- ═══ 文件管理 ═══ -->
@@ -210,10 +209,10 @@
       </div>
 
       <UiAlert v-if="fileError" tone="danger">
-        <div class="alert-inner">
-          <span class="alert-text">文件列表加载失败：{{ fileError }}</span>
-          <UiButton size="sm" @click="loadFiles">重试</UiButton>
-        </div>
+        文件列表加载失败：{{ fileError }}
+        <template #action>
+          <UiButton size="sm" variant="secondary" @click="loadFiles">重试</UiButton>
+        </template>
       </UiAlert>
       <UiTable
         v-else
@@ -256,10 +255,10 @@
       </div>
 
       <UiAlert v-if="auditError" tone="danger">
-        <div class="alert-inner">
-          <span class="alert-text">审计日志加载失败：{{ auditError }}</span>
-          <UiButton size="sm" @click="loadAuditLogs">重试</UiButton>
-        </div>
+        审计日志加载失败：{{ auditError }}
+        <template #action>
+          <UiButton size="sm" variant="secondary" @click="loadAuditLogs">重试</UiButton>
+        </template>
       </UiAlert>
       <UiTable
         v-else
@@ -294,10 +293,10 @@
           </template>
 
           <UiAlert v-if="circuitError" tone="danger">
-            <div class="alert-inner">
-              <span class="alert-text">熔断器状态加载失败：{{ circuitError }}</span>
-              <UiButton size="sm" @click="loadCircuitStatus">重试</UiButton>
-            </div>
+            熔断器状态加载失败：{{ circuitError }}
+            <template #action>
+              <UiButton size="sm" variant="secondary" @click="loadCircuitStatus">重试</UiButton>
+            </template>
           </UiAlert>
           <div v-else-if="circuitLoading && !circuits.length" class="center">
             <UiSpinner :size="20" label="加载中" />
@@ -322,10 +321,10 @@
           </template>
 
           <UiAlert v-if="queueError" tone="danger">
-            <div class="alert-inner">
-              <span class="alert-text">队列状态加载失败：{{ queueError }}</span>
-              <UiButton size="sm" @click="loadQueueStatus">重试</UiButton>
-            </div>
+            队列状态加载失败：{{ queueError }}
+            <template #action>
+              <UiButton size="sm" variant="secondary" @click="loadQueueStatus">重试</UiButton>
+            </template>
           </UiAlert>
           <div v-else-if="queueLoading && !queueStatus" class="center">
             <UiSpinner :size="20" label="加载中" />
@@ -487,18 +486,37 @@ const {
 surfaceError(chatError)
 const chatLogs = computed(() => chatData.value?.logs || [])
 
-const expandedLogId = ref(null)
-// 展开时解析一次即可：模板里对每张卡片反复解析是浪费，而且列表可能有几十条
-const expandedReasoning = ref({ steps: [], thinking: '', evidence: [], legacy: false })
+const chatLogColumns = [
+  { key: 'username', label: '用户', width: '120px' },
+  { key: 'agent_mode', label: '模式', width: '100px' },
+  { key: 'question', label: '问题' },
+  { key: 'answer', label: '回答' },
+  { key: 'created_at', label: '时间', width: '120px' },
+]
 
-function toggleLog(log) {
-  if (expandedLogId.value === log.id) {
-    expandedLogId.value = null
-    expandedReasoning.value = { steps: [], thinking: '', evidence: [], legacy: false }
-    return
-  }
-  expandedLogId.value = log.id
-  expandedReasoning.value = parseStoredReasoning(log.reasoning)
+const chatEmptyDescription = computed(() =>
+  chatFilterUser.value
+    ? `没有匹配「${chatFilterUser.value}」的记录`
+    : '系统里还没有任何对话记录',
+)
+
+/**
+ * 展开行时按需解析该行的 reasoning。
+ *
+ * 展开状态完全交给 UiTable 内部管理（accordion = 单选展开），本视图不再
+ * 自己维护任何"当前展开了哪一行"的状态；`@expand` 只在某行**首次展开**时
+ * 触发，把解析结果按行 id 缓存，避免模板里对几十条记录反复解析。
+ */
+const EMPTY_REASONING = { steps: [], thinking: '', evidence: [], legacy: false }
+const reasoningByLog = reactive({})
+
+function onExpandLog(row) {
+  reasoningByLog[row.id] = parseStoredReasoning(row.reasoning)
+}
+
+/** 取某行已解析的推理结构；理论上 @expand 先于渲染，未命中时给空结构兜底 */
+function reasoningFor(row) {
+  return reasoningByLog[row.id] || EMPTY_REASONING
 }
 
 function clearChatFilter() {
@@ -697,19 +715,6 @@ watch(activeTab, (tab) => {
   padding: var(--sp-10);
 }
 
-/* —— 错误提示条内的"文案 + 重试"布局 —— */
-.alert-inner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  flex-wrap: wrap;
-}
-.alert-text {
-  flex: 1;
-  min-width: 0;
-}
-
 /* ══ 仪表盘：主次分明的两组指标 ══ */
 .group-title {
   font-size: var(--fs-md);
@@ -796,54 +801,11 @@ watch(activeTab, (tab) => {
   overflow-wrap: anywhere;
 }
 
-/* ══ 对话日志卡片 ══ */
-.log-list {
+/* ══ 对话日志展开区 ══ */
+.log-detail {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-}
-.log-card {
-  overflow: hidden;
-}
-.log-head {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  width: 100%;
-  padding: var(--sp-3) var(--sp-4);
-  font-size: var(--fs-sm);
-  color: var(--c-text-2);
-  text-align: left;
-  background: var(--c-surface-2);
-  border-bottom: 1px solid var(--c-border);
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-}
-.log-head:hover {
-  color: var(--c-text);
-  background: var(--c-surface-3);
-}
-.log-head-icon {
-  color: var(--c-text-3);
-}
-.log-user {
-  font-weight: var(--fw-semibold);
-  color: var(--c-text);
-}
-.log-time {
-  margin-left: auto;
-  font-size: var(--fs-xs);
-  font-family: var(--font-mono);
-  color: var(--c-text-3);
-}
-.log-caret {
-  color: var(--c-text-3);
-}
-
-.log-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  padding: var(--sp-4);
 }
 .log-line {
   display: flex;

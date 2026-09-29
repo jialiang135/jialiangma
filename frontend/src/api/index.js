@@ -42,11 +42,47 @@ export function notifyAuthExpired() {
   window.dispatchEvent(new CustomEvent('auth-expired'))
 }
 
-/** 统一处理响应：401 先广播，其余原样返回 JSON */
+/**
+ * 从错误响应里挖出可读的说明。
+ *
+ * 后端有几种错误体形态：FastAPI 的 `{detail: "..."}`（detail 也可能是对象）、
+ * 自定义的 `{error: "..."}`、以及 `{message: "..."}`。都试一遍。
+ */
+async function extractError(res) {
+  let detail = ''
+  try {
+    const body = await res.json()
+    const raw = body?.detail ?? body?.error ?? body?.message
+    if (typeof raw === 'string') detail = raw
+    else if (raw) detail = JSON.stringify(raw)
+  } catch {
+    // 响应体不是 JSON（比如 Nginx 返回的 HTML 错误页）
+  }
+  return detail || res.statusText || `HTTP ${res.status}`
+}
+
+/**
+ * 统一处理响应。
+ *
+ * **非 2xx 一律抛错**。改造前这里只在 401 抛错，其余状态码（如 500）
+ * 会把响应体当**正常数据**返回给调用方 —— 于是"请求失败了"被当成
+ * "拿到了一个字段不全的成功响应"，界面既不报错也不重试，
+ * 只是安静地显示空白。管理页那几个"加载失败 + 重试"的提示因此永远不触发。
+ */
 export async function readJson(res) {
-  if (res.status === 401) {
-    notifyAuthExpired()
-    throw new Error('登录已过期，请重新登录')
+  if (!res.ok) {
+    const message = await extractError(res)
+    // 401 要分两种情况：
+    // - **本来就有登录态** → 会话过期，清凭据并广播，界面切回未登录
+    // - **本来没有登录态** → 这是登录接口自己返回的"用户名或密码错误"，
+    //   不能清凭据、更不能广播 auth-expired，否则用户看到的是
+    //   "登录已过期"而不是"密码错了"，一脸茫然
+    if (res.status === 401 && getToken()) {
+      notifyAuthExpired()
+    }
+    const err = new Error(message)
+    err.status = res.status
+    throw err
   }
   return res.json()
 }

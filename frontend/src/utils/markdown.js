@@ -104,3 +104,60 @@ export function renderMarkdown(text) {
   const withBold = fixCjkBold(withTables)
   return DOMPurify.sanitize(marked(withBold), PURIFY_CONFIG)
 }
+
+/* ============================================================
+   反向操作：把 Markdown 剥成纯文本
+   ------------------------------------------------------------
+   用途是**证据轨的片段展示**。那些片段是知识库文件原文，
+   直接显示会露出 `## 标题`、`**加粗**`、表格竖线 —— 面试官看到的是噪声，
+   而这里只需要"这段文字讲了什么"。
+
+   注意与 renderMarkdown 的区别：那个是**渲染**（交给 v-html），
+   这个是**剥离**（得到可安全插值的纯字符串），返回内容不含任何 HTML。
+   ============================================================ */
+
+const IMAGE_RE = /!\[[^\]]*\]\([^)]*\)/g
+const LINK_RE = /\[([^\]]*)\]\([^)]*\)/g
+const TABLE_SEP_RE = /^\s*\|?[\s:\-|]+\|[\s:\-|]*$/gm
+const HEADING_RE = /^\s{0,3}#{1,6}\s*/gm
+const BULLET_RE = /^\s{0,3}(?:[-*+]|\d+\.)\s+/gm
+const QUOTE_RE = /^\s{0,3}>\s?/gm
+const HR_RE = /^\s*(?:[-*_]\s*){3,}$/gm
+const EMPHASIS_RE = /(\*\*|__|\*|_)/g
+const TABLE_PIPE_RE = /\s*\|\s*/g
+
+/**
+ * 把 Markdown 剥成可读纯文本。
+ *
+ * 与后端 `core/tts.py` 的 `strip_markdown` 思路一致（那边是为了朗读、
+ * 这边是为了展示），但**代码块保留内容**而不是整块丢弃 ——
+ * 朗读代码没意义，而展示证据时"这里有一段代码"本身是有信息量的。
+ */
+export function plainTextFromMarkdown(text) {
+  if (!text) return ''
+
+  let out = String(text)
+    // 围栏代码块：去掉 ``` 行和语言标识，保留代码正文
+    .replace(FENCED_CODE_RE, (block) =>
+      block.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, ''),
+    )
+    .replace(IMAGE_RE, '')
+    .replace(LINK_RE, '$1')
+    .replace(INLINE_CODE_RE, '$1')
+    .replace(HR_RE, '')
+    .replace(TABLE_SEP_RE, '')
+    .replace(HEADING_RE, '')
+    .replace(BULLET_RE, '')
+    .replace(QUOTE_RE, '')
+
+  // 表格竖线换成中点：比逗号更像"并列"，也不会和正文标点混在一起
+  out = out.replace(TABLE_PIPE_RE, ' · ')
+  out = out.replace(EMPHASIS_RE, '')
+
+  return out
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{2,}/g, '\n')
+    .replace(/ ·\s*\n/g, '\n') // 行尾多余的分隔符
+    .replace(/(?:·\s*){2,}/g, '· ')
+    .trim()
+}

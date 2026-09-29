@@ -18,6 +18,7 @@
 import { computed, ref } from 'vue'
 
 import { relevanceLabel, relevanceTone } from '../../composables/useEvidence.js'
+import { plainTextFromMarkdown } from '../../utils/markdown.js'
 import UiBadge from '../ui/UiBadge.vue'
 import UiIcon from '../ui/UiIcon.vue'
 
@@ -27,6 +28,18 @@ const props = defineProps({
   /** 流式进行中：显示"检索中"而不是"没有依据" */
   streaming: { type: Boolean, default: false },
 })
+
+/**
+ * 片段是知识库文件的**原文**，直接显示会露出 `##`、`**`、表格竖线。
+ * 这里剥成纯文本再展示 —— 证据要传达的是"这段文字讲了什么"，
+ * 不是"这份文档的排版长什么样"。
+ */
+const displayItems = computed(() =>
+  props.items.map((item) => ({
+    ...item,
+    plain: plainTextFromMarkdown(item.content),
+  })),
+)
 
 const open = ref(false)
 /** 单独展开正文的片段 key 集合 */
@@ -65,7 +78,7 @@ function scoreText(score) {
 
     <Transition name="evidence-expand">
       <ul v-if="open && count" class="evidence-list">
-        <li v-for="item in items" :key="item.key" class="evidence-item">
+        <li v-for="item in displayItems" :key="item.key" class="evidence-item">
           <div class="evidence-head">
             <UiIcon name="file" :size="14" class="evidence-file-icon" />
             <span class="evidence-source" :title="item.source">{{ item.source }}</span>
@@ -79,11 +92,11 @@ function scoreText(score) {
             :class="{ 'is-expanded': isFragmentOpen(item.key) }"
             @click="toggleFragment(item.key)"
           >
-            {{ item.content }}
+            {{ item.plain }}
           </p>
 
           <button
-            v-if="item.content.length > 90"
+            v-if="item.plain.length > 90"
             class="evidence-more"
             type="button"
             @click="toggleFragment(item.key)"

@@ -10,7 +10,9 @@
  *
  * 统一成一个组件：图标 + 标题 + 说明 + 可选的操作区。
  */
-import { Comment, Text, computed, useSlots } from 'vue'
+import { computed } from 'vue'
+
+import { useHasSlot } from '../../composables/useSlots.js'
 import UiIcon from './UiIcon.vue'
 
 defineProps({
@@ -21,30 +23,14 @@ defineProps({
   compact: { type: Boolean, default: false },
 })
 
-const slots = useSlots()
-
 /**
- * 只有当插槽**真的渲染出东西**时才显示操作区。
- *
- * 不能只用 `v-if="$slots.default"`：插槽只要被**声明**了，`$slots.default`
- * 就是真值；内容里写 `v-if="isAdmin"` 而条件为假时，渲染结果是一个注释节点，
- * 于是外层 `.ui-empty-actions` 照样渲染，页面上就多出一块莫名其妙的空白。
- * （这是 UiTable 的 `#empty-action` 暴露出来的实际问题。）
+ * 只有当插槽**真的渲染出东西**时才显示操作区 ——
+ * 不能只用 `v-if="$slots.default"`，那在条件为假时（渲染成注释节点）
+ * 也会留下一个空的包裹层。这个坑是 UiTable 的 `#empty-action` 暴露出来的，
+ * 判断逻辑已抽到 composables/useSlots.js 供各处复用。
  */
-const hasActions = computed(() => {
-  const render = slots.default
-  if (!render) return false
-  const isReal = (node) => {
-    if (!node || typeof node !== 'object') return false
-    // 注释节点（含 v-if 为假留下的占位）与空白文本都不算内容
-    if (node.type === Comment) return false
-    if (node.type === Text) return String(node.children ?? '').trim().length > 0
-    // Fragment（v-if/v-for 的常见包裹）要往里看一层
-    if (Array.isArray(node.children)) return node.children.some(isReal)
-    return true
-  }
-  return render().some(isReal)
-})
+const slotHasActions = useHasSlot()
+const hasActions = computed(() => slotHasActions())
 </script>
 
 <template>
