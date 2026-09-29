@@ -1,6 +1,10 @@
 """
 LangGraph 工作流编排
-多 Agent 状态调度、节点流转、ReAct 循环终止条件
+状态调度、节点流转、ReAct 循环终止条件
+
+图中只有 ``chat_agent`` 是真正的 ReAct Agent（绑定工具 + 循环调用）；
+``manage_agent`` / ``eval_agent`` 是**确定性工作流节点**（if/elif 分发与
+关键词触发，不用 LLM 决策），路由本身也只读调用方传入的 ``agent_mode``。
 """
 
 from langgraph.graph import END, StateGraph
@@ -70,7 +74,7 @@ def should_continue_chat(state: AgentState) -> str:
 
 def create_agent_graph():
     """
-    创建 LangGraph 多智能体状态图。
+    创建 LangGraph 状态图。
 
     图结构:
         START → router → [chat_agent | manage_agent | eval_agent]
@@ -130,7 +134,7 @@ def create_agent_graph():
 
     # --- 编译 ---
     graph = workflow.compile()
-    logger.info("[Graph] LangGraph 多智能体工作流编译完成")
+    logger.info("[Graph] LangGraph 工作流编译完成")
 
     return graph
 

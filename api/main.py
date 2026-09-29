@@ -32,7 +32,7 @@ from core.database import create_admin_user, init_database
 async def lifespan(app: FastAPI):
     """应用生命周期管理（替代废弃的 on_event）"""
     logger.info("=" * 60)
-    logger.info("个人数字分身 · 多Agent私有RAG系统 启动中...")
+    logger.info("个人数字分身 · 私有 RAG 知识库系统 启动中...")
     logger.info("=" * 60)
 
     # 记录主事件循环：APScheduler 的后台线程需要把异步 DB 操作提交回来执行
@@ -116,8 +116,11 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """创建并配置 FastAPI 应用"""
     app = FastAPI(
-        title="个人数字分身 · 多Agent私有RAG系统",
-        description="基于 LangGraph + DeepSeek V4 Pro 的多智能体知识库问答系统",
+        title="个人数字分身 · 私有 RAG 知识库系统",
+        description=(
+            "基于 LangGraph + DeepSeek V4 Pro 的私有知识库问答系统"
+            "（1 个 ReAct Agent + 2 个确定性工作流）"
+        ),
         version="1.0.0",
         docs_url="/api/docs",
         redoc_url="/api/redoc",

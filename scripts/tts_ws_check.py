@@ -20,7 +20,7 @@ TTS WebSocket 端点探针
 
     cd personal_agent
     set PYTHONIOENCODING=utf-8 && python scripts/tts_ws_check.py
-    python scripts/tts_ws_check.py --url ws://39.106.191.98:8080/api/tts/stream
+    python scripts/tts_ws_check.py --url ws://193.112.29.164:8080/api/tts/stream
     python scripts/tts_ws_check.py --token <已有JWT>   # 不依赖本地 .env 签票
 
 退出码：0 = 全部通过；1 = 有检查项失败。

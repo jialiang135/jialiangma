@@ -17,27 +17,105 @@ from rank_bm25 import BM25Okapi
 
 from rag.vector_store import COLLECTION_NAME, _get_chroma_client, search_by_owner
 
-# ── 分词 ──────────────────────────────────────────────────────────────────
+# ── 中文分词（jieba 为可选依赖） ───────────────────────────────────────────
+#
+# 为什么用 jieba
+# --------------
+# 原来的实现是"逐字 unigram"：把「人工智能」拆成 人/工/智/能 四个单字。
+# 中文的词义单位是**词**不是**字**，逐字切开后词序与词边界全丢了，
+# 于是 BM25 的匹配退化成"单字重叠度" —— 像「人工」与「工人」这种字相同、
+# 词不同的串会被判成高度相关，短 query 时噪声尤其大。
+# jieba 是中文分词事实标准，按词切分（cut 出「人工智能」整词）能显著
+# 提升中文关键词检索的精确度，这也是本次改动的核心收益。
+#
+# 为什么仍然是**可选依赖**、并且保留降级
+# ------------------------------------
+# jieba 会连同词典一起进 Docker 镜像；把它做成**软依赖**，即使某天安装
+# 失败（镜像体积、离线构建、依赖冲突），检索链路也只会"质量略降"而不是
+# 直接报错。降级方案用 **unigram + bigram**（单字 + 相邻两字组合），
+# 相对纯 unigram 多保留了词序信息（bigram「人工」「工智」「智能」能把
+# 「人工智能」这种词和它被打散的邻近字区分开），且**零外部依赖**。
+#
+# 两种方案的代价
+#   - jieba：更准（按词匹配），代价是首次 import + 建词典约 0.5~2 秒、
+#     镜像多一个包；
+#   - unigram+bigram：零依赖、零启动开销，但词典是"猜"的 —— 相邻两字未必
+#     是词，召回与精度都不如真分词（是"有信息比没有强"的兜底）。
+#
+# 开销只付一次，不会摊到每次查询
+# ------------------------------
+# jieba **首次分词**时才加载词典（内部用 initialized 标志守卫），这一开销
+# 每个进程只发生一次。BM25 索引本身按 owner_id **惰性缓存**（见
+# ``BM25IndexManager.get_index``），全语料分词只发生在（重）建索引时；
+# 每次查询仅需对 query 这一小段调用一次 ``_tokenize``。因此 jieba 的词典
+# 加载成本 = 每进程一次，**不会**变成每次查询都付。
+try:
+    import jieba as _jieba
+
+    _JIEBA_AVAILABLE = True
+except ImportError:  # pragma: no cover - 取决于运行环境是否装了 jieba
+    _jieba = None  # type: ignore[assignment]
+    _JIEBA_AVAILABLE = False
+    logger.warning(
+        "jieba 未安装，BM25 中文分词降级为 unigram+bigram（保留词序，但不如分词精确）。"
+        "安装可提升中文检索质量: pip install jieba"
+    )
+
+
+#: 连续中文串（一段一段地喂给分词器，避免标点/英文打断分词上下文）。
+_CJK_RUN_RE = re.compile(r"[一-鿿]+")
+#: 英文单词 / 数字（与中文串互斥）。
+_ALNUM_RE = re.compile(r"[a-zA-Z0-9]+")
+
+
+def _unigram_bigram(cjk_run: str) -> list[str]:
+    """
+    无外部依赖的中文降级分词：unigram（单字）+ bigram（相邻两字组合）。
+
+    纯 unigram 丢词序；加上 bigram 后，「人工智能」会同时产出
+    ``人/工/智/能`` 与 ``人工/工智/智能`` —— 后者携带了相邻字的组合信息，
+    能把「人工智能」与「智能人」这类同字异序串区分开。
+    """
+    chars = list(cjk_run)
+    tokens = list(chars)
+    tokens.extend(chars[i] + chars[i + 1] for i in range(len(chars) - 1))
+    return tokens
+
+
+def _segment_chinese(cjk_run: str) -> list[str]:
+    """切分一段连续中文：jieba 可用则按词切分，否则降级为 unigram+bigram。"""
+    if _JIEBA_AVAILABLE and _jieba is not None:
+        # jieba.lcut 对纯中文串返回词列表（不会夹带空白），直接过滤空串兜底
+        return [tok for tok in _jieba.lcut(cjk_run) if tok.strip()]
+    return _unigram_bigram(cjk_run)
 
 
 def _tokenize(text: str) -> list[str]:
     """
-    混合中英文的简单分词器，适用于 BM25。
+    混合中英文的 BM25 分词器。
 
-    策略：
-    - 中文字符逐字切分（单字 unigram），对中文关键词匹配效果足够
-    - 英文单词 / 数字按空白和标点提取
-    - 统一转小写，保证大小写不敏感
+    策略（见文件顶部「中文分词」注释的完整取舍说明）：
+    - **中文**：优先 ``jieba.lcut`` 按词切分（「人工智能」→ 整词）；jieba 不可用时
+      降级为 unigram+bigram（「人工智能」→ 人/工/智/能 + 人工/工智/智能）。
+      两者都比原来的"逐字 unigram"保留更多词序/词边界信息。
+    - **英文 / 数字**：按 ``[a-zA-Z0-9]+`` 提取，统一转小写（大小写不敏感）。
+
+    Args:
+        text: 待分词的原始文本（查询或文档正文）。
+
+    Returns:
+        分词结果列表（中文词 + 小写英文/数字 token）。
     """
     if not text:
         return []
 
-    # 中文汉字单字
-    chinese_chars = re.findall(r"[一-鿿]", text)
-    # 英文单词 + 数字
-    alpha_tokens = re.findall(r"[a-zA-Z0-9]+", text)
-
-    return [t.lower() for t in chinese_chars + alpha_tokens]
+    tokens: list[str] = []
+    # 中文：逐段交给分词器（中英混排时按中文串切段，避免被标点/英文切断）
+    for run in _CJK_RUN_RE.findall(text):
+        tokens.extend(_segment_chinese(run))
+    # 英文单词 / 数字
+    tokens.extend(tok.lower() for tok in _ALNUM_RE.findall(text))
+    return tokens
 
 
 # ── BM25 索引管理器 ──────────────────────────────────────────────────────

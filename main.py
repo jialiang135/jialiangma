@@ -1,5 +1,5 @@
 """
-个人数字分身 · 多Agent私有RAG系统 — 启动入口
+个人数字分身 · 私有 RAG 知识库系统 — 启动入口
 FastAPI 主服务 + Vue 3 前端静态文件托管
 """
 
@@ -97,7 +97,7 @@ if __name__ == "__main__":
         def _log_started_message(self, listeners):
             lines = [
                 "=" * 60,
-                "🚀 个人数字分身 · 多Agent私有RAG系统 启动成功！",
+                "🚀 个人数字分身 · 私有 RAG 知识库系统 启动成功！",
                 "=" * 60,
                 f"   👉 本机访问:  http://127.0.0.1:{self.config.port}",
                 *(

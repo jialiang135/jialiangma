@@ -1,13 +1,13 @@
-# 个人数字分身 · 多 Agent 私有 RAG 系统
+# 个人数字分身 · 私有 RAG 知识库系统
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)](https://fastapi.tiangolo.com)
 [![Vue](https://img.shields.io/badge/Vue-3-green)](https://vuejs.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue)](https://docker.com)
 
-> 基于 LangGraph + DeepSeek 推理模型的多 Agent 私有知识库问答系统
+> 基于 LangGraph + DeepSeek 推理模型的私有知识库问答系统 —— **1 个 ReAct Agent + 2 个确定性工作流**
 
-**🌐 在线地址：http://39.106.191.98:8080**
+**🌐 在线地址：http://193.112.29.164:8080**
 
 **📦 GitHub：https://github.com/jialiang135/jialiangma**
 
@@ -20,17 +20,17 @@
 ```
 手机 / 桌面浏览器
       ↓
-  Nginx (:8080, 反向代理 + 限流 + HTTPS)
+  Nginx (:80 / :8080, 反向代理 + 限流 + HTTPS)
       ↓
-  FastAPI (SSE 真实流式, 32 个业务接口)
+  FastAPI (SSE 真实流式, 30+ 个接口)
       ↓
   LangGraph StateGraph (6 节点有向图)
-      ├── Router 路由节点
+      ├── Router 分发节点 (读调用方传入的 agent_mode, 非 LLM 决策)
       ├── Retrieve 检索节点
-      ├── Chat Agent (ReAct 循环, 最多 5 轮)
+      ├── Chat Agent (唯一的真 ReAct Agent, 最多 5 轮工具循环)
       ├── Tool Executor (5 个 ReAct 工具)
-      ├── Manage Agent (知识库管理)
-      └── Eval Agent (RAGAS 自动评测)
+      ├── Manage 工作流 (知识库管理 · 确定性 if/elif)
+      └── Eval 工作流 (RAGAS 评测 · 确定性关键词触发)
       ↓
   ┌───────────┬────────────┬──────────────┐
   ChromaDB    SQLite       Redis          DeepSeek
@@ -40,26 +40,39 @@
   DashScope (Embedding + Rerank)
 ```
 
-### Agent 工作流（LangGraph 状态图）
+### 工作流（LangGraph 状态图）
 
 ```
 用户发送消息
       ↓
-  Router 节点 ──→ agent_mode?
+  Router 节点 ──→ 读 state["agent_mode"]（调用方传入，不是模型判断）
       │
       ├── "chat" → Retrieve ──→ Chat Agent ──→ needs_tool_call?
       │                                       ├── YES → Tools ──→ Chat Agent (最多 5 轮)
       │                                       └── NO  → END
       │
-      ├── "manage" → Manage Agent ──→ END
+      ├── "manage" → Manage 工作流 (确定性 if/elif) ──→ END
       │
-      └── "eval" → Eval Agent ──→ END
+      └── "eval" → Eval 工作流 (确定性关键词触发) ──→ END
 ```
 
 **核心设计决策：**
-- Router 根据 `agent_mode` 路由到不同 Agent 节点（条件边），未知模式回退 chat
+
+- **图上只有 1 个真 Agent**：只有 `chat_agent` 绑定了工具、跑"思考 → 调工具 →
+  观察 → 再思考"的 ReAct 循环（`agent/chat_agent.py`）。`manage_agent` /
+  `eval_agent` 是**确定性工作流节点**——上传/删除/重建知识库、跑评测都是
+  确定性的操作，用 LLM 去"理解意图"反而不可靠（同样的输入可能得到不同的判断），
+  所以刻意用 `if/elif` 与关键词匹配的确定性流程，**而不是 Agent**。这是取舍，不是没做完。
+- **Router 不是"智能路由"**：`route_to_agent()` 不解析用户内容，只读**调用方传进来的**
+  `state["agent_mode"]`，非法值回退 `chat`（`agent/graph_workflow.py:24`）——
+  没有意图识别，也就无所谓"路由准确率"。
+- **确定性工作流在产品里另有 REST 入口**：前端聊天始终以 `agent_mode='chat'`
+  调用（`frontend/src/api/chat.js`）；知识库管理与评测在 UI 里走各自的 REST 直连
+  （`api/routes/kb_routes.py`、`api/routes/eval_routes.py`），与图中这两个节点
+  **共用同一份实现**（`core/kb_tasks.py` / `core/eval_runner.py`），不是两套逻辑。
 - Chat 模式采用标准 ReAct 循环：思考 → 调工具 → 观察 → 再思考
-- `should_continue_chat()` 检查 `needs_tool_call` 和 `iteration_count < 5`，防止无限循环
+- `should_continue_chat()` 只跟随 `needs_tool_call`；轮次上限由 `chat_agent` 自己把守
+  （到 `MAX_REACT_ITERATIONS` 且模型仍请求工具时给出兜底答案），防止无限循环
 - 每个节点都是纯函数，状态通过 `AgentState` TypedDict 传递
 - **多轮对话记忆**：按 `conversation_id` 取回最近 6 轮问答注入提示词，
   使"那它呢？"这类追问有上下文（默认带轮数上限，避免吃满上下文预算）
@@ -323,7 +336,7 @@ docker compose up -d app nginx redis
 在域名 DNS 管理中添加 A 记录：
 - 主机记录：`@` 或 `www`
 - 记录类型：`A`
-- 记录值：`39.106.191.98`（你的服务器公网 IP）
+- 记录值：`193.112.29.164`（你的服务器公网 IP）
 
 ### 第 5 步（可选）：配置 HTTPS
 
@@ -360,8 +373,8 @@ HTTPS 配置模板见 [nginx/nginx-ssl.conf](nginx/nginx-ssl.conf)。
 
 ### 第 6 步：配置防火墙
 
-阿里云轻量应用服务器 → 实例详情 → 防火墙 → 添加规则：
-- 端口：`8080`（HTTP）/ `443`（HTTPS）
+腾讯云轻量应用服务器 → 实例详情 → 防火墙 → 添加规则：
+- 端口：`80` / `8080`（HTTP）、`443`（HTTPS）
 - 协议：TCP
 - 来源：`0.0.0.0/0`
 
@@ -439,8 +452,8 @@ pip install pre-commit && pre-commit install
 
 ```
 personal_agent/
-├── agent/                LangGraph 多智能体（graph_workflow / tools / prompts）
-├── api/                  FastAPI 接口层（32 个业务接口 + SSE 流式 + 中间件）
+├── agent/                LangGraph 编排（1 个 ReAct Agent + 2 个确定性工作流）
+├── api/                  FastAPI 接口层（30+ 个接口 + SSE 流式 + 中间件）
 ├── core/                 核心模块（auth / audit / circuit_breaker / session / scheduler）
 ├── rag/                  RAG 检索链路（loader / splitter / vector_store / retriever / bm25）
 ├── config/               配置（settings + .env + prometheus + grafana）

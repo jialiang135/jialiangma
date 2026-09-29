@@ -1,7 +1,7 @@
 [project]
 name = "personal-agent"
 version = "2.0.0"
-description = "个人数字分身 · 多 Agent 私有 RAG 系统"
+description = "个人数字分身 · 私有 RAG 知识库系统"
 requires-python = ">=3.12"
 
 # ============================================================

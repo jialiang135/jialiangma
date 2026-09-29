@@ -99,6 +99,7 @@ def retrieve(
                     "source": str,
                     "chunk_idx": int | None,   # 片段在源文档中的块序号（可能缺失）
                     "filepath": str | None,    # 源文件在磁盘上的路径（可能缺失）
+                    "page": int | None,        # 片段所在物理页码(1-based)，仅 PDF 有值
                 },
                 ...
             ],
@@ -122,9 +123,15 @@ def retrieve(
           ``None``（未评分），**不允许**出现伪造的 ``1.0``；展示时应说明"分数未知"。
         - ``filtered_count``：本次被阈值丢掉的条数，便于观测阈值是否过严。
 
-    注：``chunk_idx`` / ``filepath`` 来自上游向量库写入的 metadata
+    注：``chunk_idx`` / ``filepath`` / ``page`` 来自上游向量库写入的 metadata
     （见 ``core/kb_tasks.py`` 的 ``metadatas``）。之前组装时只留了 ``source``
     把它们丢掉了；现补齐，供前端"证据轨"与将来的句级回溯使用。
+
+    ``page`` 的契约：片段所在的**物理页码**（1-based），仅 PDF 来源有值；
+    其它格式 / 旧数据（未重新入库）为 ``None``。前端据此展示"出自第 N 页"，
+    为 ``None`` 时不应展示页码（而非展示 0）。**注意精度**：页码来自 PDF
+    文字层，且切块是**按页**进行的（chunk 不跨页）—— 见
+    ``core/kb_tasks.py::_split_loaded_document`` 的说明。
 
     注：混合检索与缓存原先默认关闭，且全仓库没有任何调用点传过参数 ——
     等于两套实现（BM25+RRF 融合、TTL 缓存）从未生效过。现在默认开启，
@@ -250,6 +257,10 @@ def _retrieve_impl(
                 "source": source,
                 "chunk_idx": metadata.get("chunk_idx"),
                 "filepath": metadata.get("filepath"),
+                # page：片段所在的物理页码（1-based）。仅 PDF 有值（入库时按页
+                # 切分并写入 metadata，见 core/kb_tasks.py），其它格式为 None。
+                # 契约：消费侧据此展示"出自第 N 页"；为 None 时表示该来源不可回溯到页。
+                "page": metadata.get("page"),
             }
         )
         context_parts.append(f"[来源: {source} | 相关度: {_format_score(score)}]\n{item['text']}")

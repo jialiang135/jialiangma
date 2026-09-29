@@ -70,6 +70,69 @@ def _problem_label(reason: str, detail: str = "") -> str:
     return label
 
 
+def _split_loaded_document(outcome, use_semantic_splitter: bool) -> list[dict]:
+    """
+    把加载结果切成 chunk 列表，并**尽量为每个 chunk 记录来源页码**。
+
+    Returns:
+        ``[{"content": str, "page": int | None}, ...]``
+
+    PDF 页码策略（务实做法：**按页分别切分**）
+    ----------------------------------------
+    PDF 加载时保留了逐页文本（``outcome.pages``，见 ``rag/document_loader.py``）。
+    这里**逐页调用分块器**，再把该页产出的所有 chunk 标记为这一页的页码。
+    精度：每个 chunk 都能精确对应到它所在的**物理页**（1-based）。
+
+    局限（如实说明，别夸大）：
+    - chunk **不会跨页**。原先"整篇一起切"时，一个自然段若横跨两页边界，
+      会被切进同一个 chunk；现在它在页边界处被切成两个 chunk（各属其页）。
+      对"引用回溯到页"来说这是**更准确**的取舍，代价是跨页语义单元被拆开。
+    - 只有 PDF 有页码；其它格式 ``page`` 为 ``None``（行为与旧版一致）。
+    - 页码来自 PDF 的文字层（pypdf ``extract_text``）。纯扫描件没有文字层 →
+      本来就取不到文本，也就谈不上页码（需 OCR，当前不产出页码）。
+    """
+    from rag.text_splitter import process_document, process_documents_batch
+
+    pages = getattr(outcome, "pages", None) or []
+    if pages:
+        # PDF：逐页切分。**每页单独调用** process_document（无法复用批量入口，
+        # 因为要按页拿到"页码 → 该页的块"的对应关系）。
+        chunks: list[dict] = []
+        for page_no, page_text in enumerate(pages, start=1):
+            if not page_text or not page_text.strip():
+                continue
+            for text in process_document(page_text, use_semantic_splitter=use_semantic_splitter):
+                chunks.append({"content": text, "page": page_no})
+        return chunks
+
+    # 非 PDF（无逐页信息）：走批量入口整体切分，页码为 None。
+    # 用 process_documents_batch 而不是 process_document，是为了保持与旧实现
+    # 相同的调用路径（含"单文档分块后为空"的既有行为）。
+    processed = process_documents_batch(
+        [{"filepath": outcome.filepath, "filename": outcome.filename, "content": outcome.content}],
+        use_semantic_splitter=use_semantic_splitter,
+    )
+    if not processed or not processed[0].get("chunks"):
+        return []
+    return [{"content": text, "page": None} for text in processed[0]["chunks"]]
+
+
+def _chunk_metadatas(chunks: list[dict], owner_id: int, filename: str, filepath: str) -> list[dict]:
+    """
+    由 chunk 列表构造写入向量库的 metadata（``page`` 仅在可得时写入）。
+
+    保持既有键不变（``owner_id`` / ``source`` / ``chunk_idx`` / ``filepath``）——
+    ``page`` 是**新增**键，仅 PDF 有值；Chroma 不接受 ``None`` 元数据值，故缺失时不写。
+    """
+    metadatas = []
+    for i, ch in enumerate(chunks):
+        meta = {"owner_id": owner_id, "source": filename, "chunk_idx": i, "filepath": filepath}
+        if ch["page"] is not None:
+            meta["page"] = ch["page"]
+        metadatas.append(meta)
+    return metadatas
+
+
 def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
     """
     处理单个文件：解析 → 分块 → 向量化 → 落库。
@@ -77,7 +140,6 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
     **同步函数**，应在工作线程中执行。
     """
     from rag.document_loader import load_document_detailed
-    from rag.text_splitter import process_documents_batch
     from rag.vector_store import add_documents
 
     file_size = os.path.getsize(file_path)
@@ -99,21 +161,15 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
             "error": f"文件无可索引内容（{_problem_label(outcome.reason, outcome.detail)}）",
         }
 
-    docs = [
-        {"filepath": outcome.filepath, "filename": outcome.filename, "content": outcome.content}
-    ]
     with span(
         "document.split",
         filename=filename,
         semantic_splitter=settings.use_semantic_splitter,
     ):
-        processed = process_documents_batch(
-            docs, use_semantic_splitter=settings.use_semantic_splitter
-        )
-    if not processed or not processed[0].get("chunks"):
+        # 按页切分（PDF 时每块带页码），见 _split_loaded_document 的精度说明
+        chunks = _split_loaded_document(outcome, settings.use_semantic_splitter)
+    if not chunks:
         return {"success": False, "error": "文件无可索引内容（分块后没有可用文本）"}
-
-    chunks = processed[0]["chunks"]
 
     # 文件名在入口已净化，这里再用 safe_join 做一次纵深防御
     dest_path = str(safe_join(upload_dir, filename))
@@ -130,13 +186,10 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
             "existing_id": existing["id"],
         }
 
-    metadatas = [
-        {"owner_id": owner_id, "source": filename, "chunk_idx": i, "filepath": dest_path}
-        for i in range(len(chunks))
-    ]
+    metadatas = _chunk_metadatas(chunks, owner_id, filename, dest_path)
     # 向量化是最慢的一步（每批一次 DashScope HTTP），单独计时
     with span("document.embed", filename=filename, chunks=len(chunks)):
-        add_documents(chunks, metadatas)
+        add_documents([c["content"] for c in chunks], metadatas)
 
     file_id = run_async_from_thread(
         insert_file_record(
@@ -289,7 +342,6 @@ def _rebuild_knowledge_base_report(owner_id: int) -> dict:
         后两者是 ``[{"filename", "reason", "detail"}, ...]``。
     """
     from rag.document_loader import load_document_detailed
-    from rag.text_splitter import process_documents_batch
     from rag.vector_store import add_documents, delete_all_by_owner, reset_vector_store
 
     delete_all_by_owner(owner_id)
@@ -327,34 +379,23 @@ def _rebuild_knowledge_base_report(owner_id: int) -> dict:
             continue
 
         try:
-            processed = process_documents_batch(
-                [{"filepath": filepath, "filename": filename, "content": outcome.content}],
-                use_semantic_splitter=settings.use_semantic_splitter,
-            )
+            # 按页切分（PDF 时每块带页码），见 _split_loaded_document 的精度说明
+            chunks = _split_loaded_document(outcome, settings.use_semantic_splitter)
         except Exception as e:
             failed_files.append({"filename": filename, "reason": "split_error", "detail": str(e)})
             logger.error("[KB] 重建分块失败: {} - {}", filename, e)
             continue
 
-        if not processed or not processed[0].get("chunks"):
+        if not chunks:
             empty_files.append(
                 {"filename": filename, "reason": "no_chunks", "detail": "分块后没有可用文本"}
             )
             logger.warning("[KB] 重建无分块(跳过): {}", filename)
             continue
 
-        chunks = processed[0]["chunks"]
-        metadatas = [
-            {
-                "owner_id": owner_id,
-                "source": filename,
-                "chunk_idx": i,
-                "filepath": filepath,
-            }
-            for i in range(len(chunks))
-        ]
+        metadatas = _chunk_metadatas(chunks, owner_id, filename, filepath)
         try:
-            add_documents(chunks, metadatas)
+            add_documents([c["content"] for c in chunks], metadatas)
             run_async_from_thread(update_file_chunk_count(file_record["id"], len(chunks)))
         except Exception as e:
             failed_files.append({"filename": filename, "reason": "embed_error", "detail": str(e)})

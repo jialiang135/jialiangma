@@ -10,7 +10,7 @@ from langchain_core.messages import BaseMessage
 
 
 class AgentState(TypedDict):
-    """LangGraph 多智能体全局状态"""
+    """LangGraph 状态图的全局状态"""
 
     # 对话消息历史
     messages: Annotated[Sequence[BaseMessage], operator.add]

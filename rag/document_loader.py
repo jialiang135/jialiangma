@@ -18,7 +18,7 @@
 import os
 import tempfile
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from loguru import logger
@@ -93,6 +93,13 @@ class LoadOutcome:
         - ``"ok"``     —— 成功提取到非空文本；
         - ``"empty"``  —— 解析成功但没有文本（空文件 / 扫描件无文字层 / 图片没识别出字）；
         - ``"failed"`` —— 加载失败（引擎缺失、格式不支持、源文件不存在、解析异常、超限）。
+
+    ``pages``:
+        **逐页文本**（仅 PDF 会填充；其它格式为空列表）。``pages[0]`` 即第 1 页，
+        与"物理页码"一一对应（1-based）。有它才能把检索到的片段回溯到**具体页**：
+        下游（``core/kb_tasks.py``）按页分别切块，把页码写进每个 chunk 的 metadata，
+        最终由 ``rag/retriever.py`` 透出为 ``documents[i]["page"]``。
+        非 PDF / 逐页信息不可得时该字段为空，此时行为与旧版完全一致（无页码）。
     """
 
     filepath: str
@@ -101,6 +108,7 @@ class LoadOutcome:
     status: str = "ok"
     reason: str = REASON_OK
     detail: str = ""
+    pages: list[str] = field(default_factory=list)
 
 
 def _empty_reason(ext: str) -> tuple[str, str]:
@@ -114,23 +122,41 @@ def _empty_reason(ext: str) -> tuple[str, str]:
     return REASON_EMPTY_CONTENT, "文件内容为空"
 
 
-def load_pdf(filepath: str) -> str:
-    """加载 PDF 文件文本"""
+def load_pdf_pages(filepath: str) -> list[str]:
+    """
+    加载 PDF 文本，**按页返回**（``pages[0]`` 是第 1 页）。
+
+    之所以逐页返回而不是拼成一坨：页码是"引用能回溯"的基础 —— 私有知识库
+    必须能回答"这段话出自第几页"。逐页文本是精确的物理页码，下游据此按页
+    切块即可把每个 chunk 标注到**它所属的那一页**（见 ``core/kb_tasks.py``）。
+
+    Returns:
+        每页文本的列表，长度 == PDF 页数；空白页对应空字符串 ``""``（**保留占位**，
+        以保证下标与物理页码对齐）。
+    """
     try:
         from pypdf import PdfReader
 
         reader = PdfReader(filepath)
-        texts = []
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                texts.append(text)
-        content = "\n\n".join(texts)
-        logger.info(f"PDF 解析完成: {filepath}, {len(reader.pages)} 页, {len(content)} 字符")
-        return content
+        pages = [(page.extract_text() or "") for page in reader.pages]
+        logger.info(f"PDF 解析完成: {filepath}, {len(pages)} 页")
+        return pages
     except Exception as e:
         logger.error(f"PDF 解析失败: {filepath} - {e}")
         raise
+
+
+def load_pdf(filepath: str) -> str:
+    """
+    加载 PDF 文件文本（各页拼接成单个字符串）。
+
+    为保持向后兼容保留此签名；需要**页码**时改用 :func:`load_pdf_pages`。
+    这里丢弃空页，只拼接有文字的页 —— 与旧实现一致。
+    """
+    pages = load_pdf_pages(filepath)
+    content = "\n\n".join(p for p in pages if p)
+    logger.info(f"PDF 合并文本: {filepath}, {len(content)} 字符")
+    return content
 
 
 def load_docx(filepath: str) -> str:
@@ -366,6 +392,10 @@ def load_document_detailed(filepath: str, upload_dir: str = "") -> LoadOutcome:
     与 ``load_single_document`` 的区别：后者失败只会抛异常或返回空串，
     调用方拿不到"为什么"；这里把失败原因收进 ``LoadOutcome``，供上层
     如实写进任务状态与日志。**不抛异常**（除非编程错误）。
+
+    对 PDF：``outcome.pages`` 会带上**逐页文本**（``pages[0]`` 即第 1 页），
+    供下游把 chunk 归到具体页；``outcome.content`` 仍是各页拼接后的全文
+    （向后兼容）。
     """
     name = Path(filepath).name
     ext = Path(filepath).suffix.lower()
@@ -378,10 +408,16 @@ def load_document_detailed(filepath: str, upload_dir: str = "") -> LoadOutcome:
             reason=REASON_FILE_MISSING,
             detail="源文件不存在（可能已被删除）",
         )
+    #: PDF 的逐页文本（其它格式为空）；用于把页码一路带到检索结果。
+    pages: list[str] = []
     try:
         if ext == ".zip":
             texts = load_zip(filepath, upload_dir or os.path.dirname(filepath))
             content = texts[0] if texts else ""
+        elif ext == ".pdf":
+            # PDF 单独走逐页加载：既拿到拼接文本（兼容旧行为），又保留页码。
+            pages = load_pdf_pages(filepath)
+            content = "\n\n".join(p for p in pages if p)
         else:
             loader = SUPPORTED_EXTENSIONS.get(ext)
             if loader is None:
@@ -410,7 +446,7 @@ def load_document_detailed(filepath: str, upload_dir: str = "") -> LoadOutcome:
         reason, detail = _empty_reason(ext)
         return LoadOutcome(filepath, name, status="empty", reason=reason, detail=detail)
 
-    return LoadOutcome(filepath, name, content=content, status="ok", reason=REASON_OK)
+    return LoadOutcome(filepath, name, content=content, status="ok", reason=REASON_OK, pages=pages)
 
 
 def load_documents_from_paths(filepaths: list[str], upload_dir: str = "") -> list[dict]:
