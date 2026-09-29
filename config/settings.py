@@ -32,10 +32,16 @@ class Settings(BaseSettings):
     rerank_model: str = "gte-rerank-v2"
 
     # --- 语音合成（TTS，阿里云 DashScope CosyVoice）---
-    # 实测（2026-09）：cosyvoice-v2 可用，流式首包约 0.79 秒；
-    # cosyvoice-v3.5-flash / cosyvoice-v3-flash 在本账号返回 "Engine return
-    # error code: 418"，不可用 —— 换模型前先跑 scripts/tts_check.py 自检。
-    # 音色：longxiaochun_v2 / longwan_v2 均实测可用。
+    # 实测（2026-09）：**模型与音色必须同代配套，混用一律返回
+    # "Engine return error code: 418"** —— 那个 418 不是"账号不可用"，
+    # 是"这个模型不认这个音色"。三条实测结论：
+    #   1. cosyvoice-v2 + longxiaochun_v2 / longwan_v2（预置音色）→ 可用，
+    #      流式首包约 0.79 秒
+    #   2. cosyvoice-v3.5-flash + 在 v3.5-flash 上复刻的音色
+    #      （voice_id 形如 cosyvoice-v3.5-flash-bailian-xxx）→ 可用
+    #   3. cosyvoice-v3.5-flash **不认 v2 系预置音色**（longxiaochun_v2 也报 418）；
+    #      cosyvoice-v3-flash 本账号确实不可用
+    # 换模型/音色前先跑 scripts/tts_check.py 自检；声音复刻见 scripts/tts_enroll.py。
     tts_enabled: bool = True
     tts_model: str = "cosyvoice-v2"
     tts_voice: str = "longxiaochun_v2"
