@@ -42,6 +42,8 @@ async def chat_stream(
     - reasoning: ReAct 推理步骤（整行）
     - reasoning_delta: 模型真实思考的 token 增量（推理模型）
     - answer: 回答文本（逐 Token）
+    - evidence: 本轮回答的知识库证据（JSON 数组字符串，每条含
+      source / score / content / chunk_idx）
     - usage: 真实 token 用量
     - done: 流式结束（含 conversation_id 与权威全文）
     - error: 错误信息

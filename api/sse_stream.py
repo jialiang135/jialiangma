@@ -15,6 +15,10 @@ type             含义
                  ``reasoning`` 是两类东西：前者是模型的内心独白，后者是
                  我们标记的流程步骤。分开事件类型，前端才能分别渲染。
 ``answer``       答案的 token 增量。
+``evidence``     本轮回答的知识库证据：``content`` 为 JSON 数组，每条含
+                 ``source``（文档名）/ ``score``（相关度，数值）/ ``content``
+                 （片段正文，截断到 800 字）/ ``chunk_idx``（片段在源文档中的
+                 块序号，取不到为 ``null``）。供前端"证据轨"渲染。
 ``usage``        本次调用的真实 token 用量（含 reasoning / cache 明细）。
 ``done``         流结束。``content`` 为 JSON，含 ``conversation_id`` 与
                  ``answer``（权威全文，前端用它替换流式过程中显示的文本）。
@@ -46,6 +50,11 @@ from core.llm import extract_reasoning_delta, extract_usage
 
 # 落库时思考文本的截断上限，避免单轮对话把 reasoning 列撑爆
 MAX_STORED_THINKING = 8000
+
+# 证据轨里单条片段正文的截断上限。原文常上千字，整条 evidence 事件是
+# 一个 JSON 数组，不截断会把单帧 SSE 撑到几十 KB。前端只作展示，
+# 若要精确回溯某个片段，应凭 chunk_idx 另行取数（本次不做句级引用）。
+MAX_EVIDENCE_CONTENT = 800
 
 # 产出最终答案的节点（它们的输出里带 final_answer）
 _FINAL_ANSWER_NODES = ("chat_agent", "manage_agent", "eval_agent")
@@ -94,6 +103,38 @@ def _accumulate_usage(totals: dict, usage: dict) -> None:
     totals["llm_calls"] = totals.get("llm_calls", 0) + 1
 
 
+def _build_evidence(docs: list) -> list[dict]:
+    """
+    把检索节点的 ``retrieved_docs`` 转成"证据轨"数组。
+
+    元素结构固定为 ``{source, score, content, chunk_idx}``；顺序与
+    ``docs`` 一致，前端据此与 answer 对齐。
+
+    为什么要带 ``chunk_idx``：它是片段在源文档中的块序号，将来前端
+    "点某一句 → 回溯到具体片段"需要它定位。本次**只透出**，不做句级
+    引用（那要改提示词，风险高，不在本次范围）。旧数据 / 工具路径可能
+    没有该字段 —— 取不到就给 ``null``，绝不报错。
+    """
+    evidence: list[dict] = []
+    for doc in docs or []:
+        if not isinstance(doc, dict):
+            continue
+        content = doc.get("content") or ""
+        if len(content) > MAX_EVIDENCE_CONTENT:
+            content = content[:MAX_EVIDENCE_CONTENT] + "…"
+        evidence.append(
+            {
+                "source": doc.get("source"),
+                # score 保持数值原样透出，前端自行决定显示精度
+                "score": doc.get("score"),
+                "content": content,
+                # chunk_idx == 0 是合法值，只能用 .get 兜底为 None，不能用 or
+                "chunk_idx": doc.get("chunk_idx"),
+            }
+        )
+    return evidence
+
+
 def _persist_turn(
     owner_id: int,
     agent_mode: str,
@@ -102,6 +143,7 @@ def _persist_turn(
     steps: list[str],
     thinking: str,
     sources: list[str],
+    evidence: list[dict],
     conversation_id: str | None,
     usage: dict,
 ):
@@ -123,6 +165,10 @@ def _persist_turn(
                         {
                             "steps": steps,
                             "thinking": thinking[:MAX_STORED_THINKING],
+                            # 证据轨：与 SSE 的 evidence 事件同一份数组
+                            # （content 已截断到 800 字）。前端恢复历史对话时
+                            # 从这个字段取，不必再查向量库。
+                            "evidence": evidence,
                         },
                         ensure_ascii=False,
                     ),
@@ -170,6 +216,7 @@ async def sse_chat_generator(
     thinking_parts: list[str] = []
     steps: list[str] = []
     sources: list[str] = []
+    evidence: list[dict] = []
     usage: dict = {}
     authoritative_answer = ""
 
@@ -188,6 +235,7 @@ async def sse_chat_generator(
             steps=steps,
             thinking="".join(thinking_parts),
             sources=sources,
+            evidence=evidence,
             conversation_id=conversation_id,
             usage=usage,
         )
@@ -230,11 +278,16 @@ async def sse_chat_generator(
                 output = event.get("data", {}).get("output")
                 if not isinstance(output, dict):
                     continue
-                # 检索节点：记录来源，供落库与前端展示
+                # 检索节点：记录来源 + 下发证据轨，供落库与前端展示
                 if name == "retrieve":
-                    for doc in output.get("retrieved_docs", []) or []:
+                    docs = output.get("retrieved_docs", []) or []
+                    for doc in docs:
                         if isinstance(doc, dict) and doc.get("source"):
                             sources.append(doc["source"])
+                    # 结构化事件 content 为 JSON 字符串（与 usage/done 一致）。
+                    # 即便为空数组也照发：前端据此知道本轮无证据可渲染。
+                    evidence = _build_evidence(docs)
+                    yield _sse_event("evidence", json.dumps(evidence, ensure_ascii=False))
                 # agent 节点：权威答案 + 节点自己记录的推理步骤
                 if name in _FINAL_ANSWER_NODES and output.get("final_answer"):
                     authoritative_answer = output["final_answer"]
@@ -272,6 +325,10 @@ async def sse_chat_generator(
                     if isinstance(entry, str):
                         steps.append(entry)
                         yield _sse_event("reasoning", entry)
+                # 降级路径同样补一条证据轨：检索多半已经成功，
+                # 别因为流式失败就让前端拿到空证据。
+                evidence = _build_evidence(final_state.get("retrieved_docs", []))
+                yield _sse_event("evidence", json.dumps(evidence, ensure_ascii=False))
                 yield _sse_event("reasoning", "⚠️ 流式不可用，已降级为一次性返回", icon="⚠️")
             except Exception as fallback_err:
                 logger.error("[SSE] 降级执行也失败: {}", fallback_err)

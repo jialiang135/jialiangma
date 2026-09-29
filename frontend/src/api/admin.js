@@ -1,9 +1,7 @@
 /**
  * 管理员面板 API 模块
  */
-import { get, post, del } from './index.js'
-
-const BASE = '/api/admin'
+import { del, get, put } from './index.js'
 
 /** 获取全局仪表盘数据 */
 export function getDashboard() {
@@ -15,26 +13,20 @@ export function getUsers() {
   return get('/admin/users')
 }
 
-/** 修改用户角色 */
+/**
+ * 修改用户角色
+ *
+ * 原先是手写 `fetch`，漏了 401 处理 —— 登录态过期时会把错误响应体当成
+ * 正常结果 `r.json()` 解析，用户看到的是"修改失败"而不是"请重新登录"。
+ * 现在统一走 put()。
+ */
 export function updateUserRole(userId, role) {
-  const token = localStorage.getItem('token')
-  return fetch(`${BASE}/users/${userId}/role`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ role }),
-  }).then(r => r.json())
+  return put(`/admin/users/${userId}/role`, { role })
 }
 
-/** 删除用户 */
+/** 删除用户（同上，原手写 fetch 漏 401） */
 export function deleteUser(userId) {
-  const token = localStorage.getItem('token')
-  return fetch(`${BASE}/users/${userId}`, {
-    method: 'DELETE',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  }).then(r => r.json())
+  return del(`/admin/users/${userId}`)
 }
 
 /** 查询所有对话日志 */

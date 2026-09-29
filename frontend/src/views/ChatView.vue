@@ -1,578 +1,415 @@
-<template>
-  <div class="chat-view">
-    <!-- 左侧：历史对话 -->
-    <div class="chat-sidebar" :class="{ collapsed: !showHistory }">
-      <div v-if="showHistory" class="sidebar-header">
-        <span>💬 历史对话</span>
-        <button class="btn btn-sm sidebar-toggle" @click="showHistory = false" title="收起侧边栏">✕</button>
-      </div>
-      <div v-if="showHistory" class="sidebar-body">
-        <button class="btn btn-sm sidebar-refresh" @click="loadHistory" :disabled="loadingHistory">
-          🔄 刷新
-        </button>
-        <div v-if="historyList.length === 0 && !loadingHistory" class="empty-state">
-          暂无历史对话
-        </div>
-        <div v-for="c in historyList" :key="c.group_id"
-             :class="['history-item', { active: activeHistoryId === c.group_id }]"
-             @click="loadConversation(c)">
-          <div class="history-q">{{ (c.first_question || '新对话').slice(0, 40) }}{{ (c.first_question || '').length > 40 ? '...' : '' }}</div>
-          <div class="history-meta">
-            {{ c.turn_count }} 轮 · {{ formatTime(c.last_at) }}
-            <button class="btn-delete-conv" @click.stop="delConversation(c)" title="删除此对话">×</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <button v-if="!showHistory" class="sidebar-expand-btn" @click="showHistory = true" title="展开历史对话">
-      💬
-    </button>
-
-    <!-- 中间：对话主体 -->
-    <div class="chat-main">
-      <div class="chat-messages" ref="msgContainer">
-        <div v-if="messages.length === 0 && !currentConversationId" class="empty-chat">
-          <div class="empty-badge">🤖</div>
-          <h3>个人数字分身 · AI 面试助手</h3>
-          <p>基于私有知识库的智能问答系统。直接提问，或从下面挑一个开始。</p>
-          <!-- 快捷问题做成卡片放进空状态：原先它们在框外，与「开始对话」是脱开的 -->
-          <div class="quick-start">
-            <button v-for="q in quickQuestions" :key="q.label"
-                    class="quick-card"
-                    :disabled="streaming"
-                    @click="askQuick(q.text)">
-              <span class="quick-card-icon">{{ q.icon }}</span>
-              <span class="quick-card-text">
-                <span class="quick-card-label">{{ q.label }}</span>
-                <span class="quick-card-hint">{{ q.hint }}</span>
-              </span>
-            </button>
-          </div>
-        </div>
-
-        <!-- 续接对话提示条 -->
-        <div v-if="currentConversationId" class="conversation-bar">
-          <span>📌 继续对话</span>
-          <span class="conversation-id">#{{ currentConversationId.slice(0, 8) }}...</span>
-          <button class="btn btn-sm" @click="clearChat">＋ 新对话</button>
-        </div>
-        <div v-for="(msg, i) in messages" :key="i" :class="['msg', msg.role]">
-          <div class="msg-avatar">{{ msg.role === 'user' ? '👤' : '🤖' }}</div>
-          <div class="msg-content">
-            <div class="msg-text" v-html="renderMarkdown(msg.content)"></div>
-            <!-- 朗读按钮：仅在登录后出现（合成接口要鉴权） -->
-            <div v-if="msg.role === 'assistant' && msg.content && auth.isLoggedIn" class="msg-actions">
-              <button
-                class="btn-speak"
-                :class="{ speaking: speakingIndex === i }"
-                :title="speakingIndex === i ? '停止朗读' : '朗读这条回答'"
-                @click="toggleSpeak(msg, i)"
-              >
-                {{ speakingIndex === i ? '⏹ 停止' : '🔊 朗读' }}
-              </button>
-              <span v-if="speakError && speakingIndex === i" class="speak-error">{{ speakError }}</span>
-            </div>
-            <div v-if="msg.role === 'assistant' && (msg.steps?.length || msg.thinking)"
-                 class="msg-reasoning">
-              <!-- 最新一条默认展开：流式期间用户正看着实时思考，
-                   答案完成后面板若自动收起，等于把他在看的内容突然藏掉。
-                   历史消息仍默认收起，避免整页被推理内容撑长。 -->
-              <details :open="i === messages.length - 1">
-                <summary>🧠 查看完整推理过程（{{ msg.steps?.length || 0 }} 步）</summary>
-                <div v-if="msg.thinking" class="thinking-stream">
-                  <div class="thinking-label">💭 模型思考</div>
-                  <div class="thinking-text">{{ msg.thinking }}</div>
-                </div>
-                <div class="reasoning-timeline inline-timeline">
-                  <div v-for="(step, si) in (msg.steps || [])" :key="si" class="timeline-step">
-                    <span class="step-icon">{{ step.icon }}</span>
-                    <span class="step-text">{{ step.text }}</span>
-                  </div>
-                </div>
-              </details>
-            </div>
-          </div>
-        </div>
-        <div v-if="streaming" class="msg assistant streaming">
-          <div class="msg-avatar">🤖</div>
-          <div class="msg-content">
-            <div v-if="liveSteps.length || thinkingText" class="msg-reasoning streaming-reasoning">
-              <details open>
-                <summary>
-                  🧠 {{ thinkingText ? '思考中' : '推理中' }}…（{{ liveSteps.length }} 步{{ thinkingText ? ` · 思考 ${thinkingText.length} 字` : '' }}）
-                </summary>
-                <!-- 模型真实思考流：推理模型的"内心独白"，与下面的流程步骤是两类信息 -->
-                <div v-if="thinkingText" class="thinking-stream">
-                  <div class="thinking-label">💭 模型思考</div>
-                  <div class="thinking-text">{{ thinkingText }}</div>
-                </div>
-                <div class="reasoning-timeline inline-timeline">
-                  <div v-for="(step, si) in liveSteps" :key="si"
-                       :class="['timeline-step', { latest: si === liveSteps.length - 1 }]">
-                    <span class="step-icon">{{ step.icon }}</span>
-                    <span class="step-text">{{ step.text }}</span>
-                  </div>
-                </div>
-              </details>
-            </div>
-            <div class="msg-text" v-html="renderMarkdown(streamingText)"></div>
-          </div>
-        </div>
-        <div ref="msgEnd"></div>
-      </div>
-
-      <!-- 快捷问题（紧凑条）：空状态里已有卡片，这里只在已有对话时出现，
-           作为「换个问题试试」的入口 -->
-      <div v-if="messages.length > 0" class="quick-questions compact">
-        <button v-for="q in quickQuestions" :key="q.label"
-                class="quick-q-btn"
-                :disabled="streaming"
-                @click="askQuick(q.text)">
-          {{ q.icon }} {{ q.label }}
-        </button>
-      </div>
-
-      <div class="chat-input-area">
-        <textarea
-          v-model="input"
-          class="chat-input"
-          placeholder="输入你的问题后按回车发送..."
-          rows="1"
-          :disabled="streaming"
-          @keydown.enter.exact.prevent="send"
-          @input="autoResize"
-        ></textarea>
-        <button class="btn btn-primary" :disabled="streaming || !input.trim()" @click="send">发送</button>
-        <button v-if="streaming" class="btn btn-stop" @click="stopStream">停止</button>
-      </div>
-
-      <!-- Token 统计面板 -->
-      <TokenStats v-if="auth.isLoggedIn" />
-    </div>
-
-
-    <!-- 删除确认弹窗 -->
-    <Teleport to="body">
-      <div v-if="showDeleteConfirm" class="modal-overlay" @click.self="cancelDelete">
-        <div class="modal-dialog modal-sm">
-          <div class="modal-icon">⚠️</div>
-          <h3 class="modal-title">确认删除对话</h3>
-          <p class="modal-desc">
-            “<strong>{{ (pendingDelete?.first_question || '新对话').slice(0, 50) }}{{ (pendingDelete?.first_question || '').length > 50 ? '...' : '' }}</strong>”
-          </p>
-          <p class="modal-detail">
-            共 {{ pendingDelete?.turn_count || 0 }} 轮对话将被永久删除，不可恢复。
-          </p>
-          <div class="modal-actions">
-            <button class="btn" @click="cancelDelete">取消</button>
-            <button class="btn btn-danger" @click="confirmDelete">确认删除</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
-  </div>
-</template>
-
 <script setup>
-import { ref, nextTick, onMounted, onUnmounted } from 'vue'
-import { streamChat, getConversations, getConversation, deleteConversation } from '../api/chat.js'
-import { TtsClient } from '../api/tts.js'
-import { SpeechPlayer } from '../utils/audioPlayer.js'
-import { useAuthStore } from '../stores/auth.js'
-// 推理数据的解析放共享模块：管理页也要用同一套，避免两处漂移
-import { parseStepLine, parseStoredReasoning } from '../utils/reasoning.js'
+/**
+ * 对话页
+ * ======
+ *
+ * 改造前这个文件 578 行，`<script setup>` 里塞着对话流、SSE 回调、TTS 接线、
+ * 历史加载、markdown 配置、移动端检测……几乎所有东西。模板里一个 100 多行的
+ * v-for 块里套了三层条件。
+ *
+ * 现在这里只剩**编排**：把组合式函数和子组件接起来。
+ * 具体逻辑都在各自该在的地方：
+ *   useChatStream           发消息 / 消费 SSE / 收尾
+ *   useConversationHistory  历史列表 / 载入 / 删除
+ *   useSpeech               朗读
+ *   utils/markdown          渲染
+ *   components/chat/*       消息、证据轨、推理面板、输入区、侧栏
+ */
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+
+import Composer from '../components/chat/Composer.vue'
+import ConversationSidebar from '../components/chat/ConversationSidebar.vue'
+import MessageItem from '../components/chat/MessageItem.vue'
 import TokenStats from '../components/TokenStats.vue'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
-
-// 配置 marked。注意：marked v5 起移除了内置的 sanitize 选项，
-// 它现在**不做任何净化**，输出必须自己处理后再交给 v-html。
-marked.use({
-  breaks: true,      // 单个换行也转 <br>
-  gfm: true,         // GitHub Flavored Markdown（表格、任务列表、删除线等）
-})
-
-// 白名单式净化。
-// 渲染的内容来自两个不可信来源：LLM 输出，以及被检索到的**用户上传文档**——
-// 传一个含 `<img src=x onerror=...>` 的 md，不净化就会在对话区执行脚本。
-// 采用白名单而非黑名单：不在列表里的标签/属性一律丢弃。
-const PURIFY_CONFIG = {
-  ALLOWED_TAGS: [
-    'p', 'br', 'hr', 'strong', 'em', 'del', 'code', 'pre', 'blockquote',
-    'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
-    'table', 'thead', 'tbody', 'tr', 'th', 'td', 'a', 'span',
-  ],
-  ALLOWED_ATTR: ['href', 'title', 'class'],
-  // 只允许安全协议，挡掉 javascript: / data: 这类伪协议
-  ALLOWED_URI_REGEXP: /^(?:https?|mailto):/i,
-}
+import UiButton from '../components/ui/UiButton.vue'
+import UiEmpty from '../components/ui/UiEmpty.vue'
+import UiIcon from '../components/ui/UiIcon.vue'
+import UiModal from '../components/ui/UiModal.vue'
+import { useChatStream } from '../composables/useChatStream.js'
+import { useConversationHistory } from '../composables/useConversationHistory.js'
+import { useSpeech } from '../composables/useSpeech.js'
+import { useToast } from '../composables/useToast.js'
+import { useAuthStore } from '../stores/auth.js'
 
 const auth = useAuthStore()
-const messages = ref([])
+const toast = useToast()
+
+const session = useChatStream()
+// 解构出各个 ref：这样模板里直接写 `messages` 就行，不必层层 `.value`
+const { messages, streaming, draftAnswer, liveSteps, thinkingText, evidence, stop: stopStream } =
+  session
+
+const conversations = useConversationHistory(session)
+const {
+  list: historyList,
+  loading: historyLoading,
+  activeId: activeConversationId,
+  load: loadHistory,
+  open: openConversation,
+  remove: removeConversation,
+} = conversations
+
+const speech = useSpeech()
+const { speakingId, error: speakError, toggle: toggleSpeech, stop: stopSpeech } = speech
+
 const input = ref('')
-const streaming = ref(false)
-const streamingText = ref('')
-// 推理步骤：直接累积"已解析好的对象"，而不是每次渲染都重新解析整段文本
-// （原实现每帧调用 3 次 parseSteps，逐 token 更新时是 O(n²) 的重复解析）
-const liveSteps = ref([])
-// 模型真实思考流（推理模型）。与 liveSteps 是两类信息：这是模型的内心独白
-const thinkingText = ref('')
-const msgContainer = ref(null)
-const msgEnd = ref(null)
-let abortController = null
+const scroller = ref(null)
+const pendingDelete = ref(null)
+const showSidebar = ref(false)
 
-// —— 朗读（TTS）——
-// speakingIndex 是**消息下标**而不是布尔值：只有一条在播，但要知道是哪一条
-// 才能把按钮切成"停止"态，切换朗读时也才知道该停谁。
-const speakingIndex = ref(-1)
-const speakError = ref('')
-let ttsClient = null
-let speechPlayer = null
-
-/** 停止朗读并释放音频/连接资源（幂等，可随时调用）。 */
-function stopSpeaking() {
-  if (ttsClient) {
-    // 先让服务端丢弃排队中的句子，再断开，避免它继续合成没人听的音频
-    ttsClient.cancel()
-    ttsClient.close()
-    ttsClient = null
-  }
-  if (speechPlayer) {
-    speechPlayer.stop()
-    speechPlayer = null
-  }
-  speakingIndex.value = -1
-  speakError.value = ''
-}
-
-/**
- * 朗读某条回答 / 停止正在播的那条。
- *
- * 顺序有讲究：**先 start() 播放器再 connect()**，因为播放器的 play() 必须
- * 与用户点击处在同一任务里，await 连接会把手势"用掉"，导致浏览器拒播。
- */
-async function toggleSpeak(msg, index) {
-  if (speakingIndex.value === index) {
-    stopSpeaking()
-    return
-  }
-  stopSpeaking()
-  speakingIndex.value = index
-
-  // 末句编号：句子的 done 回来要靠它判断整段是否发完
-  let lastId = -1
-
-  const player = new SpeechPlayer({
-    onEnded: () => {
-      if (speakingIndex.value === index) stopSpeaking()
-    },
-    onError: (e) => {
-      speakError.value = e.message || '播放失败'
-    },
-  })
-  speechPlayer = player
-
-  const client = new TtsClient({
-    onAudio: (chunk) => player.feed(chunk),
-    onSentenceEnd: (id) => {
-      player.endSentence()
-      if (id === lastId) player.finish()
-    },
-    onError: (m) => {
-      speakError.value = m
-    },
-    onClose: () => {
-      // 非主动关闭（服务端断开）：收尾，避免按钮卡在"停止"态
-      if (speakingIndex.value === index) stopSpeaking()
-    },
-  })
-  ttsClient = client
-
-  try {
-    await player.start()
-    await client.connect()
-    lastId = client.speakAll(msg.content) - 1
-    if (lastId < 0) {
-      // 整条回答都是代码块之类不可朗读的内容
-      stopSpeaking()
-      speakError.value = '这条回答没有可朗读的内容'
-      speakingIndex.value = index
-    }
-  } catch (e) {
-    // 失败细节要留住：stopSpeaking() 会清空 speakError，所以这里手动释放
-    if (speechPlayer) {
-      speechPlayer.stop()
-      speechPlayer = null
-    }
-    if (ttsClient) {
-      ttsClient.close()
-      ttsClient = null
-    }
-    speakingIndex.value = index
-    speakError.value = e.message || '语音服务不可用'
-  }
-}
-
-// 历史对话
-const showHistory = ref(true)
-const historyList = ref([])
-const loadingHistory = ref(false)
-
-// 当前对话 ID（续接已有对话时设置，新对话为 null，由后端返回）
-const currentConversationId = ref(null)
-const activeHistoryId = ref(null)  // 高亮当前活跃的历史记录
-
-// 删除确认弹窗
-const showDeleteConfirm = ref(false)
-const pendingDelete = ref(null)  // 待删的 conversation 对象
-
-// —— 快捷问题 ——
 const quickQuestions = [
-  { icon: '👋', label: '介绍一下你自己', text: '介绍一下你自己', hint: '个人信息与背景' },
-  { icon: '💻', label: '你熟悉哪些技术栈', text: '你熟悉哪些技术栈？', hint: '技能清单' },
-  { icon: '🚀', label: '你做过哪些项目', text: '你做过哪些项目？', hint: '项目经验' },
+  { icon: 'user', label: '介绍一下你自己', text: '介绍一下你自己', hint: '个人信息与背景' },
+  { icon: 'sliders', label: '你熟悉哪些技术栈', text: '你熟悉哪些技术栈？', hint: '技能清单' },
+  { icon: 'layers', label: '你做过哪些项目', text: '你做过哪些项目？', hint: '项目经验' },
 ]
 
-function askQuick(text) {
-  if (streaming.value) return
-  input.value = text
-  send()
+/**
+ * 流式生成中的临时消息。
+ *
+ * 做成一个"和真实消息同构"的对象交给 MessageItem 渲染，而不是在模板里
+ * 再写一份 —— 否则流式态和完成态会各写一套样式，过一阵子必然长得不一样。
+ * （改造前推理面板的"双写"就是这么来的。）
+ */
+const draftMessage = computed(() => ({
+  id: '__draft__',
+  role: 'assistant',
+  content: draftAnswer.value,
+  steps: liveSteps.value,
+  thinking: thinkingText.value,
+  evidence: evidence.value,
+}))
+
+const showEmptyState = computed(() => !messages.value.length && !streaming.value)
+
+/* ---------- 滚动 ---------- */
+
+// 用户往上翻历史时不要把他拽回底部 —— 只在"贴着底"时才自动跟随
+let stick = true
+
+function onScroll() {
+  const el = scroller.value
+  if (!el) return
+  stick = el.scrollHeight - el.scrollTop - el.clientHeight < 80
 }
 
-function renderMarkdown(text) {
-  if (!text) return ''
-  // GFM 表格要求表头行前有空行，LLM 输出经常缺少，自动补齐
-  const fixed = text.replace(/([^\n])\n(\|[^\n]+\|\s*\n\|[-| :]+\|)/g, '$1\n\n$2')
-  // 净化后再交 v-html（marked 自身不再做净化）
-  return DOMPurify.sanitize(marked(fixed), PURIFY_CONFIG)
+async function scrollToBottom(smooth = true) {
+  await nextTick()
+  scroller.value?.scrollTo({
+    top: scroller.value.scrollHeight,
+    behavior: smooth ? 'smooth' : 'auto',
+  })
 }
 
+watch([() => messages.value.length, draftAnswer], () => {
+  if (stick) scrollToBottom(false)
+})
 
+/* ---------- 操作 ---------- */
 
-function autoResize(e) {
-  e.target.style.height = 'auto'
-  e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'
-}
-
-async function send() {
-  const text = input.value.trim()
-  if (!text || streaming.value) return
+function send(text) {
+  const content = String(text ?? '').trim()
+  if (!content || streaming.value) return
   // 新提问时停掉正在朗读的上一条：新旧声音叠在一起听不清，也白烧合成配额
-  stopSpeaking()
+  stopSpeech()
+  session.send(content)
+  stick = true
+  scrollToBottom()
+}
+
+function pickQuick(q) {
   input.value = ''
+  send(q.text)
+}
 
-  messages.value.push({ role: 'user', content: text })
-  streaming.value = true
-  streamingText.value = ''
-  liveSteps.value = []
-  thinkingText.value = ''
-  let answerBuffer = ''
-  let errored = false
+function newChat() {
+  session.clear()
+  showSidebar.value = false
+}
 
-  /**
-   * 结束本轮对话（幂等）。
-   *
-   * onDone 与 onClose 只会有一个触发（见 api/chat.js 的 settle），
-   * 但两条路径都要走这里，否则"服务端没发 done 就断开"时
-   * streaming 会永久为 true，输入框永久禁用。
-   */
-  function finalize(answer, cid) {
-    if (!streaming.value) return
-    const finalText = (answer || answerBuffer || '').trim()
-    if (finalText) {
-      messages.value.push({
-        role: 'assistant',
-        content: finalText,
-        // 模板读的是已解析好的 steps / thinking（与 loadConversation 保持一致），
-        // 直接引用副本，避免清空流式状态后把面板一起清掉
-        steps: liveSteps.value.slice(),
-        thinking: thinkingText.value,
-      })
-    } else if (!errored) {
-      // 一个字都没生成：明确告诉用户，而不是留下空白
-      messages.value.push({ role: 'assistant', content: '（本轮没有生成内容，请重试或换个问法）' })
-    }
-    if (cid && !currentConversationId.value) {
-      currentConversationId.value = cid
-    }
-    streaming.value = false
-    streamingText.value = ''
-    liveSteps.value = []
-    thinkingText.value = ''
-    abortController = null
-    scrollBottom()
-    loadHistory()
-    // 通知 Token 统计刷新：服务端在 done 之前已把用量落库，这里正好拿到新数字
-    window.dispatchEvent(new CustomEvent('token-usage-updated'))
+async function onSelectConversation(item) {
+  stopSpeech()
+  const ok = await openConversation(item)
+  if (ok) {
+    stick = true
+    scrollToBottom(false)
+    showSidebar.value = false
+  } else if (conversations.error.value) {
+    toast.error(conversations.error.value)
   }
-
-  abortController = streamChat(text, {
-    // 整行"步骤"（工具调用/检索结果）。后端可能附 icon，用于行首没有 emoji 的情况
-    onReasoning(line, icon) {
-      const step = parseStepLine(line)
-      if (!step) return
-      if (icon && step.icon === '•') step.icon = icon
-      liveSteps.value.push(step)
-    },
-    // 模型真实思考的增量（推理模型）
-    onReasoningDelta(delta) {
-      thinkingText.value += delta
-    },
-    onAnswer(a) {
-      answerBuffer += a
-      streamingText.value = answerBuffer
-    },
-    // done 带权威全文：用它替换流式期间累积的文本，
-    // 保证"界面显示的"与"落库的"完全一致（ReAct 中间轮次的过渡语不会混进答案）
-    onDone(cid, answer) {
-      finalize(answer, cid)
-    },
-    // 流结束但没有 done（网络中断/服务端异常/超时）—— 必须收尾，否则 UI 卡死
-    onClose(reason) {
-      if (reason !== 'aborted') {
-        console.warn('[chat] 流未正常结束:', reason)
-      }
-      finalize('', null)
-    },
-    onError(err) {
-      errored = true
-      messages.value.push({ role: 'assistant', content: `❌ ${err}` })
-    },
-  }, currentConversationId.value)
-
-  scrollBottom()
-}
-
-function stopStream() {
-  if (!abortController) return
-  // 后端在取消路径上会同步保存已生成的内容，这里只负责收尾前端状态
-  abortController.abort()
-  abortController = null
-  streaming.value = false
-  const partial = streamingText.value
-  if (partial) {
-    messages.value.push({ role: 'assistant', content: partial })
-  }
-  streamingText.value = ''
-  liveSteps.value = []
-  thinkingText.value = ''
-  loadHistory()
-}
-
-function clearChat() {
-  // 切换/清空对话时正在播的音频属于上一条对话，必须停掉
-  stopSpeaking()
-  messages.value = []
-  streamingText.value = ''
-  liveSteps.value = []
-  thinkingText.value = ''
-  currentConversationId.value = null
-  activeHistoryId.value = null
-}
-
-function delConversation(c) {
-  pendingDelete.value = c
-  showDeleteConfirm.value = true
 }
 
 async function confirmDelete() {
-  const c = pendingDelete.value
-  if (!c) return
-  try {
-    await deleteConversation(c.group_id)
-    if (activeHistoryId.value === c.group_id) {
-      clearChat()
-    }
-    await loadHistory()
-  } catch (e) {
-    console.error('删除对话失败:', e)
-  } finally {
-    showDeleteConfirm.value = false
-    pendingDelete.value = null
-  }
-}
-
-function cancelDelete() {
-  showDeleteConfirm.value = false
+  const item = pendingDelete.value
   pendingDelete.value = null
-}
+  if (!item) return
 
-function scrollBottom() {
-  nextTick(() => {
-    msgEnd.value?.scrollIntoView({ behavior: 'smooth' })
-  })
-}
-
-async function loadHistory() {
-  if (!auth.isLoggedIn) return
-  loadingHistory.value = true
-  try {
-    const res = await getConversations(30)
-    historyList.value = res.conversations || []
-  } catch {
-    // ignore
-  } finally {
-    loadingHistory.value = false
+  const ok = await removeConversation(item)
+  if (ok) {
+    toast.success('已删除对话')
+  } else {
+    toast.error(conversations.error.value || '删除失败')
   }
 }
 
-async function loadConversation(c) {
-  const gid = c.group_id
-  if (!gid) return
-
-  // 手机端选择对话后自动关闭侧边栏
-  if (isMobile.value) showHistory.value = false
-
-  try {
-    const res = await getConversation(gid)
-    const ctx = res.messages || []
-    if (ctx.length > 0) {
-      clearChat()
-      for (const m of ctx) {
-        // reasoning 字段落库有两种格式（新的 JSON 含 steps/thinking、旧的纯文本行），
-        // 这里统一解析好再交给模板，避免模板里反复解析
-        const parsed = m.role === 'assistant'
-          ? parseStoredReasoning(m.reasoning)
-          : { steps: [], thinking: '' }
-        messages.value.push({
-          role: m.role,
-          content: m.content,
-          steps: parsed.steps,
-          thinking: parsed.thinking,
-        })
-      }
-      // 仅真实 UUID 才支持续接，legacy '__single_' 前缀的不支持
-      currentConversationId.value = gid.startsWith('__single_') ? null : gid
-      activeHistoryId.value = gid
-      scrollBottom()
-    }
-  } catch {
-    // 接口不可用，忽略
-  }
-}
-
-function formatTime(d) {
-  if (!d) return ''
-  return String(d).slice(5, 19)
-}
-
-// 移动端检测
-const isMobile = ref(window.innerWidth <= 768)
-
-function onResize() {
-  isMobile.value = window.innerWidth <= 768
-  if (isMobile.value) showHistory.value = false
+function onSpeak(msg) {
+  // 用消息的稳定 id，不用数组下标 —— 下标在列表变动时会指到别人身上
+  toggleSpeech(msg.id, msg.content)
 }
 
 onMounted(() => {
-  if (isMobile.value) showHistory.value = false
-  window.addEventListener('resize', onResize)
   if (auth.isLoggedIn) loadHistory()
 })
-
-onUnmounted(() => {
-  if (abortController) abortController.abort()
-  stopSpeaking()
-})
 </script>
+
+<template>
+  <div class="chat">
+    <ConversationSidebar
+      class="chat-sidebar"
+      :class="{ 'is-open': showSidebar }"
+      :items="historyList"
+      :loading="historyLoading"
+      :active-id="activeConversationId"
+      @select="onSelectConversation"
+      @delete="pendingDelete = $event"
+      @refresh="loadHistory"
+      @new="newChat"
+    />
+
+    <div class="chat-main">
+      <header class="chat-toolbar">
+        <button
+          class="toolbar-btn"
+          type="button"
+          title="历史对话"
+          @click="showSidebar = !showSidebar"
+        >
+          <UiIcon name="menu" :size="16" />
+        </button>
+        <span class="toolbar-title">
+          {{ activeConversationId ? '继续对话' : '新对话' }}
+        </span>
+        <UiButton v-if="messages.length" size="sm" variant="ghost" @click="newChat">
+          <template #icon><UiIcon name="plus" :size="14" /></template>
+          新对话
+        </UiButton>
+      </header>
+
+      <div ref="scroller" class="chat-scroll" @scroll.passive="onScroll">
+        <UiEmpty
+          v-if="showEmptyState"
+          icon="layers"
+          title="个人数字分身 · AI 面试助手"
+          description="基于私有知识库的智能问答。每个回答都会标注它依据了知识库里的哪些片段 —— 句句有据可查。"
+        >
+          <button
+            v-for="q in quickQuestions"
+            :key="q.label"
+            class="quick-card"
+            type="button"
+            @click="pickQuick(q)"
+          >
+            <UiIcon :name="q.icon" :size="16" class="quick-icon" />
+            <span class="quick-text">
+              <span class="quick-label">{{ q.label }}</span>
+              <span class="quick-hint">{{ q.hint }}</span>
+            </span>
+          </button>
+        </UiEmpty>
+
+        <div v-else class="chat-stream">
+          <MessageItem
+            v-for="(msg, i) in messages"
+            :key="msg.id"
+            :message="msg"
+            :speaking="speakingId === msg.id"
+            :speak-error="speakingId === msg.id ? speakError : ''"
+            :expand-reasoning="i === messages.length - 1"
+            @speak="onSpeak(msg)"
+            @stop-speak="stopSpeech"
+          />
+
+          <MessageItem
+            v-if="streaming"
+            :message="draftMessage"
+            draft
+            expand-reasoning
+          />
+        </div>
+
+        <div class="scroll-anchor" />
+      </div>
+
+      <div class="chat-foot">
+        <Composer
+          v-model="input"
+          :streaming="streaming"
+          :disabled="!auth.isLoggedIn"
+          :placeholder="auth.isLoggedIn ? '输入你的问题，回车发送' : '请先登录后再提问'"
+          @send="send"
+          @stop="stopStream"
+        />
+        <TokenStats v-if="auth.isLoggedIn" />
+      </div>
+    </div>
+
+    <UiModal
+      :open="!!pendingDelete"
+      size="sm"
+      title="删除这条对话？"
+      :close-on-overlay="false"
+      @close="pendingDelete = null"
+    >
+      <p class="confirm-text">
+        「{{ pendingDelete?.first_question || '新对话' }}」共
+        {{ pendingDelete?.turn_count || 0 }} 轮对话将被永久删除，不可恢复。
+      </p>
+      <template #footer>
+        <UiButton variant="secondary" @click="pendingDelete = null">取消</UiButton>
+        <UiButton variant="danger" @click="confirmDelete">确认删除</UiButton>
+      </template>
+    </UiModal>
+  </div>
+</template>
+
+<style scoped>
+.chat {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.chat-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 工具条：窄屏才需要（汉堡按钮 + 当前状态） */
+.chat-toolbar {
+  display: none;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--c-border);
+}
+.toolbar-btn {
+  display: inline-flex;
+  padding: var(--sp-1);
+  color: var(--c-text-2);
+  border-radius: var(--r-sm);
+}
+.toolbar-btn:hover {
+  background: var(--c-surface-2);
+}
+.toolbar-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-scroll {
+  flex: 1;
+  padding: var(--sp-6) var(--sp-5) var(--sp-4);
+  overflow-y: auto;
+}
+
+.chat-stream {
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+}
+
+/* 快捷问题做成卡片放在空状态里，而不是飘在输入框上方 */
+.quick-card {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  text-align: left;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-1);
+  transition: border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.quick-card:hover {
+  border-color: var(--c-accent-border);
+  box-shadow: var(--sh-2);
+  transform: translateY(-1px);
+}
+.quick-icon {
+  color: var(--c-accent);
+}
+.quick-text {
+  display: flex;
+  flex-direction: column;
+}
+.quick-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--c-text);
+}
+.quick-hint {
+  font-size: var(--fs-xs);
+  color: var(--c-text-3);
+}
+
+.chat-foot {
+  flex-shrink: 0;
+  padding: 0 var(--sp-5) var(--sp-3);
+}
+/* 输入区与消息区宽度对齐，视觉上是一条中轴线 */
+.chat-foot :deep(.composer),
+.chat-foot :deep(.token-stats) {
+  max-width: var(--content-max);
+  margin: 0 auto;
+}
+.chat-foot :deep(.composer) {
+  margin-bottom: var(--sp-2);
+}
+
+.scroll-anchor {
+  height: 1px;
+}
+
+.confirm-text {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+  color: var(--c-text-2);
+}
+
+/* ── 窄屏 ── */
+@media (max-width: 768px) {
+  .chat-toolbar {
+    display: flex;
+  }
+  .chat-scroll {
+    padding: var(--sp-4) var(--sp-3) var(--sp-3);
+  }
+  .chat-foot {
+    padding: 0 var(--sp-3) var(--sp-2);
+  }
+  /* 侧栏改抽屉式：默认移出屏幕，靠工具条的汉堡按钮拉出 */
+  .chat-sidebar {
+    position: fixed;
+    top: var(--header-h);
+    bottom: 0;
+    left: 0;
+    z-index: var(--z-dropdown);
+    display: flex;
+    box-shadow: var(--sh-3);
+    transform: translateX(-100%);
+    transition: transform var(--dur-base) var(--ease);
+  }
+  .chat-sidebar.is-open {
+    transform: translateX(0);
+  }
+}
+</style>

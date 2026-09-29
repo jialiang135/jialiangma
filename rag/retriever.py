@@ -46,10 +46,23 @@ def retrieve(
     Returns:
         ``{
             "query": str,
-            "documents": [{"content": str, "score": float, "source": str}, ...],
+            "documents": [
+                {
+                    "content": str,
+                    "score": float,
+                    "source": str,
+                    "chunk_idx": int | None,   # 片段在源文档中的块序号（可能缺失）
+                    "filepath": str | None,    # 源文件在磁盘上的路径（可能缺失）
+                },
+                ...
+            ],
             "context": str,   # 拼接后的上下文字符串
             "count": int,
         }``
+
+    注：``chunk_idx`` / ``filepath`` 来自上游向量库写入的 metadata
+    （见 ``core/kb_tasks.py`` 的 ``metadatas``）。之前组装时只留了 ``source``
+    把它们丢掉了；现补齐，供前端"证据轨"与将来的句级回溯使用。
 
     注：混合检索与缓存原先默认关闭，且全仓库没有任何调用点传过参数 ——
     等于两套实现（BM25+RRF 融合、TTL 缓存）从未生效过。现在默认开启，
@@ -127,15 +140,20 @@ def _retrieve_impl(
     context_parts = []
     for item in reranked:
         idx = item["index"]
-        # 如果原始结果长度不足（极罕见），跳过
+        # metadata 可能缺失（原始结果长度不足，极罕见）→ 用 .get 兜底，别让它崩
         metadata = raw_results[idx].get("metadata", {}) if idx < len(raw_results) else {}
         source = metadata.get("source", "unknown")
-
+        # chunk_idx / filepath 是向量库写入时就带上的元数据（见 core/kb_tasks.py），
+        # 这里必须显式透出、不能只留 source。为什么带 chunk_idx：它是片段在源文档
+        # 中的块序号，前端"证据轨"将来要靠它把某一句回溯到**具体片段**
+        # （本次只透出数据，不实现句级引用 —— 那要改提示词，风险高）。
         documents.append(
             {
                 "content": item["text"],
                 "score": round(item["score"], 4),
                 "source": source,
+                "chunk_idx": metadata.get("chunk_idx"),
+                "filepath": metadata.get("filepath"),
             }
         )
         context_parts.append(f"[来源: {source} | 相关度: {item['score']:.4f}]\n{item['text']}")

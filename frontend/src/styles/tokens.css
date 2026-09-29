@@ -1,0 +1,164 @@
+/**
+ * 设计令牌（Design Tokens）
+ * ========================
+ *
+ * 全站唯一的"设计决策存放处"。所有颜色、间距、字号、圆角、阴影、层级、
+ * 动效都必须引用这里的变量，**组件里不许再出现字面量**。
+ *
+ * 为什么要有这一层：改造前 style.css 有约 200 处硬编码色值，同一套"成功绿"
+ * 在 5 个文件里各写一遍；间距字号完全没有变量，12/12.5/13/13.5/14 混着用；
+ * z-index 散落着 10/100/200/9999。同一种视觉语义散在多处，改一处必然漏一处。
+ *
+ * 命名约定
+ * --------
+ * - `--c-*`   颜色（color）
+ * - `--sp-*`  间距（spacing），4px 基准刻度
+ * - `--fs-*`  字号（font-size）
+ * - `--r-*`   圆角（radius）
+ * - `--sh-*`  阴影（shadow）
+ * - `--z-*`   层级（z-index）
+ * - `--dur-*` / `--ease-*`  动效时长与缓动
+ *
+ * 语义色一律四件套：`--c-x`（主色）/ `--c-x-soft`（浅底）/ `--c-x-text`（浅底上的字）
+ * / `--c-x-border`（描边）。这样才不用在组件里现拼 color-mix。
+ */
+
+:root {
+  /* ============================================================
+     一、色板
+     ============================================================ */
+
+  /* 中性色：用 zinc 系（略带暖调）而不是 slate 系。
+     冷灰蓝是后台模板的默认脸，暖灰看着更像打磨过的产品。 */
+  --c-white: #ffffff;
+  --c-bg: #fafafa;
+  --c-surface: #ffffff;
+  --c-surface-2: #f4f4f5; /* 次级底：气泡、表头、输入框内底 */
+  --c-surface-3: #ebebed; /* 三级底：hover、选中 */
+
+  --c-border: #e4e4e7;
+  --c-border-strong: #d4d4d8;
+
+  --c-text: #18181b; /* 正文 */
+  --c-text-2: #52525b; /* 次要：说明、标签 */
+  --c-text-3: #a1a1aa; /* 弱化：占位、时间戳 */
+  --c-text-muted: #71717a; /* 与 text-2 之间的一档，原先被引用却从未定义 */
+
+  /* 强调色：indigo。只用在**可交互**的地方（链接、焦点环、选中态），
+     不拿它铺大色块 —— 铺开的越少，品牌感越强。 */
+  --c-accent: #4f46e5;
+  --c-accent-hover: #4338ca;
+  --c-accent-soft: #eef2ff;
+  --c-accent-text: #3730a3;
+  --c-accent-border: #c7d2fe;
+
+  /* 语义色四件套 */
+  --c-success: #16a34a;
+  --c-success-soft: #f0fdf4;
+  --c-success-text: #15803d;
+  --c-success-border: #bbf7d0;
+
+  --c-warning: #d97706;
+  --c-warning-soft: #fffbeb;
+  --c-warning-text: #b45309;
+  --c-warning-border: #fde68a;
+
+  --c-danger: #dc2626;
+  --c-danger-hover: #b91c1c;
+  --c-danger-soft: #fef2f2;
+  --c-danger-text: #b91c1c;
+  --c-danger-border: #fecaca;
+
+  --c-info: #2563eb;
+  --c-info-soft: #eff6ff;
+  --c-info-text: #1d4ed8;
+  --c-info-border: #bfdbfe;
+
+  /* 推理过程专用：原先 #7c3aed/#a78bfa/#faf8ff 散在 style.css 里没入变量 */
+  --c-reasoning: #7c3aed;
+  --c-reasoning-soft: #faf8ff;
+  --c-reasoning-border: #ddd6fe;
+
+  /* 相关度刻度：证据轨用它表示"这条有多相关"。
+     三档而非连续渐变色 —— 连续色用户读不出差别。 */
+  --c-relevance-high: #16a34a;
+  --c-relevance-mid: #d97706;
+  --c-relevance-low: #a1a1aa;
+
+  /* ============================================================
+     二、间距（4px 基准）
+     ============================================================ */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* ============================================================
+     三、字号与行高
+     ============================================================ */
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-md: 15px;
+  --fs-lg: 18px;
+  --fs-xl: 22px;
+  --fs-2xl: 28px;
+
+  --lh-tight: 1.35;
+  --lh-base: 1.6;
+  --lh-loose: 1.75;
+
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+
+  /* 等宽：代码块、相关度分数这类需要对齐的数字 */
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* ============================================================
+     四、圆角 / 阴影 / 层级 / 动效
+     ============================================================ */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-full: 999px;
+
+  --sh-1: 0 1px 2px rgba(24, 24, 27, 0.05);
+  --sh-2: 0 1px 3px rgba(24, 24, 27, 0.08), 0 1px 2px rgba(24, 24, 27, 0.04);
+  --sh-3: 0 4px 12px rgba(24, 24, 27, 0.08);
+  --sh-4: 0 12px 32px rgba(24, 24, 27, 0.12);
+
+  --z-base: 1;
+  --z-sticky: 100;
+  --z-dropdown: 200;
+  --z-modal: 1000;
+  --z-toast: 1100;
+
+  --dur-fast: 0.12s;
+  --dur-base: 0.2s;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 布局尺寸集中管理（原先这些数字散在多个 calc 里） */
+  --header-h: 56px;
+  --sidebar-w: 272px;
+  --content-max: 820px;
+  --touch-min: 44px; /* Apple HIG 最小触控目标 */
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+}
+
+/* 尊重系统的"减弱动效"设置：动画全部压掉，但保留状态变化 */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0.01ms;
+    --dur-base: 0.01ms;
+  }
+}

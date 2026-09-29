@@ -1,12 +1,13 @@
-import { get } from './index.js'
+import { authHeaders, del, get, notifyAuthExpired } from './index.js'
 
 /**
  * SSE 流式对话 — 使用 fetch + ReadableStream（支持 POST）
  *
  * 回调约定：
- *   onReasoning(line)        整行"步骤"（工具调用/检索结果），可能带 icon
+ *   onReasoning(line, icon)  整行"步骤"（工具调用/检索结果），可能带 icon
  *   onReasoningDelta(text)   模型真实思考的 token 增量（推理模型）
  *   onAnswer(text)           答案 token 增量
+ *   onEvidence(list)         本轮回答依据的知识库片段 [{source, score, content, chunk_idx}]
  *   onUsage(usage)           真实 token 用量对象
  *   onDone(cid, answer)      流正常结束；answer 是权威全文，用它替换流式期间显示的文本
  *   onClose(reason)          流结束但**没收到 done**（网络中断/服务端异常/超时）
@@ -22,7 +23,6 @@ import { get } from './index.js'
  * @returns {AbortController} 用于停止生成
  */
 export function streamChat(message, callbacks = {}, conversationId = null) {
-  const token = localStorage.getItem('token')
   const controller = new AbortController()
 
   let settled = false
@@ -46,7 +46,16 @@ export function streamChat(message, callbacks = {}, conversationId = null) {
     if (type === 'reasoning') callbacks.onReasoning?.(content, event.icon)
     else if (type === 'reasoning_delta') callbacks.onReasoningDelta?.(content)
     else if (type === 'answer') callbacks.onAnswer?.(content)
-    else if (type === 'usage') {
+    else if (type === 'evidence') {
+      // 证据轨：content 是 JSON 字符串（与 usage/done 同一约定）。
+      // 解析失败只是少了个证据面板，不该影响对话本身，所以静默忽略。
+      try {
+        const list = typeof content === 'string' ? JSON.parse(content) : content
+        callbacks.onEvidence?.(Array.isArray(list) ? list : [])
+      } catch {
+        /* 忽略 */
+      }
+    } else if (type === 'usage') {
       try {
         callbacks.onUsage?.(typeof content === 'string' ? JSON.parse(content) : content)
       } catch {
@@ -70,10 +79,7 @@ export function streamChat(message, callbacks = {}, conversationId = null) {
 
   fetch('/api/chat/stream', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       message,
       agent_mode: 'chat',
@@ -83,6 +89,13 @@ export function streamChat(message, callbacks = {}, conversationId = null) {
   })
     .then(async (response) => {
       if (!response.ok) {
+        // 401 要单独走：清凭据并广播，否则界面会停在"看起来已登录但全失败"
+        if (response.status === 401) {
+          notifyAuthExpired()
+          callbacks.onError?.('登录已过期，请重新登录')
+          settle(callbacks.onClose, 'unauthorized')
+          return
+        }
         const err = await response.text()
         callbacks.onError?.(`HTTP ${response.status}: ${err}`)
         settle(callbacks.onClose, 'http_error')
@@ -148,13 +161,5 @@ export function getConversation(conversationId) {
  * 删除指定对话组（侧边栏删除按钮用）
  */
 export async function deleteConversation(groupId) {
-  const token = localStorage.getItem('token')
-  const resp = await fetch(`/api/chat/conversation/${groupId}`, {
-    method: 'DELETE',
-    headers: {
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  })
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-  return resp.json()
+  return del(`/chat/conversation/${groupId}`)
 }
