@@ -52,6 +52,34 @@ async def lifespan(app: FastAPI):
     logger.info(f"上传文件路径: {settings.upload_dir}")
     logger.info(f"数据库路径: {settings.db_path}")
 
+    # 知识库一致性自检
+    # 「文件表」与「向量库」会独立漂移，而且**漂移时不报错**：
+    # 界面显示"知识库为空"，模型却仍能引用某份文档回答 ——
+    # 用户看到的是一个自信的错答案。启动时主动查一次，别等用户发现。
+    try:
+        from core.database import get_files_by_owner
+        from rag.vector_store import get_collection_stats
+
+        kb_files = {f["filename"] for f in await get_files_by_owner(1) if f.get("filename")}
+        kb_stats = await asyncio.to_thread(get_collection_stats, 1)
+        vec_sources = set(kb_stats.get("files") or [])
+        logger.info(
+            "知识库: 文件记录 {} 条 / 向量块 {} 个",
+            len(kb_files),
+            kb_stats.get("total_chunks", 0),
+        )
+        orphans = sorted(vec_sources - kb_files)
+        if orphans:
+            logger.warning(
+                "⚠️ 知识库不一致：向量库里存在文件表中没有的来源 {} —— "
+                "这会造成「界面显示知识库为空，但回答却能引用文档」。"
+                "可访问 GET /api/admin/kb-consistency 查看，"
+                "POST /api/admin/kb-consistency/repair 清理",
+                orphans,
+            )
+    except Exception as e:
+        logger.debug("知识库一致性自检跳过: {}", e)
+
     # 启动定时任务调度器
     from core.scheduler import start_scheduler
 

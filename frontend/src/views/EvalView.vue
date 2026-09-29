@@ -103,7 +103,7 @@
     </div>
 
     <!-- 报告详情 -->
-    <div v-if="detail" class="eval-panel">
+    <div v-if="detail" class="eval-panel eval-detail-anchor">
       <div class="eval-panel-header">
         <h3>🔍 报告 #{{ detail.id }} · {{ detail.testset_name }}</h3>
         <button class="btn btn-sm btn-outline" @click="detail = null">收起</button>
@@ -163,7 +163,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import {
   getEvalTestsets, runEval, getEvalReports, getEvalReport, deleteEvalReport,
 } from '../api/eval.js'
@@ -342,6 +342,10 @@ async function showDetail(id) {
   try {
     const res = await getEvalReport(id)
     detail.value = res.report || null
+    // 详情面板渲染在页面下方，报告多时点了「详情」在视口里看不到任何变化。
+    // 等 DOM 更新后滚过去，让点击一定产生可见反馈。
+    await nextTick()
+    document.querySelector('.eval-detail-anchor')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   } catch (e) {
     showMsg(`详情加载失败: ${e.message}`, 'error')
   }

@@ -63,7 +63,10 @@
             <div class="msg-text" v-html="renderMarkdown(msg.content)"></div>
             <div v-if="msg.role === 'assistant' && (msg.steps?.length || msg.thinking)"
                  class="msg-reasoning">
-              <details>
+              <!-- 最新一条默认展开：流式期间用户正看着实时思考，
+                   答案完成后面板若自动收起，等于把他在看的内容突然藏掉。
+                   历史消息仍默认收起，避免整页被推理内容撑长。 -->
+              <details :open="i === messages.length - 1">
                 <summary>🧠 查看完整推理过程（{{ msg.steps?.length || 0 }} 步）</summary>
                 <div v-if="msg.thinking" class="thinking-stream">
                   <div class="thinking-label">💭 模型思考</div>
@@ -163,6 +166,8 @@
 import { ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { streamChat, getConversations, getConversation, deleteConversation } from '../api/chat.js'
 import { useAuthStore } from '../stores/auth.js'
+// 推理数据的解析放共享模块：管理页也要用同一套，避免两处漂移
+import { parseStoredReasoning } from '../utils/reasoning.js'
 import TokenStats from '../components/TokenStats.vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -238,60 +243,6 @@ function renderMarkdown(text) {
 }
 
 
-// —— 推理步骤解析 ——
-// 后端下发的 reasoning 事件已经是"一整行"步骤，且行首带 emoji；
-// 同时会附一个 icon 字段作为结构化元信息。
-const EMOJI_RE = /^([\u{1F300}-\u{1FAFF}\u{2700}-\u{27BF}\u{2600}-\u{26FF}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{1F100}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{200D}\u{FE0F}\u{20E3}\u{2000}-\u{206F}🛠️➕➖➡️〰️*️⃣#️⃣0️⃣1️⃣2️⃣3️⃣4️⃣5️⃣6️⃣7️⃣8️⃣9️⃣\u{1F7E0}-\u{1F7FF}]|⚠️|✅|❌|📚|📋|📝|📊|📭|💾|💬|🔍|🔀|🔧|🤔|🔄|✨|🎯|📌|🧩|📁|🏷️)/u
-
-/** 把一整行步骤文本解析成 {icon, text}。 */
-function parseStepLine(line) {
-  const t = (line || '').trim()
-  if (!t) return null
-  const m = t.match(EMOJI_RE)
-  if (m) return { icon: m[0], text: t.slice(m[0].length).trim() }
-  // 没有 emoji 前缀时按关键词猜一个图标（兼容旧数据）
-  let icon = '•'
-  if (t.includes('工具') || t.includes('搜索'))        icon = '🔍'
-  else if (t.includes('检索') || t.includes('知识库') || t.includes('匹配')) icon = '📚'
-  else if (t.includes('拆解') || t.includes('分析') || t.includes('问题'))   icon = '🤔'
-  else if (t.includes('分支') || t.includes('判断') || t.includes('路由'))   icon = '🔀'
-  else if (t.includes('规划') || t.includes('方案'))                          icon = '📝'
-  else if (t.includes('合规') || t.includes('校验') || t.includes('闭环'))    icon = '✅'
-  else if (t.includes('生成') || t.includes('回答'))                          icon = '➡️'
-  else if (t.includes('返回') || t.includes('结果'))                          icon = '📋'
-  else if (t.includes('评测') || t.includes('报告'))                          icon = '📊'
-  else if (t.includes('保存'))                                                icon = '💾'
-  else if (t.includes('错误') || t.includes('失败') || t.includes('异常'))    icon = '⚠️'
-  return { icon, text: t }
-}
-
-function parseSteps(raw) {
-  if (!raw) return []
-  return raw.split('\n').filter(Boolean).map(parseStepLine).filter(Boolean)
-}
-
-/**
- * 解析落库的 reasoning 字段，返回 { steps, thinking }。
- *
- * 两种格式都要吃：
- * - 新格式：JSON 字符串 {"steps": [...], "thinking": "..."}
- * - 旧格式：以换行分隔的步骤纯文本（库里已有的历史数据）
- */
-function parseStoredReasoning(raw) {
-  if (!raw) return { steps: [], thinking: '' }
-  try {
-    const obj = JSON.parse(raw)
-    if (obj && typeof obj === 'object') {
-      return {
-        steps: parseSteps((obj.steps || []).join('\n')),
-        thinking: obj.thinking || '',
-      }
-    }
-  } catch {
-    // 不是 JSON —— 按旧格式处理
-  }
-  return { steps: parseSteps(raw), thinking: '' }
-}
 
 function autoResize(e) {
   e.target.style.height = 'auto'

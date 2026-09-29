@@ -258,6 +258,47 @@ async def get_queue_status(current_user: dict = Depends(require_admin)):
     }
 
 
+# ═══════════════════════════════════════════
+# 知识库一致性
+# ═══════════════════════════════════════════
+
+
+@router.get("/kb-consistency")
+async def get_kb_consistency(current_user: dict = Depends(require_admin)):
+    """
+    检查「文件表」与「向量库」是否一致。
+
+    这两处存储会独立漂移，而且**漂移时不报错** —— 表现为界面显示
+    「知识库为空」，但模型仍能引用某份文档回答，用户看到的是一个自信的
+    错答案。本项目真实踩过一次：清理测试数据时删了数据库行与磁盘文件，
+    漏了向量库，于是"空知识库"照样答出了测试夹具里的内容。
+    """
+    from core.kb_tasks import check_kb_consistency
+
+    report = await asyncio.to_thread(check_kb_consistency, 1)
+    return {"success": True, **report}
+
+
+@router.post("/kb-consistency/repair")
+async def repair_kb_consistency_endpoint(current_user: dict = Depends(require_admin)):
+    """
+    清理孤儿向量块（向量库里有、文件表里没有的那些）。
+
+    只清这一类 —— 它们是「空知识库仍能回答」的根因。
+    「文件表有、向量库没有」不动：那类重新入库即可恢复，
+    自动删除会丢掉书目记录。
+    """
+    from core.kb_tasks import repair_kb_consistency
+
+    result = await asyncio.to_thread(repair_kb_consistency, 1)
+    logger.info(
+        "[Admin] 知识库一致性修复: {} 清除了 {} 个孤儿块",
+        current_user["username"],
+        result["removed_chunks"],
+    )
+    return {"success": True, **result}
+
+
 # 说明：原有一个 /session-stats 接口，返回 core.session_manager 的状态。
 # 该模块是一个从未被调用的会话存储（create_session/add_message/get_session
 # 零调用），会话上下文实际由 chat_logs + conversation_id 承担，

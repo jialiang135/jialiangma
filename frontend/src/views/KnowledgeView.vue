@@ -29,7 +29,11 @@
     </div>
 
     <div class="kb-toolbar">
-      <button class="btn btn-sm" @click="refreshFiles">🔄 刷新文件列表</button>
+      <!-- 加加载态与结果提示：原先点击后毫无反馈，
+           数据没变时用户不知道是"刷新成功了"还是"按钮没生效" -->
+      <button class="btn btn-sm" :disabled="refreshing" @click="refreshFiles">
+        {{ refreshing ? '刷新中...' : '🔄 刷新文件列表' }}
+      </button>
       <div class="toolbar-right" v-if="auth.isAdmin">
         <button class="btn btn-sm btn-danger" @click="doClear">🗑 清空知识库</button>
         <button class="btn btn-sm" :disabled="rebuilding" @click="doRebuild">
@@ -99,7 +103,7 @@ async function pollTaskStatus(taskId, filename) {
         task.error = res.error
       }
       if (res.status === 'done' || res.status === 'failed' || res.status === 'skipped') {
-        await refreshFiles()
+        await refreshFiles(true)
         // 清理已完成的任务（3 秒后移除）
         setTimeout(() => {
           const idx = uploadTasks.value.findIndex(t => t.task_id === taskId)
@@ -115,13 +119,19 @@ async function pollTaskStatus(taskId, filename) {
   poll()
 }
 
-async function refreshFiles() {
+const refreshing = ref(false)
+
+async function refreshFiles(silent = false) {
   if (!auth.isLoggedIn) { showMsg('请先登录', 'error'); return }
+  refreshing.value = true
   try {
     const res = await getKbFiles()
     files.value = res.files || []
+    if (!silent) showMsg(`已刷新：${files.value.length} 个文件`, 'success')
   } catch (e) {
     showMsg(`加载失败: ${e.message}`, 'error')
+  } finally {
+    refreshing.value = false
   }
 }
 
@@ -149,7 +159,7 @@ async function doUpload() {
         showMsg(`📨 ${res.message}`, 'info')
       } else {
         showMsg(res.message || '已提交', 'info')
-        await refreshFiles()
+        await refreshFiles(true)
       }
       input.value = ''
     } else {
@@ -168,7 +178,7 @@ async function doDelete(fileId) {
   try {
     const res = await deleteKbFile(fileId)
     showMsg(res.success ? `✅ ${res.message}` : `❌ ${res.error || res.message}`, res.success ? 'success' : 'error')
-    await refreshFiles()
+    await refreshFiles(true)
   } catch (e) {
     showMsg(`❌ ${e.message}`, 'error')
   }
@@ -180,7 +190,7 @@ async function doClear() {
   try {
     const res = await clearKb()
     showMsg(res.success ? `✅ ${res.message}` : `❌ ${res.error || res.message}`, res.success ? 'success' : 'error')
-    await refreshFiles()
+    await refreshFiles(true)
   } catch (e) {
     showMsg(`❌ ${e.message}`, 'error')
   }
@@ -211,7 +221,7 @@ async function doRebuild() {
       }
       if (st.status === 'done') {
         showMsg(`✅ 重建完成（${st.chunk_count} 个向量块）`, 'success')
-        await refreshFiles()
+        await refreshFiles(true)
         return
       }
       if (st.status === 'failed') {

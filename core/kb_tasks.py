@@ -243,3 +243,88 @@ def rebuild_task(task_id: str, owner_id: int) -> None:
             )
         except Exception as inner:
             logger.error("[KB] 标记重建失败也失败了: {}", inner)
+
+
+# ============================================================
+# 知识库一致性自检
+# ============================================================
+#
+# 为什么需要这个
+# --------------
+# 「文件表(files)」与「向量库(Chroma)」是两处独立存储，会各自漂移。
+# 危险的地方在于**漂移时不报错**：表现是界面显示「知识库为空」，
+# 但模型却能引用某份文档来回答 —— 用户看到的是一个自信的错误答案。
+#
+# 本项目真实踩过一次：早期跑测试把测试夹具的文档灌进了向量库，
+# 清理时只删了数据库行与磁盘文件、**漏了向量库**，于是：
+#   files 表 0 条 / 向量库 1 条
+# 问「介绍一下你自己」时模型回答「我是张三，AI 工程师」（测试夹具内容）。
+#
+# 因此提供两个函数：一个是检查，一个是清理孤儿块。
+
+
+def check_kb_consistency(owner_id: int = 1) -> dict:
+    """
+    比对文件表与向量库，返回不一致清单。
+
+    **同步函数**，应在工作线程中调用（内部会通过 run_async_from_thread 读库）。
+
+    Returns:
+        ``{consistent, db_file_count, vector_chunk_count, orphan_sources,
+           sources_without_chunks, ...}``
+        - ``orphan_sources``：向量库里有、文件表里没有 —— **最危险的一类**，
+          会让"空知识库"仍然能检索出内容
+        - ``sources_without_chunks``：文件表里有、向量库里没有 ——
+          文件记录了但检索不到（通常是入库中断）
+    """
+    from rag.vector_store import get_collection_stats
+
+    files = run_async_from_thread(get_files_by_owner(owner_id))
+    db_sources = {f["filename"] for f in files if f.get("filename")}
+    stats = get_collection_stats(owner_id)
+    vec_sources = set(stats.get("files") or [])
+
+    orphan_sources = sorted(vec_sources - db_sources)
+    sources_without_chunks = sorted(db_sources - vec_sources)
+
+    report = {
+        "owner_id": owner_id,
+        "consistent": not orphan_sources and not sources_without_chunks,
+        "db_file_count": len(db_sources),
+        "vector_chunk_count": stats.get("total_chunks", 0),
+        "vector_source_count": len(vec_sources),
+        "orphan_sources": orphan_sources,
+        "sources_without_chunks": sources_without_chunks,
+    }
+    if not report["consistent"]:
+        logger.warning(
+            "[KB] 知识库不一致: 向量库孤儿来源={} 缺向量的文件={}",
+            orphan_sources,
+            sources_without_chunks,
+        )
+    return report
+
+
+def repair_kb_consistency(owner_id: int = 1) -> dict:
+    """
+    清理「向量库有、文件表没有」的孤儿块。
+
+    只清孤儿块（那才是导致"空知识库仍能回答"的原因）；
+    「文件表有、向量库没有」不动 —— 那通常只需重新入库即可恢复，
+    自动删除会丢掉用户的书目记录。
+
+    **同步函数**，应在工作线程中调用。
+    """
+    from rag.vector_store import delete_by_file
+
+    report = check_kb_consistency(owner_id)
+    removed = {}
+    for source in report["orphan_sources"]:
+        removed[source] = delete_by_file(source, owner_id)
+    if removed:
+        logger.info("[KB] 已清理孤儿向量块: {}", removed)
+    return {
+        "removed_sources": removed,
+        "removed_chunks": sum(removed.values()),
+        "before": report,
+    }

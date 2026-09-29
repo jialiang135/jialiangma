@@ -78,11 +78,24 @@
         <div class="log-q"><strong>Q:</strong> {{ expandedLogId === log.id ? log.question : truncate(log.question, 150) }}</div>
         <div v-if="expandedLogId === log.id" class="log-a"><strong>A:</strong> {{ log.answer }}</div>
         <div v-else class="log-a"><strong>A:</strong> {{ truncate(log.answer, 200) }}</div>
-        <!-- 展开后显示推理过程 -->
+        <!-- 展开后显示推理过程。
+             注意不能直接 <pre>{{ log.reasoning }}</pre>：该字段现在存的是
+             JSON（{steps, thinking}），直接打印会显示一坨原始 JSON。
+             这里统一走共享解析（同时兼容更早的纯文本格式）。 -->
         <div v-if="expandedLogId === log.id && log.reasoning" class="log-reasoning">
           <details open>
-            <summary>🧠 推理过程</summary>
-            <pre>{{ log.reasoning }}</pre>
+            <summary>🧠 推理过程（{{ expandedReasoning.steps.length }} 步）</summary>
+            <div v-if="expandedReasoning.thinking" class="log-thinking">
+              <div class="log-thinking-label">💭 模型思考</div>
+              <div class="log-thinking-text">{{ expandedReasoning.thinking }}</div>
+            </div>
+            <div v-if="expandedReasoning.steps.length" class="log-steps">
+              <div v-for="(st, si) in expandedReasoning.steps" :key="si" class="log-step">
+                <span class="step-icon">{{ st.icon }}</span><span>{{ st.text }}</span>
+              </div>
+            </div>
+            <!-- 两种格式都解析不出来时，兜底显示原文，避免"展开是空的" -->
+            <pre v-if="!expandedReasoning.steps.length && !expandedReasoning.thinking">{{ log.reasoning }}</pre>
           </details>
         </div>
       </div>
@@ -142,7 +155,7 @@
     <div v-if="activeTab === 'system'" class="tab-content">
       <div class="section">
         <h3>🔌 熔断器</h3>
-        <button class="btn btn-sm" @click="loadCircuitStatus">刷新</button>
+        <button class="btn btn-sm" @click="loadCircuitStatus">熔断状态 ⟳</button>
         <div v-if="circuits.length" class="mt-8">
           <div v-for="c in circuits" :key="c.name" class="status-row">
             <span class="status-name">{{ c.name }}</span>
@@ -153,7 +166,7 @@
       </div>
       <div class="section">
         <h3>📨 异步队列</h3>
-        <button class="btn btn-sm" @click="loadQueueStatus">刷新</button>
+        <button class="btn btn-sm" @click="loadQueueStatus">队列状态 ⟳</button>
         <div v-if="queueStatus" class="mt-8">
           <div>队列积压: <strong>{{ queueStatus.queue_size }}</strong></div>
           <div>后端: <strong>{{ backendLabel(queueStatus.backend) }}</strong></div>
@@ -168,6 +181,7 @@
 import { ref, onMounted, watch } from 'vue'
 import { useAuthStore } from '../stores/auth.js'
 import { formatCost } from '../utils/format.js'
+import { parseStoredReasoning } from '../utils/reasoning.js'
 import {
   getDashboard, getUsers, updateUserRole, deleteUser,
   getChatLogs, getFiles, getAuditLogs,
@@ -235,8 +249,19 @@ const chatLoading = ref(false)
 const chatFilterUser = ref('')
 const expandedLogId = ref(null)  // 当前展开的对话 ID
 
+// 展开时解析一次即可：放在模板里对每张卡片反复解析是浪费，
+// 而且列表可能有几十条
+const expandedReasoning = ref({ steps: [], thinking: '' })
+
 function toggleLog(id) {
-  expandedLogId.value = expandedLogId.value === id ? null : id
+  if (expandedLogId.value === id) {
+    expandedLogId.value = null
+    expandedReasoning.value = { steps: [], thinking: '' }
+    return
+  }
+  expandedLogId.value = id
+  const log = chatLogs.value.find(l => l.id === id)
+  expandedReasoning.value = parseStoredReasoning(log?.reasoning)
 }
 
 function truncate(text, max) {
