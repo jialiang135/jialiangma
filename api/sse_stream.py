@@ -278,6 +278,20 @@ async def sse_chat_generator(
                 output = event.get("data", {}).get("output")
                 if not isinstance(output, dict):
                     continue
+                # 只认**节点级**的 on_chain_end —— 判据是它有父 run。
+                #
+                # 编译后的图自己也会发一次 on_chain_end（实测 name='LangGraph'、
+                # parent_ids=[]），而那次的 output 是**累积后的整个 state**：
+                # 其中的 reasoning_log 是"所有节点写过的条目之和"。原实现对这个
+                # 事件照单迭代，于是每一步又被重发一遍 —— 前端"查看推理过程"
+                # 里条条重复、落库的历史记录同样重复（浏览器测试报告 BUG-01，
+                # 回归用例见 tests/test_evidence.py::TestReasoningNoDuplicate）。
+                #
+                # 节点级事件的 output 才是该节点的**增量**，正是这里要的东西。
+                # 用 `== []` 而不是 `not ...`：字段缺失（老版本/假事件）时按
+                # 节点处理，宁可多收一条日志，也不要让推理面板整块变空。
+                if event.get("parent_ids") == []:
+                    continue
                 # 检索节点：记录来源 + 下发证据轨，供落库与前端展示
                 if name == "retrieve":
                     docs = output.get("retrieved_docs", []) or []

@@ -40,6 +40,16 @@ export function useChatStream() {
   const thinkingText = ref('')
   /** 本轮检索到的证据（原始数组），收尾时快照到消息上 */
   const evidence = shallowRef([])
+  /**
+   * 已落库的轮次计数。
+   *
+   * 存在的理由：一轮问答结束后服务端多了一条记录，**历史侧栏得知道**。
+   * 原来侧栏只在页面挂载时拉一次列表，于是"问了两轮，侧栏还显示
+   * 『还没有对话』"（实测 bug）。与其让侧栏去猜（watch 消息数组长度会在
+   * 载入历史时误触发），不如由流这边**明确报一个数**：
+   * `useConversationHistory` 监听它刷新即可。
+   */
+  const turnSeq = ref(0)
 
   let abort = null
 
@@ -65,6 +75,8 @@ export function useChatStream() {
         thinking: thinkingText.value,
         evidence: evidence.value.slice(),
       })
+      // 有正文 = 服务端确实落了库，侧栏该刷新了
+      turnSeq.value += 1
     } else if (!errored) {
       // 一个字都没生成：明确告诉用户，而不是留下一片空白
       appendMessage({
@@ -165,6 +177,9 @@ export function useChatStream() {
         thinking: thinkingText.value,
         evidence: evidence.value.slice(),
       })
+      // 后端在取消路径上也会把已生成的内容落库（见 api/sse_stream.py），
+      // 所以"停止"同样产生一条历史记录，侧栏一样要刷新
+      turnSeq.value += 1
     }
     draftAnswer.value = ''
     liveSteps.value = []
@@ -220,6 +235,7 @@ export function useChatStream() {
     liveSteps,
     thinkingText,
     evidence,
+    turnSeq,
     send,
     stop,
     clear,

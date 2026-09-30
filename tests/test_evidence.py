@@ -213,15 +213,21 @@ def _run_generator(monkeypatch, docs):
 
     monkeypatch.setattr(sse, "_persist_turn", _fake_persist)
 
+    # parent_ids 非空 = "这是一个节点级 run"，与真实 LangGraph 事件同形。
+    # 不能省：根 run（图本身）的 parent_ids 恰好是空的，而两种事件在
+    # sse_stream 里走的分支不同（见 TestReasoningNoDuplicate）。
+    node_parent = ["fake-root-run"]
     events = [
         {
             "event": "on_chain_end",
             "name": "retrieve",
+            "parent_ids": node_parent,
             "data": {"output": {"retrieved_docs": docs}},
         },
         {
             "event": "on_chain_end",
             "name": "chat_agent",
+            "parent_ids": node_parent,
             "data": {"output": {"final_answer": "这是回答", "reasoning_log": []}},
         },
     ]
@@ -383,6 +389,97 @@ class TestPersistTurnEvidence:
         reasoning = json.loads(captured["reasoning"])
         assert len(reasoning["evidence"][0]["content"]) == 801
         assert reasoning["evidence"][0]["content"].endswith("…")
+
+
+# ============================================================
+# 4. 推理步骤不能被重复下发
+# ============================================================
+
+
+def _reasoning_texts(chunks):
+    """从 SSE 文本块里挑出 reasoning 事件的正文。"""
+    out = []
+    for chunk in chunks:
+        payload = json.loads(chunk[len("data: ") :].strip())
+        if payload["type"] == "reasoning":
+            out.append(payload["content"])
+    return out
+
+
+class TestReasoningNoDuplicate:
+    """
+    ``reasoning_log`` 走 ``operator.add`` reducer，节点返回的是**增量**。
+
+    但 LangGraph 除了给每个节点发 ``on_chain_end``，还会给**图本身**再发一次，
+    那一次的 ``output`` 是**累积后的整个 state**（实测：``parent_ids`` 为空），
+    里面的 ``reasoning_log`` 已经包含所有节点写过的条目。
+
+    原实现对任何 ``on_chain_end`` 都迭代 ``output["reasoning_log"]``，
+    于是根 run 把每一步又发了一遍 —— 前端推理面板里条条重复，
+    落库的历史记录同样重复（实测 bug，浏览器测试报告 BUG-01）。
+
+    修复：跳过根 run（``parent_ids`` 为空），只收节点级的增量。
+    """
+
+    def _run(self, monkeypatch, events):
+        import api.sse_stream as sse
+
+        async def _noop():
+            return None
+
+        monkeypatch.setattr(sse, "_persist_turn", lambda **kw: _noop())
+        monkeypatch.setattr(sse, "get_agent_graph", lambda: _FakeGraph(events))
+        return _drain(sse.sse_chat_generator(user_query="你好", owner_id=1))
+
+    def test_root_run_does_not_re_emit_accumulated_log(self, monkeypatch):
+        step_retrieve = "📚 检索到 5 条相关知识"
+        step_done = "✅ 推理完成，生成最终回答"
+        node_parent = ["root-run-id"]
+
+        events = [
+            {
+                "event": "on_chain_end",
+                "name": "retrieve",
+                "parent_ids": node_parent,
+                "data": {"output": {"reasoning_log": [step_retrieve], "retrieved_docs": []}},
+            },
+            {
+                "event": "on_chain_end",
+                "name": "chat_agent",
+                "parent_ids": node_parent,
+                "data": {"output": {"final_answer": "答案", "reasoning_log": [step_done]}},
+            },
+            {
+                # 图本身：output 是累积后的完整 state
+                "event": "on_chain_end",
+                "name": "LangGraph",
+                "parent_ids": [],
+                "data": {
+                    "output": {
+                        "final_answer": "答案",
+                        "retrieved_docs": [],
+                        "reasoning_log": [step_retrieve, step_done],
+                    }
+                },
+            },
+        ]
+
+        texts = _reasoning_texts(self._run(monkeypatch, events))
+
+        assert texts == [step_retrieve, step_done], f"步骤被重复下发: {texts}"
+
+    def test_node_level_logs_still_flow(self, monkeypatch):
+        """反向保护：别为了去重把节点日志一起丢掉（面板会变空）。"""
+        events = [
+            {
+                "event": "on_chain_end",
+                "name": "chat_agent",
+                "parent_ids": ["root-run-id"],
+                "data": {"output": {"final_answer": "答案", "reasoning_log": ["只有一条"]}},
+            }
+        ]
+
+        assert _reasoning_texts(self._run(monkeypatch, events)) == ["只有一条"]
 
 
 if __name__ == "__main__":  # pragma: no cover

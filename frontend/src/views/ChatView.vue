@@ -111,6 +111,9 @@ function send(text) {
   // 新提问时停掉正在朗读的上一条：新旧声音叠在一起听不清，也白烧合成配额
   stopSpeech()
   session.send(content)
+  // 发送后清空输入框。不清的话用户得手动删掉上一条，
+  // 而且发送按钮一直亮着，看起来像"根本没发出去"（实测 bug）。
+  input.value = ''
   stick = true
   scrollToBottom()
 }
@@ -170,7 +173,7 @@ onMounted(() => {
       :active-id="activeConversationId"
       @select="onSelectConversation"
       @delete="pendingDelete = $event"
-      @refresh="loadHistory"
+      @refresh="loadHistory()"
       @new="newChat"
     />
 
