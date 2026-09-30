@@ -171,8 +171,16 @@ done
 ```
 
 再和本地 `frontend/dist/index.html` 引用的文件名对一下：**不一致说明 dist 没同步上去**。
-最彻底的是跑一遍无头浏览器（登录 → 发一条消息 → 断言输入框清空 / 推理步骤无重复 /
-侧栏自动刷新），脚本见 `_voice_tmp/verify_deployed.py`。
+
+最彻底的是跑一遍无头浏览器验收（登录 → 发一条消息 → 断言输入框清空 / 推理步骤无重复 /
+侧栏自动刷新 / 控制台零错误）。凭据走环境变量，不写进仓库：
+
+```bash
+UI_USER=<测试账号> UI_PASSWORD=<密码> python scripts/verify_deployed_ui.py
+```
+
+这条命令值得在每次部署后跑 —— 后端测试再多也测不到"界面是不是真的在按预期动"，
+而前端重构漏掉 `input.value = ''` 那次就是这么漏过去的（见报告 BUG-03）。
 
 ### Deploy pitfalls (learned the hard way on Tencent Cloud)
 
