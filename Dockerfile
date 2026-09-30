@@ -74,6 +74,30 @@ RUN --mount=type=cache,target=/root/.cache/pip \
                 --trusted-host mirrors.cloud.tencent.com \
                 -r requirements.txt
 
+# 评测依赖（ragas）—— **可选**，由构建参数控制。
+#
+# 为什么不并进 requirements.txt：ragas 会拖进 pandas + pyarrow + datasets，
+# 实测给镜像加 **167MB**（pandas 75MB + pyarrow 84MB 是大头），而它只在"跑评测"
+# 时才用得到。不装时应用照常运行，评测会明确报「依赖未安装（ragas）」而不是
+# 悄悄少几个指标。
+#
+# 为什么不干脆不装：装不上 ragas 的话，防幻觉那套就**没有可量化的数字** ——
+# 而"能证明自己没在编"正是这个项目对外最硬的卖点。
+#
+# **回退开关**（服务器扛不住时的退路）：
+#     INSTALL_EVAL_DEPS=false docker compose up -d --build app
+# 关掉后镜像回到不含 ragas 的状态，其余功能一律不受影响。
+ARG INSTALL_EVAL_DEPS=true
+COPY requirements-eval.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if [ "$INSTALL_EVAL_DEPS" = "true" ]; then \
+      pip install -i https://mirrors.cloud.tencent.com/pypi/simple/ \
+                  --trusted-host mirrors.cloud.tencent.com \
+                  -r requirements-eval.txt; \
+    else \
+      echo "跳过评测依赖（INSTALL_EVAL_DEPS=false）：评测页会提示「依赖未安装」"; \
+    fi
+
 # 复制后端代码（目录级 COPY，新增文件自动包含）
 COPY main.py ./
 COPY config/ ./config/

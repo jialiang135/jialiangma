@@ -201,6 +201,15 @@ Full rationale in **[docs/DEPLOY.md](docs/DEPLOY.md)**; the short version:
    `ragas` lives in `requirements-eval.txt` (its `instructor` needs `jiter<0.15`, deadlock with `openai`'s `>=0.16`).
 6. **`config/.env` is maintained on the server only** (real keys, server-specific). The **JWT secret is
    regenerated on deploy and differs from local**; think about `ALLOW_REGISTRATION` before exposing publicly.
+7. **评测依赖（ragas）默认装进镜像，可以关掉当退路**。它给镜像加 **+167MB**（pandas 75 + pyarrow 84 是大头），
+   但没有它评测页的四个 RAGAS 指标全都算不出来（"防幻觉"就没数字）。服务器扛不住时：
+   ```bash
+   INSTALL_EVAL_DEPS=false docker compose up -d --build app   # 回到不含 ragas 的镜像
+   ```
+   开关在 `Dockerfile`（`ARG INSTALL_EVAL_DEPS`）与 `docker-compose.yml` 的 `build.args`。
+8. **重建 app 后如果 nginx 502，先重启 nginx**：上游 `app` 的 IP 变了，而 nginx 启动时
+   只解析一次。`nginx.conf` 已改成 `resolver 127.0.0.11` + `server app:7863 resolve` 动态解析，
+   正常不该再发生；真发生时 `docker compose restart nginx` 即可。
 
 ### Important notes
 

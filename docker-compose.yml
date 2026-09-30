@@ -15,6 +15,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # 评测依赖（ragas，约 +167MB）默认装上 —— 没有它，"防幻觉"就没有可量化的
+        # 数字。服务器扛不住时的回退开关：
+        #     INSTALL_EVAL_DEPS=false docker compose up -d --build app
+        INSTALL_EVAL_DEPS: ${INSTALL_EVAL_DEPS:-true}
     container_name: personal-agent
     expose:
       - "7863"
