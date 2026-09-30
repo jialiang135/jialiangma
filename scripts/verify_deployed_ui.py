@@ -53,6 +53,11 @@ async def _check_kb_preview(page, ok: bool) -> bool:
     await page.goto(f"{BASE_URL}/knowledge", wait_until="networkidle")
     await page.wait_for_timeout(1200)
 
+    # 兜底：万一还有弹层（使用指南/确认框）盖着，先关掉再点
+    if await page.locator(".ui-modal-close").count():
+        await page.locator(".ui-modal-close").first.click()
+        await page.wait_for_timeout(400)
+
     view_buttons = page.locator("button", has_text="查看")
     count = await view_buttons.count()
     if count == 0:
@@ -133,6 +138,10 @@ async def main() -> int:
         await page.click('button[type="submit"]')
         await page.wait_for_url("**/chat", timeout=25000)
         await page.wait_for_selector(".composer-input", timeout=15000)
+        # 每次跑都是全新浏览器上下文，等于"首次登录" —— 而首次登录会自动弹
+        # 使用指南；之后任何**整页跳转**（App 重新挂载）都会让它盖住页面，
+        # 后续点击全部被遮罩拦下。这里直接置位，等价于"用户已看过并关掉"。
+        await page.evaluate("localStorage.setItem('guide_seen', '1')")
         print(f"[OK]   登录成功 → {page.url}")
 
         # 发送前的侧栏条目数 + 线上 HTML 引用的资源能不能取到（白屏排查）
