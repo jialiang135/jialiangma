@@ -93,8 +93,39 @@ def pytest_configure(config):
     _guard("upload_dir", settings.upload_dir)
 
 
+def _clear_lazy_state() -> None:
+    """
+    把所有**惰性缓存**一次清干净：向量库、Agent 图、检索缓存、BM25 索引。
+
+    这些缓存各自住在拥有它的模块里（vector_store.py / graph_workflow.py /
+    search_cache.py / bm25_search.py）—— 放置本身是对的，不该为了"统一"把它们
+    搬到一个中心对象里（那要么让 config 反过来 import rag/agent 成环，要么引入
+    一个"谁先 import 谁注册"的隐式登记机制）。
+
+    真正的问题是**"一次清干净"这件事散在测试里**：每个用例得自己记得该调哪个
+    ``reset_*``，漏一个就串味。所以收敛到这个函数，供夹具调用。
+    """
+    from agent.graph_workflow import reset_agent_graph
+    from rag.bm25_search import invalidate_bm25_cache
+    from rag.search_cache import clear_cache
+    from rag.vector_store import reset_vector_store
+
+    reset_vector_store()
+    reset_agent_graph()
+    clear_cache()
+    invalidate_bm25_cache()
+
+
 @pytest.fixture
-def app_context():
+def reset_lazy_state():
+    """用例前后各清一次惰性缓存（需要"干净起点"的用例显式声明）。"""
+    _clear_lazy_state()
+    yield
+    _clear_lazy_state()
+
+
+@pytest.fixture
+def app_context(reset_lazy_state):
     """
     替换外部模型接缝（对话 / Embedding / Rerank），收尾自动复位。
 
@@ -107,8 +138,9 @@ def app_context():
             app_context.chat = FakeChat(llm)
             app_context.embed = FakeEmbed(dim=64)
 
-    注意：向量库会把 Embedding 客户端**缓存在单例里**，所以换了 embed 之后
-    还要 `rag.vector_store.reset_vector_store()`，否则旧的还在用。
+    它**顺带**清了惰性缓存（依赖 `reset_lazy_state`），因为向量库会把
+    Embedding 客户端缓存在单例里 —— 只换 provider 不重置，用到的还是旧实例。
+    这个坑原来得每个用例自己记得绕。
     """
     from config.context import get_context
 
