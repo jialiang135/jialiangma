@@ -258,8 +258,72 @@ class TestTextSplitter:
         assert len(chunks) <= 5  # 去重后应显著减少
 
 
+class _FakeEmbeddings:
+    """
+    不调 API 的假 embedding —— 专供向量库 CRUD 用例。
+
+    **为什么需要它（这是 CI 长期红的真正原因）**：
+    这个用例测的是**向量库的增删查统计**，不是 DashScope 的 embedding 接口。
+    但它原来直接调真 API，于是 **CI 里没有 API key（仓库不配 secrets）就必然
+    401 失败** —— 每次 push 都红，而红的原因跟被测代码毫无关系。
+    这是**测试的问题，不是 CI 的问题**。
+
+    为什么用**字符频率向量**而不是随机向量：
+    随机向量下"最相似"是任意的，用例里
+    ``assert "Python" in results[0]["content"]`` 就变成掷骰子。
+    字符频率向量让**共享字符多的文本距离更近**，最近邻才符合直觉，
+    这条断言才有意义。
+    """
+
+    _DIM = 64
+
+    def _vec(self, text: str) -> list[float]:
+        v = [0.0] * self._DIM
+        for ch in text:
+            v[ord(ch) % self._DIM] += 1.0
+        return v
+
+    def embed_documents(self, texts):
+        return [self._vec(t) for t in texts]
+
+    def embed_query(self, text):
+        return self._vec(text)
+
+
+@pytest.fixture
+def fake_embeddings(monkeypatch):
+    """
+    把向量库的 embedding 换成假实现，并**重置懒加载单例**。
+
+    两步缺一不可：``get_vector_store()`` 是缓存的单例，只改函数不重置缓存，
+    用到的还是**上次已经建好的、绑着真 embedding 的那个实例**。
+    """
+    import rag.vector_store as vs
+
+    monkeypatch.setattr(vs, "get_dashscope_embeddings", lambda: _FakeEmbeddings())
+    vs.reset_vector_store()
+    yield
+    # 关键：用完必须清掉，否则后面用到向量库的用例会继承这个假 embedding
+    vs.reset_vector_store()
+
+
 class TestVectorStore:
-    def test_crud(self):
+    """
+    向量库 CRUD。**分两层跑**：
+
+    - ``test_crud``（快，CI 每次都跑）：用假 embedding，测**向量库自己的逻辑**
+      （入库 / 检索 / 统计 / 删除 / metadata）。不碰 API，所以 CI 不需要 key。
+    - ``test_crud_with_real_embeddings``（``slow``，默认跳过）：**真的调
+      DashScope**，测完整链路。需要 key，且**每次会烧一点额度**，
+      所以不放进每次 push 的 CI —— 本地或按需触发。
+
+    为什么必须分两层：合成一层会有两个都不能接受的后果 ——
+    要么 CI 因为没有 key 永远红（原来就是这样），要么把 key 放进 CI
+    让每次 push 都烧额度。**"要测就真测"和"CI 不能依赖外部服务"是可以
+    同时满足的，代价就是分成两个用例。**
+    """
+
+    def test_crud(self, fake_embeddings):
         from rag.vector_store import (
             add_documents,
             delete_all_by_owner,
@@ -287,6 +351,43 @@ class TestVectorStore:
         count = delete_by_file("test.txt", owner)
         assert count >= 2
         # 清理
+        delete_all_by_owner(owner)
+
+    @pytest.mark.slow
+    def test_crud_with_real_embeddings(self):
+        """
+        **真实的完整链路**：DashScope embedding → Chroma → 检索。
+
+        与上面的快测刻意保持同一套断言，差别只有一个 —— 用真 embedding。
+        这样两条路径的**行为差异**才可比：如果只在上面的快测里有断言，
+        真链路就没被"同一把尺子"量过。
+
+        跑法：``pytest tests/test_all.py -m slow``（默认会被 addopts 跳过）
+        """
+        from rag.vector_store import (
+            add_documents,
+            delete_all_by_owner,
+            delete_by_file,
+            get_collection_stats,
+            search_by_owner,
+        )
+
+        owner = 998
+        delete_all_by_owner(owner)
+        chunks = ["Python 是一种编程语言", "LangGraph 是多 Agent 框架"]
+        metas = [{"owner_id": owner, "source": "test_real.txt", "chunk_idx": i} for i in range(2)]
+        ids = add_documents(chunks, metas)
+        assert len(ids) == 2
+
+        results = search_by_owner("Python 编程", owner, top_k=2)
+        assert len(results) > 0
+        assert "Python" in results[0]["content"]
+
+        stats = get_collection_stats(owner)
+        assert stats["total_chunks"] >= 2
+
+        count = delete_by_file("test_real.txt", owner)
+        assert count >= 2
         delete_all_by_owner(owner)
 
 
