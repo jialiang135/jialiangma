@@ -11,7 +11,7 @@ Embedding 向量化 → ChromaDB 语义检索（owner_id 过滤）
 
     retrieve(use_hybrid=True) ──→ hybrid_search() ──┐
     retrieve(use_hybrid=False) ─→ search_by_owner() ─┤
-                                                     ├──→ rerank_with_dashscope() → result
+                                                     ├──→ embed.rerank() ──→ result
     retrieve(use_cache=True) ────→ TTLCache ────────┘
 
 上游（Agent / API）应当这样用 ``retrieve()`` 的返回：**先看 ``error``，再看
@@ -40,7 +40,8 @@ Embedding 向量化 → ChromaDB 语义检索（owner_id 过滤）
 
 from loguru import logger
 
-from config.settings import rerank_with_dashscope, settings
+from config.context import get_context
+from config.settings import settings
 from rag.vector_store import search_by_owner
 
 
@@ -217,7 +218,7 @@ def _retrieve_impl(
 
     # ── Step 2: Rerank 重排 ──
     documents_text = [r["content"] for r in raw_results]
-    reranked = rerank_with_dashscope(query, documents_text, top_n=top_k_rerank)
+    reranked = get_context().embed.rerank(query, documents_text, top_n=top_k_rerank)
 
     # 降级标记：rerank 失败时每项带 degraded=True 且 score=None（不再伪造 1.0）。
     # 用 any() 而非全部判断：理论上不会只降级一半，但 any 更宽容。

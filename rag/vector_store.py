@@ -17,7 +17,8 @@ from chromadb.config import Settings as ChromaSettings
 from langchain_chroma import Chroma
 from loguru import logger
 
-from config.settings import get_dashscope_embeddings, settings
+from config.context import get_context
+from config.settings import settings
 
 COLLECTION_NAME = "knowledge_base"
 
@@ -56,7 +57,7 @@ def get_vector_store() -> Chroma:
     global _vector_store
     if _vector_store is None:
         client = _get_chroma_client()
-        embeddings = get_dashscope_embeddings()
+        embeddings = get_context().embed.embeddings()
         _vector_store = Chroma(
             client=client,
             collection_name=COLLECTION_NAME,

@@ -451,8 +451,24 @@ def _patch_ragas(monkeypatch, scores=None, raise_error=False) -> dict:
     }
     monkeypatch.setattr(eval_runner, "_load_ragas", lambda: fake)
     # 判定用的 LLM / Embedding 构造也换掉，避免真实客户端初始化
-    monkeypatch.setattr("config.settings.get_deepseek_llm", lambda **kwargs: object())
-    monkeypatch.setattr("config.settings.get_dashscope_embeddings", lambda: object())
+    from config.context import get_context
+
+    class _StubChat:
+        def chat_model(self, **_kw):
+            return object()
+
+        async def aclose(self):
+            return None
+
+    class _StubEmbed:
+        def embeddings(self):
+            return object()
+
+        def rerank(self, _query, _documents, _top_n=5):
+            return []
+
+    monkeypatch.setattr(get_context(), "chat", _StubChat())
+    monkeypatch.setattr(get_context(), "embed", _StubEmbed())
     return capture
 
 

@@ -16,6 +16,8 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 # 允许使用仓库内置的默认密钥/口令：CI 与本地测试环境都没有 .env 的真实值，
 # 而 config.settings 在导入时会做安全检查并拒绝以默认值启动。
 os.environ.setdefault("ALLOW_INSECURE_DEFAULTS", "true")
@@ -89,3 +91,30 @@ def pytest_configure(config):
     _guard("db_path", settings.db_path)
     _guard("chroma_persist_dir", settings.chroma_persist_dir)
     _guard("upload_dir", settings.upload_dir)
+
+
+@pytest.fixture
+def app_context():
+    """
+    替换外部模型接缝（对话 / Embedding / Rerank），收尾自动复位。
+
+    这是**唯一**的替换点。改造前测试有 3 种打法（打消费者的绑定名、
+    打 `config.settings.xxx` 源头、打模块名），改一处实现要跟着改一票测试；
+    现在直接改属性即可 —— 消费方每次都从 `get_context()` 现取。
+
+    用法：
+        def test_x(app_context):
+            app_context.chat = FakeChat(llm)
+            app_context.embed = FakeEmbed(dim=64)
+
+    注意：向量库会把 Embedding 客户端**缓存在单例里**，所以换了 embed 之后
+    还要 `rag.vector_store.reset_vector_store()`，否则旧的还在用。
+    """
+    from config.context import get_context
+
+    ctx = get_context()
+    saved = (ctx.chat, ctx.embed)
+    try:
+        yield ctx
+    finally:
+        ctx.chat, ctx.embed = saved

@@ -22,6 +22,20 @@ import inspect
 
 import pytest
 
+
+def _ctx_embed():
+    """
+    当前上下文里的 Embedding provider **实例**。
+
+    补丁只打在它的 ``rerank`` 上，``embeddings()`` 仍走真实实现 —— 这些用例
+    只想控制"重排结果"，不想连向量化也一起假掉。
+    （改造前是 `monkeypatch.setattr(retriever, "rerank_with_dashscope", ...)`。）
+    """
+    from config.context import get_context
+
+    return get_context().embed
+
+
 # ============================================================
 # 工具
 # ============================================================
@@ -32,7 +46,7 @@ def _patch(monkeypatch, raw_results, rerank_items):
     import rag.retriever as retriever
 
     monkeypatch.setattr(retriever, "search_by_owner", lambda *a, **k: raw_results)
-    monkeypatch.setattr(retriever, "rerank_with_dashscope", lambda *a, **k: rerank_items)
+    monkeypatch.setattr(_ctx_embed(), "rerank", lambda *a, **k: rerank_items)
     return retriever
 
 
@@ -173,8 +187,8 @@ class TestRerankDegraded:
         assert result["degraded"] is True
 
     def test_degraded_rerank_helper_never_writes_one(self):
-        """真正跑一遍 settings 里的降级构造函数：score 必须是 None，不是 1.0。"""
-        from config.settings import _degraded_rerank
+        """真正跑一遍 providers 里的降级构造函数：score 必须是 None，不是 1.0。"""
+        from config.providers import _degraded_rerank
 
         out = _degraded_rerank(["a", "b", "c", "d"], top_n=3)
         assert [item["index"] for item in out] == [0, 1, 2]  # 保留输入顺序、截断到 top_n
@@ -183,9 +197,9 @@ class TestRerankDegraded:
         assert all(item["score"] != 1.0 for item in out)
 
     def test_real_rerank_call_failure_degrades(self, monkeypatch):
-        """mock dashscope 的 rerank 调用抛错，走真实 rerank_with_dashscope 的降级分支。"""
+        """mock dashscope 的 rerank 调用抛错，走真实 provider.rerank 的降级分支。"""
         dashscope = pytest.importorskip("dashscope")
-        from config.settings import rerank_with_dashscope
+        from config.context import get_context
 
         class _Boom:
             @staticmethod
@@ -193,7 +207,7 @@ class TestRerankDegraded:
                 raise RuntimeError("rerank service down")
 
         monkeypatch.setattr(dashscope, "TextReRank", _Boom)
-        out = rerank_with_dashscope("q", ["a", "b"], top_n=5)
+        out = get_context().embed.rerank("q", ["a", "b"], top_n=5)
 
         assert all(item["score"] is None for item in out)
         assert all(item["degraded"] is True for item in out)

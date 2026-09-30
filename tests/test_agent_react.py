@@ -65,8 +65,16 @@ class _FakeTool:
 
 def _patch_llm(monkeypatch, llm):
     import agent.chat_agent as ca
+    from config.context import get_context
 
-    monkeypatch.setattr(ca, "get_deepseek_llm", lambda **kw: llm)
+    class _FakeChat:
+        def chat_model(self, **_kw):
+            return llm
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(get_context(), "chat", _FakeChat())
     monkeypatch.setattr(ca, "llm_circuit_breaker", _DirectBreaker())
 
 

@@ -286,135 +286,16 @@ validate_security_settings()
 
 
 # ========================================
-# 模型客户端封装
+# 模型客户端 → 见 config/providers.py
 # ========================================
-
-# LLM 客户端缓存。
-# 必须缓存：ChatDeepSeek 内部持有一个 httpx 异步客户端，而原实现每次调用都
-# 新建一个 —— 每个对话请求都会新建客户端且从不关闭，既是连接/内存泄漏，
-# 退出时还会抛出 "Event loop is closed" 的未处理异常（close 发生在循环关闭后）。
-_llm_cache: dict[tuple, object] = {}
-
-
-def get_deepseek_llm(temperature: float = 0.3, streaming: bool = True):
-    """
-    获取 DeepSeek 大模型客户端（按参数缓存，同一进程内复用）。
-
-    注意 ``max_tokens`` 对推理模型是"思考 + 答案"的共享预算，详见
-    ``llm_max_tokens`` 的说明。
-    """
-    key = (temperature, streaming)
-    cached = _llm_cache.get(key)
-    if cached is None:
-        from langchain_deepseek import ChatDeepSeek
-
-        cached = ChatDeepSeek(
-            model=settings.deepseek_model,
-            api_key=settings.deepseek_api_key,
-            api_base=settings.deepseek_base_url,
-            temperature=temperature,
-            streaming=streaming,
-            max_tokens=settings.llm_max_tokens,
-        )
-        _llm_cache[key] = cached
-    return cached
-
-
-async def close_llm_clients() -> None:
-    """
-    关闭缓存的 LLM 客户端（应用退出时调用）。
-
-    不显式关闭的话，httpx 客户端会在事件循环关闭后才被回收，
-    从而抛出 "Task exception was never retrieved: Event loop is closed"。
-    """
-    for llm in list(_llm_cache.values()):
-        for attr in ("root_async_client", "async_client", "root_client", "client"):
-            client = getattr(llm, attr, None)
-            if client is None or not hasattr(client, "close"):
-                continue
-            try:
-                result = client.close()
-                if hasattr(result, "__await__"):
-                    await result
-            except Exception as e:
-                logger.debug("关闭 LLM 客户端 {} 失败: {}", attr, e)
-    _llm_cache.clear()
-
-
-def get_dashscope_embeddings():
-    """
-    获取阿里云 DashScope Embedding 客户端。
-
-    实现放在 core/embeddings.py（自研，不再依赖 langchain-community）：
-    该包在全项目只被用到这一个类，却要拖入整个 legacy 包及其 langchain-classic 依赖。
-    """
-    from core.embeddings import DashScopeEmbeddings
-
-    return DashScopeEmbeddings(
-        model=settings.embedding_model,
-        api_key=settings.dashscope_api_key,
-    )
-
-
-def rerank_with_dashscope(query: str, documents: list[str], top_n: int = 5) -> list[dict]:
-    """
-    使用阿里云 DashScope rerank API 对检索结果重排。
-
-    Returns:
-        ``[{"index": int, "score": float | None, "text": str, "degraded": bool}, ...]``
-
-        - 正常：``score`` 是真实的 ``relevance_score``（0~1），``degraded`` 为 False。
-        - 降级（API 返回异常 / 调用抛错）：保留输入顺序，但 ``score`` 为 ``None``
-          （明确表示"未评分"），``degraded`` 为 True。
-    """
-    import dashscope
-
-    if not documents:
-        return []
-
-    try:
-        result = dashscope.TextReRank.call(
-            api_key=settings.dashscope_api_key,
-            model=settings.rerank_model,
-            query=query,
-            documents=documents,
-            top_n=min(top_n, len(documents)),
-            return_documents=True,
-        )
-        if result.status_code == 200 and result.output:
-            return [
-                {
-                    "index": item["index"],
-                    "score": item["relevance_score"],
-                    "text": item["document"]
-                    if isinstance(item["document"], str)
-                    else item["document"]["text"],
-                    "degraded": False,
-                }
-                for item in result.output["results"]
-            ]
-        else:
-            logger.warning(f"Rerank API 返回异常: {result.status_code} - {result.message}")
-            return _degraded_rerank(documents, top_n)
-    except Exception as e:
-        logger.error(f"Rerank API 调用失败: {e}")
-        return _degraded_rerank(documents, top_n)
-
-
-def _degraded_rerank(documents: list[str], top_n: int) -> list[dict]:
-    """
-    rerank 不可用时的降级结果。
-
-    保留输入顺序（该顺序来自"混合检索的 RRF 序"或"纯向量的距离升序"，
-    两者都是合理的排序 —— **问题从来不在顺序，而在分数语义**），
-    但 ``score`` 一律为 ``None``，明确表示"这次没有真正评分"。
-
-    为什么不能再填 ``1.0``（原实现的做法）：那个假分数会被拼进上下文、
-    显示成"相关度: 1.0000"，既误导 LLM 与用户，又让相关性阈值过滤彻底失效
-    （假 1.0 永远高于阈值，什么都拦不住）。``None`` 让上层能如实说"分数未知"，
-    并让阈值过滤在降级时**跳过**而不是被假分数骗过。
-    """
-    return [
-        {"index": i, "score": None, "text": doc, "degraded": True}
-        for i, doc in enumerate(documents[:top_n])
-    ]
+#
+# 这里原来放着四个工厂（get_deepseek_llm / close_llm_clients /
+# get_dashscope_embeddings / rerank_with_dashscope），已经搬走：
+#
+#   能力定义  config/ports.py      —— Protocol，说明"需要什么"
+#   具体实现  config/providers.py  —— DeepSeek / DashScope
+#   装配      config/context.py    —— 唯一的取用点 get_context()
+#
+# 搬走的理由：本模块原本同时管三件事（配置、模块级副作用、模型客户端工厂），
+# 423 行；而且调用方直接依赖**具体工厂**，导致测试替换实现有三种不同打法、
+# 换 provider 要改所有调用点、一个进程跑不了两套配置。

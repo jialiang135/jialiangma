@@ -16,7 +16,7 @@ from agent.tools import (
     search_knowledge_base,
     verify_answer_against_kb,
 )
-from config.settings import get_deepseek_llm
+from config.context import get_context
 from core.circuit_breaker import CircuitOpenError, llm_circuit_breaker
 from core.kb_access import resolve_kb_owner
 from core.telemetry import span
@@ -165,7 +165,7 @@ async def chat_agent_node(state: AgentState) -> dict:
         state.get("iteration_count", 0),
     )
 
-    llm = get_deepseek_llm(temperature=0.3, streaming=True)
+    llm = get_context().chat.chat_model(temperature=0.3, streaming=True)
     llm_with_tools = llm.bind_tools(CHAT_TOOLS)
 
     messages = await build_chat_messages(state)

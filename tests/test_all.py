@@ -101,16 +101,17 @@ class TestConfig:
         assert str(PROJECT_ROOT) in str(p)
 
     def test_get_llm(self):
-        from config.settings import get_deepseek_llm, settings
+        from config.context import get_context
+        from config.settings import settings
 
-        llm = get_deepseek_llm(temperature=0.0, streaming=False)
+        llm = get_context().chat.chat_model(temperature=0.0, streaming=False)
         assert llm.model_name == settings.deepseek_model
         assert llm.temperature == 0.0
 
     def test_get_embeddings(self):
-        from config.settings import get_dashscope_embeddings
+        from config.context import get_context
 
-        emb = get_dashscope_embeddings()
+        emb = get_context().embed.embeddings()
         assert emb.model == "text-embedding-v4"
 
 
@@ -301,8 +302,16 @@ def fake_embeddings(monkeypatch):
     用到的还是**上次已经建好的、绑着真 embedding 的那个实例**。
     """
     import rag.vector_store as vs
+    from config.context import get_context
 
-    monkeypatch.setattr(vs, "get_dashscope_embeddings", lambda: _FakeEmbeddings())
+    class _FakeEmbedProvider:
+        def embeddings(self):
+            return _FakeEmbeddings()
+
+        def rerank(self, _query, _documents, _top_n=5):
+            return []
+
+    monkeypatch.setattr(get_context(), "embed", _FakeEmbedProvider())
     vs.reset_vector_store()
     yield
     # 关键：用完必须清掉，否则后面用到向量库的用例会继承这个假 embedding

@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
 
     # 记录主事件循环：APScheduler 的后台线程需要把异步 DB 操作提交回来执行
-    from config.settings import close_llm_clients
+    from config.context import get_context
     from core.db.engine import bind_main_loop, dispose_engine
     from core.telemetry import setup_telemetry
 
@@ -100,7 +100,7 @@ async def lifespan(app: FastAPI):
     async_queue.shutdown(wait=False)
     # 先关 LLM 的 HTTP 客户端，再释放数据库引擎：
     # 顺序反了的话 httpx 会在事件循环关闭后才被回收，冒出未处理异常
-    await close_llm_clients()
+    await get_context().chat.aclose()
     await dispose_engine()
 
     # flush 未发送的 span（放最后，保证前面的关闭动作也能被追踪到）

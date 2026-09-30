@@ -647,12 +647,12 @@ def run_eval_task(
                 rag_error = "所有题目的检索结果均为空，没有可判定的样本，RAGAS 指标未计算"
             else:
                 rag = _load_ragas()
-                from config.settings import get_dashscope_embeddings, get_deepseek_llm
+                from config.context import get_context
 
                 judge_llm = rag["LangchainLLMWrapper"](
-                    get_deepseek_llm(temperature=0.0, streaming=False)
+                    get_context().chat.chat_model(temperature=0.0, streaming=False)
                 )
-                judge_emb = rag["LangchainEmbeddingsWrapper"](get_dashscope_embeddings())
+                judge_emb = rag["LangchainEmbeddingsWrapper"](get_context().embed.embeddings())
 
                 selected = [rag["metrics"][m] for m in metrics if m in rag["metrics"]]
                 if not selected:

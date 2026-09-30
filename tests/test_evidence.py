@@ -20,6 +20,20 @@ import json
 
 import pytest
 
+
+def _ctx_embed():
+    """
+    当前上下文里的 Embedding provider **实例**。
+
+    补丁只打在它的 ``rerank`` 上，``embeddings()`` 仍走真实实现 —— 这些用例
+    只想控制"重排结果"，不想连向量化也一起假掉。
+    （改造前是 `monkeypatch.setattr(retriever, "rerank_with_dashscope", ...)`。）
+    """
+    from config.context import get_context
+
+    return get_context().embed
+
+
 # ============================================================
 # 1. retriever 组装
 # ============================================================
@@ -38,7 +52,7 @@ class TestRetrieverCarriesChunkIdx:
             ]
 
         monkeypatch.setattr(retriever, "search_by_owner", lambda *a, **k: raw_results)
-        monkeypatch.setattr(retriever, "rerank_with_dashscope", fake_rerank)
+        monkeypatch.setattr(_ctx_embed(), "rerank", fake_rerank)
         return retriever
 
     def test_backward_compatible_and_carries_new_fields(self, monkeypatch):
