@@ -169,10 +169,18 @@ class TestRebuildStatusSummary:
 
 class TestRebuildReportLoop:
     def _patch_common(self, monkeypatch, files, outcomes, add_documents=None):
+        import pathlib
+
         import core.kb_tasks as kb
         import rag.document_loader as dl
         import rag.text_splitter as ts
         import rag.vector_store as vs
+
+        # 让记录里的文件**真实存在**：重建现在有预检（文件找不到就中止、不动旧
+        # 索引，见 TestRebuildPreflight）。这些用例要验的是"分类逻辑"，所以先
+        # 过预检。注意：它们**不能**再靠"路径不存在也照常重建"这个旧行为。
+        for record in files:
+            pathlib.Path(record["filepath"]).touch()
 
         monkeypatch.setattr(kb, "get_files_by_owner", lambda owner_id: files)
         monkeypatch.setattr(kb, "update_file_chunk_count", lambda *a, **k: None)
@@ -539,3 +547,88 @@ class TestTelemetryExportPolicy:
 
         assert t.setup_telemetry() is True
         assert t._export_mode != "none"
+
+
+# ============================================================
+# 2. 重建预检：文件找不到时，不许先删旧索引
+# ============================================================
+
+
+class TestRebuildPreflight:
+    """
+    重建是"先删后建"，而删除不可逆 —— 所以必须在删之前确认文件都读得到。
+
+    实测事故：14 条文件记录里 9 条的 ``filepath`` 指向**另一个机器上的绝对路径**
+    （数据库是从开发机整体搬过来的），而重建不预检：旧索引被清掉后只建回 5 个
+    文件，289 块剩 164 块。任务状态只是个 "partial"，不细看根本发现不了。
+
+    这个用例盯住"不许先删"，它比"重建成功"重要得多。
+    """
+
+    def _setup(self, monkeypatch, tmp_path, *, exists: bool):
+        """替换重建函数的外部依赖，返回 (kb_tasks, 被要求删除的 owner 列表)。"""
+        import asyncio
+
+        import core.kb_tasks as kt
+        import rag.vector_store as vs
+
+        path = tmp_path / "kb.md"
+        if exists:
+            path.write_text("内容", encoding="utf-8")
+
+        async def _fake_get_files(_owner_id):
+            return [{"id": 1, "filename": "kb.md", "filepath": str(path)}]
+
+        monkeypatch.setattr(kt, "get_files_by_owner", _fake_get_files)
+        monkeypatch.setattr(kt, "run_async_from_thread", asyncio.run)
+
+        deleted: list[int] = []
+        monkeypatch.setattr(vs, "delete_all_by_owner", lambda oid: deleted.append(oid) or 0)
+        monkeypatch.setattr(vs, "reset_vector_store", lambda: None)
+        return kt, deleted
+
+    def test_missing_file_aborts_and_leaves_index_alone(self, monkeypatch, tmp_path):
+        kt, deleted = self._setup(monkeypatch, tmp_path, exists=False)
+
+        report = kt._rebuild_knowledge_base_report(1)
+
+        assert report.get("aborted") is True
+        assert report["total_chunks"] == 0
+        assert deleted == [], "源文件找不到时绝不能先删旧索引 —— 删除不可逆"
+
+        status, error = kt._summarize_rebuild(report)
+        assert status == "failed"
+        assert "已中止" in error and "未改动" in error, error
+        assert "kb.md" in error, f"失败原因里必须点名是哪个文件: {error}"
+
+    def test_all_files_present_still_rebuilds(self, monkeypatch, tmp_path):
+        """反向保护：别把预检做成一票否决 —— 文件都在时必须照常删除并重建。"""
+        import types
+
+        import core.kb_tasks as kt
+        import rag.document_loader as dl
+        import rag.vector_store as vs
+
+        kt2, deleted = self._setup(monkeypatch, tmp_path, exists=True)
+
+        monkeypatch.setattr(
+            dl,
+            "load_document_detailed",
+            lambda *a, **k: types.SimpleNamespace(status="ok"),
+        )
+        monkeypatch.setattr(
+            kt2, "_split_loaded_document", lambda outcome, semantic: [{"content": "内容"}]
+        )
+        monkeypatch.setattr(kt2, "_chunk_metadatas", lambda chunks, *a: [{"owner_id": 1}])
+        monkeypatch.setattr(vs, "add_documents", lambda chunks, metas: ["id"])
+
+        async def _noop(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(kt2, "update_file_chunk_count", _noop)
+
+        report = kt2._rebuild_knowledge_base_report(1)
+
+        assert not report.get("aborted"), "文件都在却中止了，预检写得太严"
+        assert deleted == [1], "文件都在时必须照常清旧索引，否则会留下重复内容"
+        assert report["succeeded_files"] == 1

@@ -314,6 +314,15 @@ def _summarize_rebuild(report: dict) -> tuple[str, str]:
     failed_files = report["failed_files"]
     empty_files = report["empty_files"]
 
+    # 预检没过 → 中止，**未动旧索引**。这与"跑到一半失败"是两回事，必须说清楚：
+    # 前者知识库还是完整的，后者可能已经残缺。
+    if report.get("aborted"):
+        return REBUILD_STATUS_FAILED, (
+            f"重建已中止（现有索引未改动）：{total_files} 个文件中有 "
+            f"{len(failed_files)} 个源文件在磁盘上找不到。"
+            f"{_format_file_problems(failed_files, [])}"
+        )[:1000]
+
     if total_files == 0:
         return REBUILD_STATUS_DONE, ""
 
@@ -344,11 +353,45 @@ def _rebuild_knowledge_base_report(owner_id: int) -> dict:
     from rag.document_loader import load_document_detailed
     from rag.vector_store import add_documents, delete_all_by_owner, reset_vector_store
 
-    delete_all_by_owner(owner_id)
-    reset_vector_store()
-
     files = run_async_from_thread(get_files_by_owner(owner_id))
     upload_dir = str(settings.resolve_path(settings.upload_dir))
+
+    # ── 预检：文件必须都能找到，才允许动旧索引 ──
+    #
+    # 重建是**先删后建**，而删除不可逆。若不预检，一旦有文件读不到，重建会把
+    # 知识库留成**残缺**状态。实测踩过：14 条文件记录里有 9 条的 filepath 指向
+    # 另一个机器上的绝对路径（数据库是从开发机整体搬过来的），于是重建完只剩
+    # 5 个文件 / 164 块，原有的 289 块全没了 —— 数据静默损失，而任务状态只是
+    # 一个 "partial"，不细看根本发现不了。
+    #
+    # 为什么只查"存在性"、不整个解析一遍：解析要跑 PDF/OCR，代价与重建本身相当，
+    # 等于白做一遍。而"路径不对/文件被删"是这一层唯一能廉价拦住的失效，也正是
+    # 实际发生的那个。解析层面的失败仍由下面的失败清单如实报告。
+    missing = [f for f in files if not os.path.isfile(f["filepath"])]
+    if missing:
+        logger.error(
+            "[KB] 重建中止：{}/{} 个文件的源文件不存在，现有索引未改动",
+            len(missing),
+            len(files),
+        )
+        return {
+            "total_chunks": 0,
+            "total_files": len(files),
+            "succeeded_files": 0,
+            "failed_files": [
+                {
+                    "filename": f["filename"],
+                    "reason": "file_missing",
+                    "detail": f"源文件不存在，已中止重建（现有索引未改动）: {f['filepath']}",
+                }
+                for f in missing
+            ],
+            "empty_files": [],
+            "aborted": True,
+        }
+
+    delete_all_by_owner(owner_id)
+    reset_vector_store()
 
     total_chunks = 0
     succeeded = 0
