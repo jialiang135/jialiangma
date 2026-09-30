@@ -107,10 +107,10 @@ onMounted(loadRules)
     <section class="auth-brand">
       <div class="brand-top">
         <span class="brand-mark"><UiIcon name="layers" :size="20" /></span>
-        <span class="brand-name">个人数字分身</span>
+        <span class="brand-name">私人知识库</span>
       </div>
 
-      <h1 class="brand-title">AI 面试助手</h1>
+      <h1 class="brand-title">个人数字分身</h1>
       <p class="brand-desc">
         把自己的简历、项目文档、技术笔记喂进私有知识库，
         让 AI 以本人的身份回答问题 —— 并且<strong>句句有据可查</strong>。

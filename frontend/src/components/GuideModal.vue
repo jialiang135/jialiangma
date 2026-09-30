@@ -27,7 +27,7 @@ const emit = defineEmits(['close'])
     title="使用指南"
     @close="emit('close')"
   >
-    <p class="lead">个人数字分身 · AI 面试助手</p>
+    <p class="lead">个人数字分身 · 私有知识库问答</p>
 
     <section class="section">
       <h3 class="section-title">

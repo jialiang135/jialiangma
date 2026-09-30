@@ -200,7 +200,7 @@ onMounted(() => {
         <UiEmpty
           v-if="showEmptyState"
           icon="layers"
-          title="个人数字分身 · AI 面试助手"
+          title="个人数字分身"
           description="基于私有知识库的智能问答。每个回答都会标注它依据了知识库里的哪些片段 —— 句句有据可查。"
         >
           <button

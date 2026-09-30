@@ -103,7 +103,7 @@ function closeGuide() {
           <span class="brand-mark"><UiIcon name="layers" :size="16" /></span>
           <span class="brand-text">
             <span class="brand-name">个人数字分身</span>
-            <span class="brand-sub">AI 面试助手</span>
+            <span class="brand-sub">私有知识库问答</span>
           </span>
         </RouterLink>
 
