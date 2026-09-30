@@ -349,7 +349,7 @@ def _load_ragas():
     _install_ragas_compat_shim()
     _forward_stdlib_logs_to_loguru()
     try:
-        from ragas import EvaluationDataset, evaluate
+        from ragas import EvaluationDataset, RunConfig, evaluate
         from ragas.embeddings import LangchainEmbeddingsWrapper
         from ragas.llms import LangchainLLMWrapper
         from ragas.metrics import (
@@ -370,6 +370,7 @@ def _load_ragas():
 
     return {
         "EvaluationDataset": EvaluationDataset,
+        "RunConfig": RunConfig,
         "evaluate": evaluate,
         "LangchainLLMWrapper": LangchainLLMWrapper,
         "LangchainEmbeddingsWrapper": LangchainEmbeddingsWrapper,
@@ -380,6 +381,27 @@ def _load_ragas():
             "context_recall": context_recall,
         },
     }
+
+
+def _build_run_config(rag) -> Any:
+    """
+    裁判调用的并发与超时。
+
+    为什么必须显式构造：ragas 默认 `max_workers=16` / `timeout=180s`，对第三方
+    DeepSeek 代理太激进。实测**服务器上 18 个裁判任务全部 TimeoutError**，而同一批
+    数据在本地全过 —— 差别就是"16 路并发、每路还是 32768 的大预算"打到代理上排队。
+    降到 4 路并发 + 600 秒超时：代理压力小、单次更快，慢调用也有余量。
+
+    这一条是靠 `_forward_stdlib_logs_to_loguru()` 才看见的 —— 在此之前这些
+    TimeoutError 只会变成几列 NaN，日志里一个字都没有。
+    """
+    from config.settings import settings
+
+    return rag["RunConfig"](
+        max_workers=settings.eval_judge_concurrency,
+        timeout=settings.eval_judge_timeout_seconds,
+        max_retries=settings.eval_judge_max_retries,
+    )
 
 
 # ------------------------------------------------------------
@@ -727,6 +749,7 @@ def run_eval_task(
                         metrics=selected,
                         llm=judge_llm,
                         embeddings=judge_emb,
+                        run_config=_build_run_config(rag),
                     )
                     # ragas 返回的结果对象可转 dict；只保留数值型指标
                     raw = (

@@ -18,3 +18,16 @@
 # 等一整套数据科依赖，镜像会显著变大、构建时间明显变长。
 # 如果只是演示主流程（问答 + 证据轨 + 朗读），可以不装。
 ragas==0.4.3
+
+# ⚠️ 装它会让 pip **降级** langchain-openai 那一支，而且无法避免：
+#
+#     instructor（ragas 的依赖）要求 openai<0.28.0
+#     langchain-openai 1.6.2     要求 openai>=2.45.0     ← 互斥
+#
+# 实测把两个 requirements 文件放进同一次 `pip install` 会直接 ResolutionImpossible。
+# 所以 Dockerfile 里是**分两步**装的：第二步退让，把 openai 3.17.0→1.109.1、
+# langchain-openai 1.6.2→1.1.9，换来一套内部自洽的组合（`pip check` 干净，
+# 普通问答与走工具的 ReAct 问答都实测可用）。
+#
+# 后果只有一个，但要知道：**镜像里的版本不再等于 requirements.txt 的钉版**。
+# 想要那个钉版就别装评测依赖：`INSTALL_EVAL_DEPS=false docker compose up -d --build app`

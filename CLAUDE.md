@@ -197,8 +197,22 @@ Full rationale in **[docs/DEPLOY.md](docs/DEPLOY.md)**; the short version:
 4. **pip uses a BuildKit cache mount, not `--no-cache-dir`** (see Dockerfile) — the image-layer cache is
    only kept if that layer succeeds, but a cache mount survives a failed build.
 5. **Pinned deps that matter**: `prometheus-fastapi-instrumentator==7.1.0` (8.x needs `starlette>=1.0.0`,
-   mutually exclusive with `fastapi 0.115.6` → `ResolutionImpossible`, the whole requirements file fails);
-   `ragas` lives in `requirements-eval.txt` (its `instructor` needs `jiter<0.15`, deadlock with `openai`'s `>=0.16`).
+   mutually exclusive with `fastapi 0.115.6` → `ResolutionImpossible`, the whole requirements file fails).
+   ⚠️ **装评测依赖会降级 langchain-openai 那一支，而且无法避免**（实测：让 pip 同时解
+   `requirements.txt` + `requirements-eval.txt` 会直接 `ResolutionImpossible`）
+
+   ```
+   instructor(dep for ragas) 要求 openai<0.28.0
+   langchain-openai 1.6.2    要求 openai>=2.45.0   ← 与上面互斥
+   ```
+
+   所以 `INSTALL_EVAL_DEPS=true` 时，pip 会**退一步**把 `openai` 3.17.0→1.109.1、
+   `langchain-openai` 1.6.2→1.1.9，得到一套内部自洽的组合（`pip check` 干净）。
+   这套组合**实测可用**：普通问答与走工具的 ReAct 问答都验过。
+   代价是**镜像里的版本与 `requirements.txt` 的钉版不一致** —— 别再按钉版去推断镜像里是什么。
+
+   注：本机开发环境里 ragas 0.4.3 + openai 3.17.0 能共存，那是**手工漂移**出来的状态，
+   不是 pip 能解出来的解，别拿它当依据。
 6. **`config/.env` is maintained on the server only** (real keys, server-specific). The **JWT secret is
    regenerated on deploy and differs from local**; think about `ALLOW_REGISTRATION` before exposing publicly.
 7. **评测依赖（ragas）默认装进镜像，可以关掉当退路**。它给镜像加 **+167MB**（pandas 75 + pyarrow 84 是大头），

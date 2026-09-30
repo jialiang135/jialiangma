@@ -35,6 +35,16 @@ class Settings(BaseSettings):
     #
     # 端点实测接受到 32768，给足。
     llm_judge_max_tokens: int = 32768
+    # 评测裁判的**并发数**与**单次超时**。
+    #
+    # 必须调 —— ragas 的默认值对第三方代理太激进（`max_workers=16` /
+    # `timeout=180s`）。实测：服务器上 18 个裁判任务**全部 TimeoutError**，
+    # 而同一批数据在本地全过；差别就在"16 路并发（每路还是 32768 的大预算）
+    # 打到代理上排队"。降到 4 路并发后代理压力小、单次更快，配合 600s 超时
+    # 给慢调用留余量。
+    eval_judge_concurrency: int = 4
+    eval_judge_timeout_seconds: int = 600
+    eval_judge_max_retries: int = 3
 
     # --- 阿里云 DashScope ---
     dashscope_api_key: str = "sk-your-dashscope-api-key-here"

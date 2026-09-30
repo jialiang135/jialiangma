@@ -434,13 +434,17 @@ def _patch_ragas(monkeypatch, scores=None, raise_error=False) -> dict:
     """
     from core import eval_runner
 
-    capture: dict = {"n_samples": None, "judge_kwargs": {}, "metrics": {}}
+    capture: dict = {"n_samples": None, "judge_kwargs": {}, "metrics": {}, "run_config": {}}
 
-    def fake_evaluate(dataset=None, metrics=None, llm=None, embeddings=None):
+    def fake_evaluate(dataset=None, metrics=None, llm=None, embeddings=None, run_config=None):
         if raise_error:
             raise RuntimeError("ragas boom")
         capture["n_samples"] = len(dataset or [])
         return _FakeResult(scores or {})
+
+    class _FakeRunConfig:
+        def __init__(self, **kw):
+            capture["run_config"] = kw
 
     class _FakeMetric:
         """像 ragas 的指标对象一样带可写属性（answer_relevancy.strictness）。"""
@@ -451,6 +455,7 @@ def _patch_ragas(monkeypatch, scores=None, raise_error=False) -> dict:
     capture["metrics"] = metrics_objs
     fake = {
         "EvaluationDataset": _FakeDataset,
+        "RunConfig": _FakeRunConfig,
         "evaluate": fake_evaluate,
         "LangchainLLMWrapper": lambda x: x,
         "LangchainEmbeddingsWrapper": lambda x: x,
@@ -603,6 +608,7 @@ class TestRagasJudgeConfig:
             lambda: {
                 **{
                     "EvaluationDataset": _FakeDataset,
+                    "RunConfig": lambda **kw: None,
                     "evaluate": lambda **kw: _FakeResult({"faithfulness": [0.5]}),
                 },
                 "LangchainLLMWrapper": lambda x: x,
@@ -679,3 +685,38 @@ class TestRagasLogsAreVisible:
         lg = logging.getLogger("ragas.executor")
         assert lg.handlers, "ragas 的 logger 上没挂转发 handler，报错还是会丢"
         assert lg.level == logging.WARNING, "别把 ragas 的 INFO 灌进应用日志"
+
+
+class TestJudgeConcurrencyAndTimeout:
+    """
+    裁判的**并发数**与**超时**必须是收紧过的。
+
+    ragas 默认 max_workers=16 / timeout=180s。实测在服务器上：18 个裁判任务
+    **全部 TimeoutError**，同一批数据在本地却全过 —— 差别就是 16 路并发（每路
+    32768 的大预算）打到第三方代理上排队。这一条只能靠日志转发才看得见，
+    代码上必须有显式配置兜住。
+    """
+
+    def test_run_config_limits_concurrency(self, monkeypatch):
+        from config.settings import settings
+
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
+        _run_eval(monkeypatch, metrics=["faithfulness"], scores_patch=capture)
+
+        rc = capture["run_config"]
+        assert rc, "没有把 RunConfig 传进 evaluate —— ragas 会用 16 路并发"
+        assert rc["max_workers"] == settings.eval_judge_concurrency
+        assert settings.eval_judge_concurrency < 16, (
+            "并发不能沿用 ragas 的默认 16 —— 第三方代理会排队超时（实测全灭）"
+        )
+
+    def test_run_config_gives_generous_timeout(self, monkeypatch):
+        from config.settings import settings
+
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
+        _run_eval(monkeypatch, metrics=["faithfulness"], scores_patch=capture)
+
+        assert settings.eval_judge_timeout_seconds > 180, (
+            "超时不能沿用 ragas 的默认 180s —— 实测不够"
+        )
+        assert capture["run_config"]["timeout"] == settings.eval_judge_timeout_seconds
