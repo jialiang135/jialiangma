@@ -184,6 +184,18 @@
         </UiAlert>
 
         <!-- 指标：本页主角 -->
+        <div v-if="detailCoverage.length" class="coverage-warn">
+          <UiAlert tone="warning">
+            <strong>这份报告的指标只覆盖了部分样本</strong>，平均值不代表整体水平：
+            <span v-for="c in detailCoverage" :key="c.key" class="coverage-item">
+              {{ c.label }} 只算出 {{ c.n }}/{{ c.m }}
+            </span>
+            <template #action>
+              <span class="coverage-hint">裁判调用失败（多为输出被截断或参数不被代理接受），详见下方原因。</span>
+            </template>
+          </UiAlert>
+        </div>
+
         <div v-if="detailScores.length" class="score-grid">
           <div
             v-for="s in detailScores"
@@ -428,6 +440,26 @@ const pct = computed(() => {
 const isLive = computed(() =>
   ['pending', 'running'].includes(activeReport.value?.status),
 )
+
+/**
+ * 覆盖率缺口：哪些指标只算出了一部分样本。
+ *
+ * 为什么必须显示：ragas 会把"裁判调用失败"的样本记成 NaN，聚合时再剔除 ——
+ * 于是平均值可能只覆盖一小部分样本，而**界面上看起来和正常报告一模一样**。
+ * 实测踩过：报告显示"忠实度 0.1951"，其实是 5 题里只有 1 题算出了分。
+ *
+ * 只列没算全的；全部算全时不显示任何东西（不给正常报告添噪声）。
+ */
+const detailCoverage = computed(() => {
+  const raw = parseJson(detail.value?.metrics_json, {})?._coverage
+  if (!raw || typeof raw !== 'object') return []
+  return Object.entries(raw)
+    .map(([k, v]) => {
+      const [n, m] = String(v).split('/').map(Number)
+      return { key: k, label: metricLabel(k), n, m }
+    })
+    .filter((c) => Number.isFinite(c.n) && Number.isFinite(c.m) && c.n < c.m)
+})
 
 const detailScores = computed(() => {
   const m = parseJson(detail.value?.metrics_json, {})
@@ -938,5 +970,16 @@ onMounted(async () => {
   .long-text {
     max-width: none;
   }
+}
+.coverage-warn {
+  margin-bottom: var(--sp-4);
+}
+.coverage-item {
+  margin-left: var(--sp-2);
+  font-weight: var(--fw-medium);
+}
+.coverage-hint {
+  font-size: var(--fs-xs);
+  color: var(--c-text-3);
 }
 </style>

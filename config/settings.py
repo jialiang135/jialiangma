@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     # 给太小会把答案挤空（max_tokens=32 时 content 直接是空串），
     # 因此留出充足余量。端点实测接受到 32768。
     llm_max_tokens: int = 8192
+    # 评测**裁判**模型的输出上限。刻意与上面的回答预算分开。
+    #
+    # 为什么必须单独给：ragas 要裁判输出"把回答拆成全部断言 + 逐条判定"的**长 JSON**，
+    # 而推理模型的预算是思考和答案共享的 —— 上面 8192 对"回答一个问题"够用，
+    # 对裁判就不够了：实测 5 道题里 4 道被截断，ragas 抛
+    # `LLMDidNotFinishException`，然后**把该样本静默记成 NaN**（聚合时又被剔除，
+    # 于是"1 个样本的平均值"被当成整体忠实度显示出来）。
+    #
+    # 端点实测接受到 32768，给足。
+    llm_judge_max_tokens: int = 32768
 
     # --- 阿里云 DashScope ---
     dashscope_api_key: str = "sk-your-dashscope-api-key-here"

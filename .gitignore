@@ -48,3 +48,9 @@ Thumbs.db
 *.tmp
 *.bak
 *.orig
+
+# --- Claude Code 的并行工作树 ---
+# 子代理并行干活时会在这里建 git worktree（`isolation: "worktree"`）。
+# 它是**仓库里的另一个 git 仓库**，绝对不能提交：`git add -A` 会把它当
+# "embedded repository" 收进索引（外层仓库拿不到它的内容，克隆出来是个空壳）。
+.claude/worktrees/

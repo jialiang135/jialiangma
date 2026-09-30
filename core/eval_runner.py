@@ -303,9 +303,51 @@ def _install_ragas_compat_shim() -> None:
     logger.debug("已注入 ragas 兼容垫片: {}", module_name)
 
 
+def _forward_stdlib_logs_to_loguru() -> None:
+    """
+    把 ragas 的 stdlib 日志接到 loguru 上。
+
+    **为什么必须做这一步**：ragas 用标准库 ``logging`` 报错，而本项目用 loguru ——
+    loguru 不接管 stdlib 的 root logger，于是 ragas 的报错**直接进了黑洞**。
+    后果是"评测跑完了、指标全是空的、日志里一个字都没有"，只能靠猜。
+
+    实测那两个吃掉整列指标的失败就是这么被吞掉的：
+
+        ERROR ragas.executor: Job[4]: LLMDidNotFinishException(
+            The LLM generation was not completed. Please increase the max_tokens...)
+        ERROR ragas.executor: Job[1]: OpenAIInvalidRequestError(400 -
+            Invalid n value (currently only n = 1 is supported))
+
+    接上之后，同样的失败会出现在应用日志里，一眼能看出原因。
+    """
+    import logging
+
+    if getattr(_forward_stdlib_logs_to_loguru, "_installed", False):
+        return
+
+    class _ToLoguru(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            try:
+                level = logger.level(record.levelname).name
+            except ValueError:
+                level = record.levelno
+            logger.opt(depth=6, exception=record.exc_info).log(level, record.getMessage())
+
+    handler = _ToLoguru()
+    for name in ("ragas", "ragas.executor", "ragas.metrics", "instructor"):
+        lg = logging.getLogger(name)
+        lg.addHandler(handler)
+        # 别把 ragas 的 INFO 灌进来，只看它出问题时的 WARNING/ERROR
+        lg.setLevel(logging.WARNING)
+        lg.propagate = False
+
+    _forward_stdlib_logs_to_loguru._installed = True
+
+
 def _load_ragas():
     """延迟导入 ragas（它依赖较重，且需要先装垫片）。"""
     _install_ragas_compat_shim()
+    _forward_stdlib_logs_to_loguru()
     try:
         from ragas import EvaluationDataset, evaluate
         from ragas.embeddings import LangchainEmbeddingsWrapper
@@ -642,17 +684,38 @@ def run_eval_task(
         # ── 2. RAGAS 指标 ──
         metric_scores: dict[str, Any] = {}
         rag_error: str | None = None
+        # 覆盖率不足的指标（"算出了 n / 共 m 条"）。要在 try 外面用 ——
+        # 状态判定必须因为它降级，否则"5 题只有 1 题算出分"会被报成干净的 done。
+        coverage_gaps: list[str] = []
         try:
             if not samples:
                 rag_error = "所有题目的检索结果均为空，没有可判定的样本，RAGAS 指标未计算"
             else:
                 rag = _load_ragas()
                 from config.context import get_context
+                from config.settings import settings as _settings
 
+                # 裁判模型必须单独给一块**更大**的 token 预算，理由见
+                # settings.llm_judge_max_tokens：ragas 要裁判输出"全部断言 + 逐条
+                # 判定"的长 JSON，用回答问题的 8192 会被思考挤爆 → ragas 抛
+                # LLMDidNotFinishException → 该样本静默变 NaN。
                 judge_llm = rag["LangchainLLMWrapper"](
-                    get_context().chat.chat_model(temperature=0.0, streaming=False)
+                    get_context().chat.chat_model(
+                        temperature=0.0,
+                        streaming=False,
+                        max_tokens=_settings.llm_judge_max_tokens,
+                    )
                 )
                 judge_emb = rag["LangchainEmbeddingsWrapper"](get_context().embed.embeddings())
+
+                # answer_relevancy 默认 strictness=3 —— 它要裁判对同一输入做 n=3 次
+                # 生成再取平均。而本项目走第三方 DeepSeek 代理，**只支持 n=1**，
+                # 传 3 直接 400（实测：5 道题全灭）。降到 1；代价是少一点稳定性，
+                # 总比整列 NaN 好。
+                # hasattr 判断是为了容错：测试会注入没有 strictness 的假指标对象。
+                _relevancy = rag["metrics"].get("answer_relevancy")
+                if _relevancy is not None and hasattr(_relevancy, "strictness"):
+                    _relevancy.strictness = 1
 
                 selected = [rag["metrics"][m] for m in metrics if m in rag["metrics"]]
                 if not selected:
@@ -672,6 +735,11 @@ def run_eval_task(
                         else dict(result)
                     )
                     per_metric_rows: dict[str, list] = {}
+                    # 每个指标"实际算出了几条 / 总共几条"。ragas 把失败样本记成 NaN，
+                    # 聚合时又被剔除 —— 于是平均值可能只覆盖一小部分样本。
+                    # **必须把它显式记下来**，否则"5 题里只有 1 题算出分"的那个平均值
+                    # 会被当成整体指标展示（实测踩过：0.1951 其实是 1 个样本的平均）。
+                    metric_coverage: dict[str, tuple[int, int]] = {}
                     for key, value in raw.items():
                         if key in ("user_input", "response", "retrieved_contexts", "reference"):
                             continue
@@ -681,6 +749,7 @@ def run_eval_task(
                             continue
                         nums = [_as_number(v) for v in rows]
                         vals = [v for v in nums if v is not None]
+                        metric_coverage[key] = (len(vals), len(nums))
                         if vals:
                             metric_scores[key] = round(sum(vals) / len(vals), 4)
                             per_metric_rows[key] = nums
@@ -689,7 +758,24 @@ def run_eval_task(
                         for key, nums in per_metric_rows.items():
                             if pos < len(nums) and nums[pos] is not None:
                                 per_question[qidx][key] = round(nums[pos], 4)
-                    if not metric_scores:
+                    # 覆盖率如实记下来（键以下划线开头，前端不会把它当指标渲染），
+                    # 并且**只要有指标没覆盖全部样本，就把状态压成 partial 并写进原因**。
+                    # 否则会出现"状态 done、其实是 1/5 个样本的平均值"这种最坏情况。
+                    metric_scores["_coverage"] = {
+                        k: f"{n}/{m}" for k, (n, m) in metric_coverage.items()
+                    }
+                    coverage_gaps = [
+                        f"{k} 只算出 {n}/{m} 个样本"
+                        for k, (n, m) in metric_coverage.items()
+                        if m and n < m
+                    ]
+                    if coverage_gaps:
+                        note = "部分样本未算出（裁判调用失败）：" + "；".join(coverage_gaps)
+                        rag_error = f"{rag_error}；{note}" if rag_error else note
+
+                    if not any(k for k in metric_scores if not k.startswith("_")):
+                        # 注意上面刚塞进去的 _coverage 会让 dict 非空，所以这里
+                        # 判断的是"有没有真指标"，不是"dict 空不空"
                         rag_error = "RAGAS 未产出任何指标"
         except Exception as e:
             logger.error("[Eval] RAGAS 指标计算失败: {}", e)
@@ -722,7 +808,9 @@ def run_eval_task(
         excluded = retrieval_failed_count
         if produced_count == 0:
             status = "failed"
-        elif produced_count < requested_count or excluded > 0:
+        elif produced_count < requested_count or excluded > 0 or coverage_gaps:
+            # coverage_gaps：某个指标只覆盖了一部分样本（其余样本裁判调用失败、
+            # 被 ragas 记成 NaN）。平均值的样本量不足，不能算干净的 done。
             status = "partial"
         else:
             status = "done"

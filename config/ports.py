@@ -40,9 +40,21 @@ if TYPE_CHECKING:  # 只为类型标注，避免在 config/ 里引入运行时�
 class ChatModelProvider(Protocol):
     """对话模型（LLM）接缝。"""
 
-    def chat_model(self, *, temperature: float = 0.3, streaming: bool = True) -> BaseChatModel:
+    def chat_model(
+        self,
+        *,
+        temperature: float = 0.3,
+        streaming: bool = True,
+        max_tokens: int | None = None,
+    ) -> BaseChatModel:
         """
-        取一个对话模型客户端。
+        取一个对话模型客户端。``max_tokens=None`` 表示用配置里的默认值。
+
+        为什么要能单独指定：默认预算是**思考和答案共享**的，对"回答用户问题"够用，
+        但**评测的裁判**要输出"全部断言 + 逐条判定"的长 JSON，思考一挤就生成不完
+        —— ragas 会抛 ``LLMDidNotFinishException`` 并把该样本记成 NaN（实测过，
+        见 ``core/eval_runner.py`` 里裁判模型的注释）。所以裁判必须能拿到一块
+        独立、更大的预算。
 
         实现方**必须缓存**：底层客户端持有 httpx 连接池，每次新建不关是连接泄漏，
         退出时还会抛 "Event loop is closed"（详见 providers 里的说明）。

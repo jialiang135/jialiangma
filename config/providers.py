@@ -34,14 +34,22 @@ class DeepSeekChatProvider:
         # 退出时还会抛出 "Event loop is closed" 的未处理异常（close 发生在循环关闭后）。
         self._cache: dict[tuple, Any] = {}
 
-    def chat_model(self, *, temperature: float = 0.3, streaming: bool = True) -> BaseChatModel:
+    def chat_model(
+        self,
+        *,
+        temperature: float = 0.3,
+        streaming: bool = True,
+        max_tokens: int | None = None,
+    ) -> BaseChatModel:
         """
-        按参数缓存，同一进程内复用。
+        按 (temperature, streaming, max_tokens) 缓存，同一进程内复用。
 
         注意 ``max_tokens`` 对推理模型是"思考 + 答案"的共享预算，详见
-        ``Settings.llm_max_tokens`` 的说明。
+        ``Settings.llm_max_tokens`` 的说明。传 ``None`` 用配置的默认值；
+        评测裁判会显式传一个更大的值（理由见 ``config/ports.py``）。
         """
-        key = (temperature, streaming)
+        budget = max_tokens if max_tokens is not None else self._settings.llm_max_tokens
+        key = (temperature, streaming, budget)
         cached = self._cache.get(key)
         if cached is None:
             from langchain_deepseek import ChatDeepSeek
@@ -52,7 +60,7 @@ class DeepSeekChatProvider:
                 api_base=self._settings.deepseek_base_url,
                 temperature=temperature,
                 streaming=streaming,
-                max_tokens=self._settings.llm_max_tokens,
+                max_tokens=budget,
             )
             self._cache[key] = cached
         return cached

@@ -434,7 +434,7 @@ def _patch_ragas(monkeypatch, scores=None, raise_error=False) -> dict:
     """
     from core import eval_runner
 
-    capture: dict = {"n_samples": None}
+    capture: dict = {"n_samples": None, "judge_kwargs": {}, "metrics": {}}
 
     def fake_evaluate(dataset=None, metrics=None, llm=None, embeddings=None):
         if raise_error:
@@ -442,19 +442,28 @@ def _patch_ragas(monkeypatch, scores=None, raise_error=False) -> dict:
         capture["n_samples"] = len(dataset or [])
         return _FakeResult(scores or {})
 
+    class _FakeMetric:
+        """像 ragas 的指标对象一样带可写属性（answer_relevancy.strictness）。"""
+
+        strictness = 3
+
+    metrics_objs = {m: _FakeMetric() for m in ALL_METRICS}
+    capture["metrics"] = metrics_objs
     fake = {
         "EvaluationDataset": _FakeDataset,
         "evaluate": fake_evaluate,
         "LangchainLLMWrapper": lambda x: x,
         "LangchainEmbeddingsWrapper": lambda x: x,
-        "metrics": {m: object() for m in ALL_METRICS},
+        "metrics": metrics_objs,
     }
     monkeypatch.setattr(eval_runner, "_load_ragas", lambda: fake)
     # 判定用的 LLM / Embedding 构造也换掉，避免真实客户端初始化
     from config.context import get_context
 
     class _StubChat:
-        def chat_model(self, **_kw):
+        def chat_model(self, **kw):
+            # 记下裁判模型是怎么建的 —— 用例要断言它拿到了**独立且更大**的预算
+            capture["judge_kwargs"] = kw
             return object()
 
         async def aclose(self):
@@ -530,3 +539,143 @@ def _run_eval(
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-q"])
+
+
+class TestRagasJudgeConfig:
+    """
+    裁判模型的两处配置**必须**是对的，否则整列指标会静默变成 NaN。
+
+    起因是本地跑了一次真实评测：faithfulness 逐题 `[None, None, None, None, 0.1951]`，
+    报告却显示 0.1951 —— 聚合只对非空值求平均，于是"1 个样本的平均值"被当成整体
+    忠实度。把 ragas 的 stdlib 日志接出来之后才看到真正的两个原因：
+
+        LLMDidNotFinishException: The LLM generation was not completed.
+            Please increase the max_tokens and try again.
+        OpenAIInvalidRequestError(400 - Invalid n value (currently only n = 1 ...))
+
+    前者是推理模型的"思考 + 答案"共享 token 预算被 ragas 的长 JSON 撑爆；
+    后者是 answer_relevancy 默认要 n=3，而第三方代理只支持 n=1。
+    修完这两处，同样的数据 5/5 全部出分（0.917 / 0.072 / 0.815 / 0.257 / 0.149）。
+    """
+
+    def test_judge_gets_its_own_larger_token_budget(self, monkeypatch):
+        from config.settings import settings
+
+        capture = _patch_ragas(
+            monkeypatch, scores={"faithfulness": [0.5], "answer_relevancy": [0.5]}
+        )
+        # scores_patch 是"我已经自己 patch 过 ragas 了"的开关；不传的话 _run_eval
+        # 会用它的默认假实现把上面这份覆盖掉（第一版就踩了这个）
+        _run_eval(monkeypatch, metrics=["faithfulness"], scores_patch=capture)
+
+        kwargs = capture["judge_kwargs"]
+        assert kwargs.get("max_tokens") == settings.llm_judge_max_tokens, (
+            f"裁判没有拿到独立预算，实测会被截断成 NaN: {kwargs}"
+        )
+        assert settings.llm_judge_max_tokens > settings.llm_max_tokens, (
+            "裁判预算必须大于回答预算 —— ragas 要它输出全部断言+逐条判定的长 JSON"
+        )
+        assert kwargs.get("temperature") == 0.0, "裁判要用确定性温度"
+
+    def test_answer_relevancy_strictness_dropped_to_one(self, monkeypatch):
+        """默认 strictness=3 会发 n=3，第三方代理只支持 n=1 → 整列 400。"""
+        capture = _patch_ragas(
+            monkeypatch, scores={"faithfulness": [0.5], "answer_relevancy": [0.5]}
+        )
+        _run_eval(
+            monkeypatch,
+            metrics=["faithfulness", "answer_relevancy"],
+            scores_patch=capture,
+        )
+
+        assert capture["metrics"]["answer_relevancy"].strictness == 1, (
+            "strictness 没降下来：代理会拒绝 n>1，answer_relevancy 整列 NaN"
+        )
+
+    def test_missing_strictness_attribute_does_not_break_the_run(self, monkeypatch):
+        """注入没有 strictness 的假指标时也不能炸 —— 否则评测直接 failed。"""
+        from core import eval_runner
+
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
+        monkeypatch.setattr(
+            eval_runner,
+            "_load_ragas",
+            lambda: {
+                **{
+                    "EvaluationDataset": _FakeDataset,
+                    "evaluate": lambda **kw: _FakeResult({"faithfulness": [0.5]}),
+                },
+                "LangchainLLMWrapper": lambda x: x,
+                "LangchainEmbeddingsWrapper": lambda x: x,
+                "metrics": {"faithfulness": object()},
+            },
+        )
+        report = _run_eval(monkeypatch, metrics=["faithfulness"], scores_patch=capture)
+        assert report["status"] in ("done", "partial"), f"不该因为缺属性就失败: {report['status']}"
+
+    def test_thin_coverage_is_disclosed_not_hidden(self, monkeypatch):
+        """
+        5 题里只有 1 题算出分时，必须如实说出来。
+
+        这一条是这次事故的**核心防线**：以前它会显示成干净的 done + 一个基于
+        1 个样本的平均值，看起来完全正常。
+        """
+        nan = float("nan")
+        capture = _patch_ragas(
+            monkeypatch,
+            scores={
+                "faithfulness": [nan, nan, nan, nan, 0.1951],
+                "answer_relevancy": [0.5, 0.5, 0.5, 0.5, 0.5],
+            },
+        )
+        report = _run_eval(
+            monkeypatch,
+            questions=[{"id": f"q{i}", "category": "c", "question": f"问题{i}"} for i in range(5)],
+            metrics=["faithfulness", "answer_relevancy"],
+            scores_patch=capture,
+        )
+
+        import json as _json
+
+        scores = _json.loads(report["metrics_json"])
+        assert scores["_coverage"]["faithfulness"] == "1/5", f"覆盖率没记下来: {scores}"
+        assert report["status"] == "partial", "样本没算全却报成 done，会掩盖裁判失败"
+        assert "只算出 1/5" in (report["error"] or ""), f"原因没写清: {report['error']}"
+
+    def test_full_coverage_stays_done(self, monkeypatch):
+        """反向保护：全部算出来时不能被误判成 partial。"""
+        capture = _patch_ragas(
+            monkeypatch,
+            scores={"faithfulness": [0.5, 0.6], "answer_relevancy": [0.7, 0.8]},
+        )
+        report = _run_eval(
+            monkeypatch,
+            questions=[
+                {"id": "q1", "category": "c", "question": "问题1"},
+                {"id": "q2", "category": "c", "question": "问题2"},
+            ],
+            metrics=["faithfulness", "answer_relevancy"],
+            scores_patch=capture,
+        )
+        assert report["status"] == "done", f"全覆盖却报 partial: {report['error']}"
+
+
+class TestRagasLogsAreVisible:
+    """
+    ragas 的报错必须能被看到。
+
+    它用 stdlib logging，而项目用 loguru —— loguru **不接管** stdlib 的 root logger，
+    所以 ragas 的报错原本直接进黑洞：评测跑完、指标全空、日志里一个字都没有。
+    上面那两个失败原因（max_tokens 截断、n=3 被拒）就是这么被埋掉的。
+    """
+
+    def test_stdlib_logs_are_forwarded_to_loguru(self):
+        from core.eval_runner import _forward_stdlib_logs_to_loguru
+
+        _forward_stdlib_logs_to_loguru()
+
+        import logging
+
+        lg = logging.getLogger("ragas.executor")
+        assert lg.handlers, "ragas 的 logger 上没挂转发 handler，报错还是会丢"
+        assert lg.level == logging.WARNING, "别把 ragas 的 INFO 灌进应用日志"
