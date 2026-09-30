@@ -40,6 +40,66 @@ PASSWORD = os.getenv("UI_PASSWORD", "")
 QUESTION = "介绍一下你自己"
 
 
+async def _check_kb_preview(page, ok: bool) -> bool:
+    """
+    知识库页的「查看」：原文件 + 入库切片。
+
+    校验点挑的是**这个功能真正的价值**，而不是"页面没报错"：
+    - 切片列表要真的有内容，且第一块是 `#0`（排序正确）；
+    - 原文件标签要渲染出 PDF 的 iframe 或文本正文；
+    - 一处**鉴权**：整条链路走的是带 Authorization 的 fetch（原文件是 blob），
+      任何一环掉了都会变成 401/白屏，这里能看出来。
+    """
+    await page.goto(f"{BASE_URL}/knowledge", wait_until="networkidle")
+    await page.wait_for_timeout(1200)
+
+    view_buttons = page.locator("button", has_text="查看")
+    count = await view_buttons.count()
+    if count == 0:
+        print("[FAIL] 知识库列表里没有「查看」按钮")
+        return False
+
+    await view_buttons.first.click()
+    await page.wait_for_selector(".ui-drawer", timeout=10000)
+    name = (await page.locator(".head-name").inner_text()).strip()
+    print(f"[OK]   打开预览抽屉: {name}")
+
+    # 入库切片
+    await page.locator(".ui-tab", has_text="入库切片").click()
+    await page.wait_for_timeout(1500)
+    try:
+        await page.wait_for_selector(".chunk", timeout=15000)
+    except Exception:
+        print("[FAIL] 切片列表没渲染出来")
+        return False
+    idx_texts = await page.locator(".chunk-idx").all_inner_texts()
+    if idx_texts and idx_texts[0].strip() == "#0":
+        print(f"[OK]   切片 {len(idx_texts)} 条，从 #0 开始（排序正确）")
+    else:
+        print(f"[FAIL] 切片序号不对，前几个是: {idx_texts[:5]}")
+        ok = False
+    body = await page.locator(".chunks").inner_text()
+    if len(body.strip()) < 50:
+        print("[FAIL] 切片列表有元素但没内容")
+        ok = False
+
+    # 原文件
+    await page.locator(".ui-tab", has_text="原文件").click()
+    await page.wait_for_timeout(2000)
+    has_frame = await page.locator(".raw-frame").count()
+    has_text = await page.locator(".raw-text").count()
+    has_image = await page.locator(".raw-image").count()
+    if has_frame or has_text or has_image:
+        kind = "PDF(iframe)" if has_frame else ("文本" if has_text else "图片")
+        print(f"[OK]   原文件已渲染（{kind}）—— 说明 blob 那条带鉴权的取数链路通")
+    else:
+        err = await page.locator(".ui-alert").all_inner_texts()
+        print(f"[FAIL] 原文件没渲染出来: {err[:1]}")
+        ok = False
+
+    return ok
+
+
 async def main() -> int:
     if not USERNAME or not PASSWORD:
         print("缺少凭据：请用 UI_USER / UI_PASSWORD 环境变量提供测试账号。")
@@ -127,7 +187,10 @@ async def main() -> int:
             print(f"[FAIL] 侧栏没自动刷新（{len(before)} → {len(after)}）")
             ok = False
 
-        # ── 5. 控制台 ──
+        # ── 5. 知识库预览（原文件 + 入库切片）──
+        ok = await _check_kb_preview(page, ok)
+
+        # ── 6. 控制台 ──
         if logs:
             print(f"[FAIL] 控制台有 {len(logs)} 条错误:")
             for line in logs[:5]:

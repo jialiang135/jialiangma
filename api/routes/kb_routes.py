@@ -15,12 +15,14 @@
 
 import asyncio
 import contextlib
+import mimetypes
 import os
 import tempfile
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from loguru import logger
 
 from config.settings import settings
@@ -42,7 +44,7 @@ from core.kb_tasks import (
     process_file_task,
     rebuild_task,
 )
-from core.paths import remove_within, safe_filename
+from core.paths import ensure_within, remove_within, safe_filename
 from core.schemas import APIResponse, FileMetaOut, KnowledgeBaseStats
 from rag.document_loader import SUPPORTED_EXTENSIONS
 
@@ -225,6 +227,122 @@ async def list_files(user: dict = Depends(get_current_user)):
             for f in files
         ],
     )
+
+
+# ── 只读：查看入库切片 / 原文件内容（知识库页的"预览"） ──
+#
+# 授权口径**跟随 `/files`**：登录即可看。上传 / 删除 / 重建 / 清空才要管理员。
+# 这不是新开的口子 —— 知识库内容早就是对所有已登录用户开放的（问答与证据轨
+# 都能读到它），预览只是同一份数据的更直接视图。归属仍由 `_kb_owner` 统一裁决。
+
+
+async def _resolve_readable_file(file_id: int, user: dict) -> dict:
+    """
+    取文件记录并校验"确实属于这份知识库"，同时把磁盘路径做**包含性校验**。
+
+    Returns:
+        ``{record, path}`` —— ``path`` 是校验过的绝对路径。
+
+    Raises:
+        HTTPException: 404 记录不存在 / 不属于本知识库；409 源文件不在磁盘上；
+            400 路径越界（库里的 filepath 可能来自别的机器，见下）。
+    """
+    owner_id = _kb_owner(user)
+    record = await get_file_by_id(file_id)
+    if not record or record["owner_id"] != owner_id:
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    upload_dir = str(settings.resolve_path(settings.upload_dir))
+    try:
+        # 关键：**按 file_id 查库拿路径，再用包含性校验兜底**，绝不接受客户端传文件名
+        # —— 这个项目被那条路咬过一次（`../../../../config/settings.py` 可读写到目录外）。
+        path = ensure_within(upload_dir, record["filepath"])
+    except ValueError as e:
+        # 真实发生过：库里存着**另一台机器**的绝对路径（数据库整体搬过来的），
+        # 在 Linux 上它会被当成相对路径解析而越界。这里如实说明，而不是 500。
+        logger.warning("[KB] 预览被包含性校验拦下: file_id={} - {}", file_id, e)
+        raise HTTPException(
+            status_code=400,
+            detail="该文件的记录指向一个不在知识库目录内的路径（可能来自其它机器），无法预览",
+        ) from e
+    return {"record": record, "path": path}
+
+
+@router.get("/files/{file_id}/chunks")
+async def get_file_chunks(
+    file_id: int,
+    limit: int = 200,
+    offset: int = 0,
+    user: dict = Depends(get_current_user),
+):
+    """
+    查看某个文件的**入库切片**（知识库页"切片"视图的数据来源）。
+
+    显示的是模型实际读到的东西 —— 分块边界在哪、PDF 页码有没有丢、解析有没有
+    把标题重复一遍。这些以前只有模型看得见。
+    """
+    resolved = await _resolve_readable_file(file_id, user)
+    record = resolved["record"]
+
+    from rag.vector_store import list_chunks
+
+    # Chroma 是同步阻塞调用，必须丢到线程里，否则卡住事件循环
+    data = await asyncio.to_thread(list_chunks, record["filename"], _kb_owner(user), limit, offset)
+    return {
+        "success": True,
+        "data": {
+            "file_id": record["id"],
+            "filename": record["filename"],
+            "total": data["total"],
+            "offset": offset,
+            "limit": limit,
+            "chunks": data["chunks"],
+        },
+    }
+
+
+@router.get("/files/{file_id}/content")
+async def get_file_content(
+    file_id: int,
+    mode: str = "raw",
+    user: dict = Depends(get_current_user),
+):
+    """
+    原文件内容。
+
+    - ``mode=raw``（默认）：直接返回原文件。PDF 交给浏览器内置查看器渲染，
+      图片按图片显示，文本类按纯文本。
+    - ``mode=text``：返回**解析后**的纯文本（``load_document_detailed`` 的结果），
+      用来对照"原文"与"入库文本"的差异。
+    """
+    resolved = await _resolve_readable_file(file_id, user)
+    record, path = resolved["record"], resolved["path"]
+
+    if not path.is_file():
+        raise HTTPException(status_code=409, detail="源文件不在磁盘上")
+
+    if mode == "text":
+        from rag.document_loader import load_document_detailed
+
+        upload_dir = str(settings.resolve_path(settings.upload_dir))
+        outcome = await asyncio.to_thread(load_document_detailed, str(path), upload_dir)
+        return {
+            "success": True,
+            "data": {
+                "file_id": record["id"],
+                "filename": record["filename"],
+                "status": outcome.status,
+                "detail": outcome.detail,
+                "text": outcome.content or "",
+                "chars": len(outcome.content or ""),
+                # PDF 才有逐页文本（pages[0] = 第 1 页）。有了它，"原文"视图
+                # 就能按页对照，也让切片上的 page 字段有了出处。
+                "pages": outcome.pages or [],
+            },
+        }
+
+    media_type = mimetypes.guess_type(record["filename"])[0] or "application/octet-stream"
+    return FileResponse(str(path), media_type=media_type, filename=record["filename"])
 
 
 @router.post("/upload", response_model=APIResponse)

@@ -1,4 +1,4 @@
-import { del, get, post, uploadFiles } from './index.js'
+import { del, get, getBlob, post, uploadFiles } from './index.js'
 
 export function getKbFiles() {
   return get('/kb/files')
@@ -29,4 +29,26 @@ export function getUploadStatus(taskId) {
  */
 export function rebuildKb() {
   return post('/kb/rebuild')
+}
+
+// ── 预览：入库切片 / 原文件内容 ──
+
+/** 某个文件的入库切片（按 chunk_idx 升序） */
+export function getKbFileChunks(fileId, { limit = 200, offset = 0 } = {}) {
+  return get(`/kb/files/${fileId}/chunks`, { limit, offset })
+}
+
+/** 解析后的纯文本（含 PDF 的逐页文本） */
+export function getKbFileText(fileId) {
+  return get(`/kb/files/${fileId}/content`, { mode: 'text' })
+}
+
+/**
+ * 原文件（二进制）。
+ *
+ * 走 blob 而不是直接给 `<iframe src>` 指 URL —— 那个请求带不上 Authorization
+ * 头。调用方负责 `URL.createObjectURL` 与 `revokeObjectURL`。
+ */
+export function getKbFileBlob(fileId) {
+  return getBlob(`/kb/files/${fileId}/content`, { mode: 'raw' })
 }

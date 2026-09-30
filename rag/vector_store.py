@@ -295,3 +295,61 @@ def get_collection_stats(owner_id: int) -> dict:
             "files": [],
             "error": f"获取向量库统计失败: {e}",
         }
+
+
+def list_chunks(
+    source: str,
+    owner_id: int,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict:
+    """
+    列出某个文件在向量库里的**全部切片**（按 ``chunk_idx`` 升序）。
+
+    这是"知识库页能看见切片内容"的数据来源。切片正文本来就**完整**存在
+    Chroma 里 —— 只有 SSE 的证据轨为了控制单帧大小把它截断到 800 字
+    （见 ``api/sse_stream.py`` 的 ``MAX_EVIDENCE_CONTENT``）。所以这个功能
+    不需要重新解析文件，也不会因为截断而失真。
+
+    Args:
+        source:   文件名（向量库元数据里的 ``source``）。
+        owner_id: 知识库归属，由 ``core/kb_access.py`` 裁决后传入。
+        limit:    本次返回的切片数上限（避免超大文件一次吐几十万字符）。
+        offset:   起始偏移，供前端翻页。
+
+    Returns:
+        ``{"total": int, "chunks": [{"chunk_idx", "page", "content", "chars"}, ...]}``
+
+        缺 ``page`` 的切片（非 PDF）该字段为 ``None``。
+
+    Note:
+        Chroma 的 ``get()`` 是**同步阻塞**调用，路由层必须用
+        ``asyncio.to_thread`` 包起来，否则会卡住事件循环。
+    """
+    collection = _get_or_create_collection()
+    existing = collection.get(
+        where={"$and": [{"owner_id": owner_id}, {"source": source}]},
+        include=["metadatas", "documents"],
+    )
+
+    metadatas = existing.get("metadatas") or []
+    documents = existing.get("documents") or []
+
+    rows = []
+    # strict=False：只读的展示路径。metadatas/documents 理论上等长，万一 Chroma
+    # 返回不一致的长度，宁可少显示几条，也不要整个接口 500。
+    for meta, doc in zip(metadatas, documents, strict=False):
+        if not meta:
+            continue
+        idx = meta.get("chunk_idx")
+        rows.append((idx if isinstance(idx, int) else 0, meta.get("page"), doc or ""))
+    rows.sort(key=lambda r: r[0])
+
+    window = rows[offset : offset + max(1, limit)]
+    return {
+        "total": len(rows),
+        "chunks": [
+            {"chunk_idx": idx, "page": page, "content": doc, "chars": len(doc)}
+            for idx, page, doc in window
+        ],
+    }

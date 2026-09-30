@@ -133,7 +133,12 @@
           </template>
 
           <template #cell-actions="{ row }">
-            <UiButton size="sm" variant="danger" @click="askDelete(row)">删除</UiButton>
+            <div class="row-actions">
+              <UiButton size="sm" variant="secondary" @click="openPreview(row)">查看</UiButton>
+              <UiButton v-if="auth.isAdmin" size="sm" variant="danger" @click="askDelete(row)">
+                删除
+              </UiButton>
+            </div>
           </template>
 
           <template #empty-action>
@@ -144,6 +149,12 @@
           </template>
         </UiTable>
       </UiCard>
+
+      <FilePreviewDrawer
+        :open="!!previewFile"
+        :file="previewFile"
+        @close="previewFile = null"
+      />
 
       <!-- ── 维护与破坏性操作：用独立底色与普通区域拉开差距 ── -->
       <section v-if="auth.isAdmin" class="maintenance">
@@ -214,6 +225,7 @@ import UiBadge from '../components/ui/UiBadge.vue'
 import UiAlert from '../components/ui/UiAlert.vue'
 import UiTable from '../components/ui/UiTable.vue'
 import UiModal from '../components/ui/UiModal.vue'
+import FilePreviewDrawer from '../components/kb/FilePreviewDrawer.vue'
 import UiProgress from '../components/ui/UiProgress.vue'
 import UiIcon from '../components/ui/UiIcon.vue'
 import UiSpinner from '../components/ui/UiSpinner.vue'
@@ -245,6 +257,13 @@ const totalChunks = computed(
   () => kbStats.value?.total_chunks ?? files.value.reduce((sum, f) => sum + (f.chunk_count || 0), 0),
 )
 
+/** 当前在抽屉里预览的文件（null = 关着）。只读操作，所有登录用户都能用。 */
+const previewFile = ref(null)
+
+function openPreview(row) {
+  previewFile.value = row
+}
+
 const columns = computed(() => {
   const cols = [
     { key: 'id', label: 'ID', width: '76px', mono: true },
@@ -253,7 +272,9 @@ const columns = computed(() => {
     { key: 'chunk_count', label: '向量块', width: '92px', align: 'right', mono: true },
     { key: 'created_at', label: '上传时间', width: '128px' },
   ]
-  if (auth.isAdmin) cols.push({ key: 'actions', label: '操作', width: '88px', align: 'right' })
+  // 操作列对**所有登录用户**开放（「查看」是只读的，与文件列表同权限）；
+  // 里面的「删除」按钮才按 isAdmin 显示 —— 权限由后端把关，前端只是不显示。
+  cols.push({ key: 'actions', label: '操作', width: auth.isAdmin ? '132px' : '76px', align: 'right' })
   return cols
 })
 
@@ -802,5 +823,11 @@ watch(
   .maintenance-actions {
     flex-direction: column;
   }
+}
+/* 操作列里的按钮组：两个按钮时右对齐排开，不挤在一起 */
+.row-actions {
+  display: inline-flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
 }
 </style>

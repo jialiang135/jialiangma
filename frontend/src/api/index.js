@@ -62,6 +62,26 @@ async function extractError(res) {
 }
 
 /**
+ * 非 2xx 一律抛错，并做 401 处理。`readJson` 与 `getBlob` 共用。
+ *
+ * 401 要分两种情况：
+ * - **本来就有登录态** → 会话过期，清凭据并广播，界面切回未登录
+ * - **本来没有登录态** → 这是登录接口自己返回的"用户名或密码错误"，
+ *   不能清凭据、更不能广播 auth-expired，否则用户看到的是
+ *   "登录已过期"而不是"密码错了"，一脸茫然
+ */
+async function ensureOk(res) {
+  if (res.ok) return
+  const message = await extractError(res)
+  if (res.status === 401 && getToken()) {
+    notifyAuthExpired()
+  }
+  const err = new Error(message)
+  err.status = res.status
+  throw err
+}
+
+/**
  * 统一处理响应。
  *
  * **非 2xx 一律抛错**。改造前这里只在 401 抛错，其余状态码（如 500）
@@ -70,22 +90,27 @@ async function extractError(res) {
  * 只是安静地显示空白。管理页那几个"加载失败 + 重试"的提示因此永远不触发。
  */
 export async function readJson(res) {
-  if (!res.ok) {
-    const message = await extractError(res)
-    // 401 要分两种情况：
-    // - **本来就有登录态** → 会话过期，清凭据并广播，界面切回未登录
-    // - **本来没有登录态** → 这是登录接口自己返回的"用户名或密码错误"，
-    //   不能清凭据、更不能广播 auth-expired，否则用户看到的是
-    //   "登录已过期"而不是"密码错了"，一脸茫然
-    if (res.status === 401 && getToken()) {
-      notifyAuthExpired()
-    }
-    const err = new Error(message)
-    err.status = res.status
-    throw err
-  }
+  await ensureOk(res)
   return res.json()
 }
+
+/**
+ * 取**二进制**响应（原文件预览这类）。
+ *
+ * 单独一个函数而不是复用 `get`：`readJson` 会 `res.json()`，二进制直接解析失败。
+ * 401 处理必须同样走 `notifyAuthExpired`，否则预览失败时界面不会切回登录态。
+ *
+ * 注意为什么不能用 `<iframe src="/api/...">` 直接指：那个请求**带不上
+ * Authorization 头**（JWT 存在 localStorage 里）。所以必须 fetch 成 blob，
+ * 再用 `URL.createObjectURL` 给浏览器。用完记得 revoke，否则整个 blob 常驻内存。
+ */
+export async function getBlob(url, params = {}) {
+  const qs = new URLSearchParams(params).toString()
+  const res = await fetch(`${BASE}${qs ? `${url}?${qs}` : url}`, { headers: authHeaders() })
+  await ensureOk(res)
+  return res.blob()
+}
+
 
 async function request(url, options = {}) {
   const res = await fetch(`${BASE}${url}`, {
