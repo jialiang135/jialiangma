@@ -332,18 +332,14 @@
           <UiEmpty v-else-if="!queueStatus" icon="database" title="暂无队列数据" compact />
           <div v-else class="queue-rows">
             <div class="queue-row">
-              <span class="queue-k">队列积压</span>
+              <span class="queue-k">等待中</span>
               <span class="queue-v is-mono">{{ formatTokens(queueStatus.queue_size) }}</span>
             </div>
             <div class="queue-row">
-              <span class="queue-k">后端</span>
-              <span class="queue-v">{{ backendLabel(queueStatus.backend) }}</span>
-            </div>
-            <div class="queue-row">
-              <span class="queue-k">健康状态</span>
-              <UiBadge :tone="queueStatus.healthy ? 'success' : 'danger'" dot>
-                {{ queueStatus.healthy ? '正常' : '异常' }}
-              </UiBadge>
+              <span class="queue-k">执行中</span>
+              <span class="queue-v is-mono">
+                {{ formatTokens(queueStatus.active) }} / {{ formatTokens(queueStatus.capacity) }}
+              </span>
             </div>
           </div>
         </UiCard>
@@ -570,14 +566,6 @@ const queueStatus = computed(() => queueData.value)
 /** 熔断器状态映射为徽章语义色 */
 function circuitTone(state) {
   return { closed: 'success', open: 'danger', half_open: 'warning' }[state] || 'neutral'
-}
-
-/** 队列后端名称：进程内线程池 / Redis(RQ) */
-function backendLabel(backend) {
-  return {
-    thread_pool: '进程内线程池',
-    rq: 'Redis (RQ)',
-  }[backend] || backend || '未知'
 }
 
 /** 相关度分数：证据轨用两位小数，便于竖向对齐比较 */

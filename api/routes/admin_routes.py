@@ -249,12 +249,17 @@ async def get_circuit_status(current_user: dict = Depends(require_admin)):
 
 @router.get("/queue-status")
 async def get_queue_status(current_user: dict = Depends(require_admin)):
-    """查看异步任务队列状态"""
+    """查看异步任务队列状态（进程内线程池）。
+
+    不再返回 ``backend`` / ``healthy`` 两个字段：RQ 后端删掉之后只剩一种实现，
+    而线程池的"健康状态"恒为正常 —— 一个永远是"正常"的字段是噪声，
+    不如直接给出真实有信息量的三个数。
+    """
     return {
         "success": True,
-        "queue_size": async_queue.get_queue_size(),
-        "backend": async_queue.backend_name(),  # "thread_pool" | "rq"
-        "healthy": async_queue.health_check(),
+        "queue_size": async_queue.get_queue_size(),  # 等待中
+        "active": async_queue.get_active_count(),  # 执行中
+        "capacity": async_queue.capacity,  # 并发上限
     }
 
 

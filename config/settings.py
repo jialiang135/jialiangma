@@ -121,9 +121,6 @@ class Settings(BaseSettings):
     # 只有在"这个分身本就该公开可问"的场景下才该打开。
     allow_anonymous_kb_access: bool = False
 
-    # --- Redis（会话缓存 + 向量缓存 + 异步队列）---
-    redis_url: str = "redis://localhost:6379/0"
-
     # --- LLM 成本费率（每 100 万 token 的美元价）---
     # JSON 字符串，覆盖 core/token_tracker.py 的内置费率表。留空则只用内置表。
     #
@@ -142,10 +139,10 @@ class Settings(BaseSettings):
     llm_cost_rates: str = ""
 
     # --- 异步任务队列 ---
-    # 默认用进程内线程池：单机部署下 RQ 需要额外 worker 进程，且对 Redis
-    # 版本有要求（RQ 2.x 需 Redis >= 5），收益为零而故障面很大。
-    # 需要跨进程/横向扩展时再打开，并务必部署独立 worker。
-    use_rq_queue: bool = False
+    # 进程内线程池（见 core/async_queue.py 顶部的取舍说明）。
+    # 这里曾经有 REDIS_URL / USE_RQ_QUEUE 两个开关和一整套 RQ 实现，已删除：
+    # 单容器单进程的部署里 RQ 的收益为零，而"没有 worker 消费"是个静默故障
+    # （任务入队后卡在 pending，前端永远轮询）—— 能力探测验不出来这一点。
     worker_threads: int = 4  # 线程池并发数（文档解析 + 向量化任务）
 
     # --- 文档处理 ---

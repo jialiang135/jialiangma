@@ -8,7 +8,7 @@ Personal digital-twin RAG system for AI Agent job interview demos. A single-admi
 
 **Stack:** FastAPI (server) + Vue 3 (frontend) + LangGraph 1.x (agent orchestration) + SQLAlchemy 2.0 async + aiosqlite (metadata) + ChromaDB (local vector store) + DeepSeek reasoning model (LLM) + Alibaba DashScope (embedding + rerank) + RAGAS (evaluation).
 
-**Deployment:** Tencent Cloud Lighthouse at http://193.112.29.164:8080 (nginx also maps :80), Docker Compose multi-container (app + nginx + redis, plus optional prometheus + grafana under the `monitoring` profile).
+**Deployment:** Tencent Cloud Lighthouse at http://193.112.29.164:8080 (nginx also maps :80), Docker Compose multi-container (app + nginx, plus optional prometheus + grafana under the `monitoring` profile). **No Redis** — caching and the task queue are in-process (see `core/async_queue.py`).
 
 ## Commands
 

@@ -1,6 +1,10 @@
 # ============================================
 # 个人数字分身 · 私有 RAG 知识库系统
-# Docker Compose — 企业版（含监控/缓存/队列）
+# Docker Compose — app + nginx（+ 可选 monitoring）
+#
+# 没有 Redis：缓存与任务队列都在应用进程内，理由见 core/async_queue.py。
+# 曾经挂着一个 Redis 服务，实测 DBSIZE=0、累计 6714 个连接全是健康检查的
+# ping（连接数≈命令数 1:1），即完全没被用到，却卡在 app 的启动依赖链上。
 # ============================================
 
 services:
@@ -17,7 +21,6 @@ services:
     environment:
       - PORT=7863
       - HOST=0.0.0.0
-      - REDIS_URL=redis://redis:6379/0
     env_file:
       - config/.env
     volumes:
@@ -36,15 +39,12 @@ services:
           cpus: "2.0"
           # 上限**必须小于宿主机内存**。原来是 2G，而目标机器就是 2G（实际
           # 1.9G 可用）—— 等于允许 app 一个容器吃光整机，把系统和
-          # nginx/redis 一起挤到 OOM。实测该应用常驻约 500~700M，
+          # nginx 一起挤到 OOM。实测该应用常驻约 500~700M，
           # 给 1G 有足够余量，同时留出空间给其它容器和系统。
           memory: 1G
         reservations:
           cpus: "0.5"
           memory: 512M
-    depends_on:
-      redis:
-        condition: service_healthy
     networks:
       - agent_net
 
@@ -85,34 +85,6 @@ services:
         reservations:
           cpus: "0.1"
           memory: 64M
-    networks:
-      - agent_net
-
-  # ========================================
-  # Redis（会话缓存 + 向量缓存 + 异步队列）
-  # ========================================
-  redis:
-    image: redis:7-alpine
-    container_name: personal-agent-redis
-    expose:
-      - "6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512M
-        reservations:
-          cpus: "0.1"
-          memory: 128M
     networks:
       - agent_net
 
@@ -178,8 +150,6 @@ volumes:
     name: personal-agent-assets
   app_logs:
     name: personal-agent-logs
-  redis_data:
-    name: personal-agent-redis-data
   prometheus_data:
     name: personal-agent-prometheus-data
   grafana_data:

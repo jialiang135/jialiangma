@@ -36,6 +36,7 @@ from core.database import (
     get_upload_task,
     update_upload_task,
 )
+from core.kb_access import resolve_kb_owner
 from core.kb_tasks import (
     compute_file_hash,
     process_file_task,
@@ -46,6 +47,29 @@ from core.schemas import APIResponse, FileMetaOut, KnowledgeBaseStats
 from rag.document_loader import SUPPORTED_EXTENSIONS
 
 router = APIRouter(prefix="/api/kb", tags=["知识库"])
+
+
+def _kb_owner(user: dict) -> int:
+    """
+    知识库管理操作（上传 / 删除 / 清空 / 重建）的目标 owner。
+
+    **必须与 `/kb/files`（读）走同一个 owner**，规则本身在
+    ``core/kb_access.py``，这里只是调用点。
+
+    原来这里写的是 ``user["owner_id"]``，而读侧用的是
+    ``settings.shared_kb_owner_id`` —— 两者对"admin 角色但 owner_id 不等于
+    共享 owner"的账号（本机上实际就有）不一致，表现为**看到的和改的不是同一个库**：
+
+    - 上传：文件落进自己的库，聊天检索不到（聊天查的是共享库）
+    - 重建：重建自己那个空库 → 日志 "重建结束: 成功 0/0 文件, 0 块"，共享库一点没动
+    - 删除：拿共享库的文件 ID 去比对，``owner_id`` 不匹配 → 报"文件不存在"
+    - 清空：清空自己的库，界面刷新后文件**还在**（因为显示的是共享库）
+
+    实测踩到的是"重建 0 个文件"。这条与 ``core/kb_access.py`` 记录的那次越权
+    （读侧写死 1）是同一类问题的两个面：**归属规则散落在各接口，没有单一裁决点。**
+    """
+    return resolve_kb_owner(user["owner_id"])
+
 
 # 允许上传的扩展名 —— 直接取自文档加载器白名单，保持单一真相源。
 # loader 内部对 .zip 走特殊分支（load_zip），所以要单独并进来。
@@ -178,7 +202,8 @@ async def list_files(user: dict = Depends(get_current_user)):
     文件名列表**。前端「知识库」页对所有用户开放，所以这是当前的既定行为；
     若希望只让管理员看到，需要改 `require_admin` 并同时调整前端导航。
     """
-    kb_owner = settings.shared_kb_owner_id
+    # 读侧与写侧必须用同一个 owner，走同一个裁决函数（见模块顶部 _kb_owner）
+    kb_owner = _kb_owner(user)
     files = await get_files_by_owner(kb_owner)
     from rag.vector_store import get_collection_stats
 
@@ -217,7 +242,7 @@ async def upload_files(
     if not files:
         raise HTTPException(status_code=400, detail="请选择要上传的文件")
 
-    owner_id = user["owner_id"]
+    owner_id = _kb_owner(user)
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
     task_ids = []
     skipped_already = []
@@ -313,7 +338,7 @@ async def upload_files(
 @router.get("/upload-status/{task_id}")
 async def get_upload_status(task_id: str, user: dict = Depends(get_current_user)):
     """查询上传/重建任务进度"""
-    task = await get_upload_task(task_id, user["owner_id"])
+    task = await get_upload_task(task_id, _kb_owner(user))
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
@@ -333,7 +358,7 @@ async def get_upload_status(task_id: str, user: dict = Depends(get_current_user)
 @router.delete("/files/{file_id}", response_model=APIResponse)
 async def delete_file(file_id: int, user: dict = Depends(require_admin)):
     """删除指定文件（仅管理员）"""
-    owner_id = user["owner_id"]
+    owner_id = _kb_owner(user)
     from rag.vector_store import delete_by_file
 
     file_record = await get_file_by_id(file_id)
@@ -362,7 +387,7 @@ async def delete_file(file_id: int, user: dict = Depends(require_admin)):
 @router.delete("/clear", response_model=APIResponse)
 async def clear_knowledge_base(user: dict = Depends(require_admin)):
     """清空知识库（仅管理员）"""
-    owner_id = user["owner_id"]
+    owner_id = _kb_owner(user)
     from rag.vector_store import delete_all_by_owner, reset_vector_store
 
     deleted_chunks = await asyncio.to_thread(delete_all_by_owner, owner_id)
@@ -386,7 +411,7 @@ async def rebuild_knowledge_base(user: dict = Depends(require_admin)):
     ``GET /api/kb/upload-status/{task_id}`` 获取进度。
     原实现是在请求里同步跑完整个循环 —— 期间整个进程的所有请求都会被卡住。
     """
-    owner_id = user["owner_id"]
+    owner_id = _kb_owner(user)
     task_id = str(uuid.uuid4())[:12]
     await create_upload_task(task_id, owner_id, REBUILD_TASK_FILENAME, 0)
 

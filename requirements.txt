@@ -72,8 +72,8 @@ slowapi==0.1.9
 
 # --- 可靠性 ---
 tenacity==8.5.0
-redis==5.2.1
-rq==2.9.1                         # 可选：USE_RQ_QUEUE=true 时才走 RQ，需独立 worker
+# 曾经有 redis + rq（异步队列的 RQ 后端），已删除 —— 单容器单进程用不上，
+# 且没有 worker 消费时任务会静默卡在 pending。取舍见 core/async_queue.py。
 
 # --- 可观测性与调度 ---
 # ⚠️ 必须钉在 7.x：8.0.0 起它要求 starlette>=1.0.0，而 fastapi 0.115.6 要求

@@ -156,3 +156,60 @@ class TestToolExecutorGuard:
         assert msgs, "应该回一条 ToolMessage 说明被拒绝"
         content = str(getattr(msgs[0], "content", msgs[0]))
         assert "未登录" in content, f"拒绝理由不对: {content}"
+
+
+class TestKbOwnerIsUnifiedBetweenReadAndWrite:
+    """
+    知识库的**归属**必须只有一个来源，读和写不能各算各的。
+
+    真实事故：读侧（`/api/kb/files`）用 `settings.shared_kb_owner_id`，
+    写侧（上传/删除/清空/重建）用 `user["owner_id"]`。对一个 **admin 角色但
+    owner_id ≠ 共享 owner** 的账号（本机实际就有这种账号），两者不是同一个库，
+    于是界面显示的是共享库、动的是自己那个空库：
+
+    - 上传 → 文件落进自己的库，聊天检索不到（聊天查共享库）
+    - 重建 → 重建空库，日志 "重建结束: 成功 0/0 文件, 0 块"，共享库一点没动
+    - 删除 → 拿共享库的文件 ID 比对 owner 不匹配，报"文件不存在"
+    - 清空 → 清空自己的库，刷新后文件**还在**（显示的是共享库）
+
+    实测踩到的是"重建 0 个文件"。规则本身在 `core/kb_access.py`，
+    这里既验语义、也验**每个端点都真的走了它**（后者才是防回归的关键：
+    上传/清空/重建这几条路径很难在单测里真跑，只能盯住调用点）。
+    """
+
+    MANAGED = (
+        "/api/kb/files",
+        "/api/kb/upload",
+        "/api/kb/upload-status/{task_id}",
+        "/api/kb/files/{file_id}",
+        "/api/kb/clear",
+        "/api/kb/rebuild",
+    )
+
+    def test_helper_targets_shared_owner_not_the_caller(self):
+        from api.routes.kb_routes import _kb_owner
+
+        caller_id = 999
+        assert caller_id != settings.shared_kb_owner_id, (
+            "这个用例的前提是 999 不是共享知识库的 owner，settings 改了就要一起改"
+        )
+        assert _kb_owner({"owner_id": caller_id, "role": "admin"}) == (
+            settings.shared_kb_owner_id
+        ), "管理操作必须落到共享知识库，否则会出现「看到的」和「改的」不是同一个库"
+
+    def test_every_kb_endpoint_goes_through_the_authority(self):
+        import inspect
+
+        from api.routes import kb_routes
+
+        by_path = {r.path: r for r in kb_routes.router.routes}
+        assert set(self.MANAGED) <= set(by_path), (
+            f"路由路径变了，用例要同步：缺 {set(self.MANAGED) - set(by_path)}"
+        )
+
+        offenders = [
+            path
+            for path in self.MANAGED
+            if "_kb_owner(" not in inspect.getsource(by_path[path].endpoint)
+        ]
+        assert not offenders, f"这些端点没走 _kb_owner，知识库归属会和读侧不一致: {offenders}"

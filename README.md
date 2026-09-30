@@ -32,10 +32,10 @@
       ├── Manage 工作流 (知识库管理 · 确定性 if/elif)
       └── Eval 工作流 (RAGAS 评测 · 确定性关键词触发)
       ↓
-  ┌───────────┬────────────┬──────────────┐
-  ChromaDB    SQLite       Redis          DeepSeek
-  (向量存储)  (元数据+审计) (缓存)         (LLM)
-  └───────────┴────────────┴──────────────┘
+  ┌───────────┬────────────┬────────────┐
+  ChromaDB    SQLite       DeepSeek
+  (向量存储)  (元数据+审计) (LLM)
+  └───────────┴────────────┴────────────┘
       ↓
   DashScope (Embedding + Rerank)
 ```
@@ -322,11 +322,11 @@ EOF
 ### 第 3 步：启动服务
 
 ```bash
-# 完整栈（含 Redis + Prometheus + Grafana）
+# 核心服务（app + nginx）
 docker compose up -d --build
 
-# 或核心服务（节省资源）
-docker compose up -d app nginx redis
+# 需要监控面板时再拉起 Prometheus + Grafana（常驻约占 400~500MB）
+docker compose --profile monitoring up -d
 ```
 
 默认访问 http://服务器IP:8080，管理员 `admin` / `admin123456`。
@@ -441,7 +441,7 @@ pip install pre-commit && pre-commit install
 | 前端 | Vue 3, Vite, Vue Router, Pinia, 纯 CSS 响应式, DOMPurify（Markdown 净化） |
 | 后端 | FastAPI, LangGraph 1.x, LangChain 1.x, SSE 真实流式 |
 | AI | DeepSeek（推理模型）, DashScope Embedding + Rerank |
-| 数据 | SQLAlchemy 2.0 async + aiosqlite（WAL）, ChromaDB, Redis |
+| 数据 | SQLAlchemy 2.0 async + aiosqlite（WAL）, ChromaDB（缓存与任务队列均在进程内，无外部中间件） |
 | 检索 | 结构感知分块, BM25 + 向量混合检索（RRF）, Rerank 重排, TTL 缓存 |
 | 评测 | RAGAS（faithfulness / relevancy / context precision & recall）+ 自建诚实度 |
 | 安全 | JWT + bcrypt, slowapi 限流, 路径穿越防护, 上传校验, 审计日志 |
@@ -464,6 +464,6 @@ personal_agent/
 ├── assets/               运行时数据（chroma_db / upload_docs / sample_kb）
 ├── logs/                 日志（Loguru 轮转，30 天保留）
 ├── Dockerfile            多阶段构建
-├── docker-compose.yml    编排文件（app + nginx + redis + prometheus + grafana）
+├── docker-compose.yml    编排文件（app + nginx，可选 prometheus/grafana）
 └── requirements.txt
 ```
