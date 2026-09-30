@@ -156,6 +156,73 @@
         @close="previewFile = null"
       />
 
+      <!-- ── 切块设置：知识库级参数（像 Dify 的数据集分段设置） ── -->
+      <UiCard>
+        <template #header>
+          <div class="list-head">
+            <div class="list-head-title">
+              <UiIcon name="sliders" :size="18" />
+              <h2>切块设置</h2>
+            </div>
+            <UiBadge tone="neutral">{{ isSemantic ? '结构感知' : '定长切分' }}</UiBadge>
+          </div>
+        </template>
+
+        <div class="chunking-form">
+          <label class="chunking-field">
+            <span class="chunking-label">分段方式</span>
+            <UiSelect
+              v-model="chunkingForm.mode"
+              :options="modeOptions"
+              :disabled="!auth.isAdmin || chunkingLoading"
+            />
+          </label>
+
+          <label class="chunking-field">
+            <span class="chunking-label">块大小（字符）</span>
+            <UiInput
+              v-model="chunkingForm.chunk_size"
+              type="number"
+              :disabled="isSemantic || !auth.isAdmin"
+              :placeholder="`${chunkingBounds.chunk_size_min} ~ ${chunkingBounds.chunk_size_max}`"
+            />
+          </label>
+
+          <label class="chunking-field">
+            <span class="chunking-label">块间重叠（字符）</span>
+            <UiInput
+              v-model="chunkingForm.chunk_overlap"
+              type="number"
+              :disabled="isSemantic || !auth.isAdmin"
+            />
+          </label>
+
+          <label class="chunking-field">
+            <span class="chunking-label">自定义分隔符（可选）</span>
+            <UiInput
+              v-model="chunkingForm.separatorsText"
+              :disabled="!auth.isAdmin || chunkingLoading"
+              placeholder="逗号分隔，\n 表示换行；留空用内置默认"
+            />
+          </label>
+        </div>
+
+        <!-- 选结构感知时把 size/overlap 置灰并不等于"这两项没用"：
+             它们仍作用于没有结构信息时的定长兜底，只是结构分块本身不加重叠 -->
+        <UiAlert v-if="isSemantic" tone="info" hide-icon>
+          结构感知按文档结构切分（Markdown 标题 → 中文编号章节 → 段落）。
+          块大小与重叠仅在文档没有结构信息、走定长兜底时生效；结构分块本身不加重叠。
+        </UiAlert>
+
+        <p class="chunking-hint">{{ chunkingNote }}</p>
+
+        <div v-if="auth.isAdmin" class="chunking-actions">
+          <UiButton variant="primary" :loading="chunkingSaving" @click="saveChunking">
+            保存切块设置
+          </UiButton>
+        </div>
+      </UiCard>
+
       <!-- ── 维护与破坏性操作：用独立底色与普通区域拉开差距 ── -->
       <section v-if="auth.isAdmin" class="maintenance">
         <div class="maintenance-text">
@@ -208,7 +275,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { getKbFiles, uploadKbFiles, deleteKbFile, clearKb, rebuildKb, getUploadStatus } from '../api/kb.js'
+import { getKbFiles, uploadKbFiles, deleteKbFile, clearKb, rebuildKb, getUploadStatus, getKbChunking, updateKbChunking } from '../api/kb.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useToast } from '../composables/useToast.js'
 import { usePolling } from '../composables/usePolling.js'
@@ -225,6 +292,7 @@ import UiBadge from '../components/ui/UiBadge.vue'
 import UiAlert from '../components/ui/UiAlert.vue'
 import UiTable from '../components/ui/UiTable.vue'
 import UiModal from '../components/ui/UiModal.vue'
+import UiSelect from '../components/ui/UiSelect.vue'
 import FilePreviewDrawer from '../components/kb/FilePreviewDrawer.vue'
 import UiProgress from '../components/ui/UiProgress.vue'
 import UiIcon from '../components/ui/UiIcon.vue'
@@ -546,6 +614,74 @@ async function doClear() {
   }
 }
 
+// ── 切块设置（知识库级） ──
+//
+// 读口径与文件列表一致（登录即可）；写由后端 require_admin 把关，前端只对
+// 非管理员隐藏控件。改动的生效口径（新文件即时、旧文件需重建）来自后端返回的
+// `applies_to`，前端不自己写死文案 —— 规则只有一份。
+const chunkingLoading = ref(false)
+const chunkingSaving = ref(false)
+const chunkingForm = ref({ mode: 'semantic', chunk_size: 1000, chunk_overlap: 200, separatorsText: '' })
+const chunkingBounds = ref({ chunk_size_min: 100, chunk_size_max: 8000 })
+const chunkingNote = ref('')
+const isSemantic = computed(() => chunkingForm.value.mode === 'semantic')
+const modeOptions = [
+  { value: 'semantic', label: '结构感知（标题 / 章节 / 段落）' },
+  { value: 'fixed', label: '定长切分' },
+]
+
+/** 分隔符里的换行/制表符在单行输入框里显示成转义形式（发送时后端会还原） */
+function escapeSeparator(s) {
+  return String(s).replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t')
+}
+
+function applyChunkingConfig(data) {
+  if (!data) return
+  chunkingForm.value = {
+    mode: data.mode,
+    chunk_size: data.chunk_size,
+    chunk_overlap: data.chunk_overlap,
+    separatorsText: (data.separators || []).map(escapeSeparator).join(','),
+  }
+  if (data.bounds) chunkingBounds.value = data.bounds
+  if (data.applies_to) chunkingNote.value = data.applies_to
+}
+
+async function loadChunking() {
+  if (!auth.isLoggedIn) return
+  chunkingLoading.value = true
+  try {
+    const res = await getKbChunking()
+    applyChunkingConfig(res?.data ?? res)
+  } catch (e) {
+    toast.error(`切块设置加载失败：${e.message}`)
+  } finally {
+    chunkingLoading.value = false
+  }
+}
+
+async function saveChunking() {
+  if (!auth.isAdmin) return
+  chunkingSaving.value = true
+  try {
+    const res = await updateKbChunking({
+      mode: chunkingForm.value.mode,
+      chunk_size: Number(chunkingForm.value.chunk_size),
+      chunk_overlap: Number(chunkingForm.value.chunk_overlap),
+      // 留空 → null：清掉自定义分隔符，回落内置默认
+      separators: chunkingForm.value.separatorsText.trim() || null,
+    })
+    const r = readResult(res, '保存失败')
+    r.ok ? toast.success(r.message) : toast.error(r.message)
+    if (r.ok) applyChunkingConfig(res.data)
+  } catch (e) {
+    // 越界值走后端 400，错误信息（如"chunk_size 必须在 100~8000 之间"）直接展示
+    toast.error(e.message)
+  } finally {
+    chunkingSaving.value = false
+  }
+}
+
 // ── 确认框（一个通用宿主，删除/清空复用） ──
 const confirm = ref(null)
 const confirmPending = ref(false)
@@ -585,14 +721,20 @@ async function runConfirm() {
 }
 
 onMounted(() => {
-  if (auth.isLoggedIn) loadFiles()
+  if (auth.isLoggedIn) {
+    loadFiles()
+    loadChunking()
+  }
 })
 
 // 登录态从"未登录"变为已登录（如顶部登录栏登录）时自动补一次加载
 watch(
   () => auth.isLoggedIn,
   (isIn) => {
-    if (isIn) loadFiles()
+    if (isIn) {
+      loadFiles()
+      loadChunking()
+    }
   },
 )
 </script>
@@ -765,6 +907,34 @@ watch(
 }
 .cell-file-name {
   color: var(--c-text);
+}
+
+/* ── 切块设置卡 ── */
+.chunking-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--sp-4);
+}
+.chunking-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.chunking-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--c-text-2);
+}
+.chunking-hint {
+  margin-top: var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--c-text-2);
+  line-height: var(--lh-base);
+}
+.chunking-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--sp-4);
 }
 
 /* ── 维护 / 破坏性操作区：独立底色，与普通区域拉开差距 ── */
