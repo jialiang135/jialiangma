@@ -133,8 +133,23 @@ cd e:/zuoye/jialiangma/personal_agent && tar czf - <file1> <file2> ... | ssh ubu
 ```
 
 **Step 4b: Full source sync + Docker rebuild**
+
+⚠️ **两个会静默毁掉前端的 tar 坑，都踩过了：**
+
+1. **绝对不要加 `--exclude='frontend/dist'`。** 镜像里的前端是从**构建上下文的**
+   `frontend/dist` 拷进去的（`Dockerfile` 的 `COPY --from=frontend-prebuilt`），
+   不是构建时现生成的 —— `.dockerignore` 也特意没排除它。tar 漏掉 dist，服务器
+   就用**它自己那份旧 dist** 构建，前端改动静默地永远上不去（后端生效、界面没变）。
+   这也意味着**改前端后必须先 `npm run build` 再部署**。
+
+2. **也不要加 `--exclude='assets'`。** tar 的 exclude 是**按路径分量匹配、不限层级**的，
+   `--exclude='assets'` 会同时排掉根目录 `assets/`（本意）**和 `frontend/dist/assets/`**
+   （副作用）—— 结果新 `index.html` 传上去了、它引用的 `index-<hash>.js` 没有，
+   打开就是**整站白屏 + 资源 404**。而根目录 `assets/` 本来就不在下面的成员列表里，
+   根本不需要排除。要给排除加锚定，得写成 `--exclude='./assets'` 这种带 `./` 的形式。
+
 ```bash
-cd e:/zuoye/jialiangma/personal_agent && tar czf - --exclude='config/.env' --exclude='node_modules' --exclude='__pycache__' --exclude='*.pyc' --exclude='assets' --exclude='logs' --exclude='frontend/node_modules' --exclude='frontend/dist' api/ core/ config/ agent/ rag/ frontend/ scripts/ nginx/ .github/ requirements.txt Dockerfile docker-compose.yml main.py | ssh ubuntu@193.112.29.164 "cd /opt/personal-agent && tar xzf - && docker compose up -d --build app && echo 'deploy ok'"
+cd e:/zuoye/jialiangma/personal_agent && tar czf - --exclude='config/.env' --exclude='node_modules' --exclude='__pycache__' --exclude='*.pyc' --exclude='frontend/node_modules' api/ core/ config/ agent/ rag/ frontend/ scripts/ nginx/ .github/ requirements.txt requirements-eval.txt Dockerfile docker-compose.yml .dockerignore main.py | ssh ubuntu@193.112.29.164 "cd /opt/personal-agent && tar xzf - && docker compose up -d --build app && echo 'deploy ok'"
 ```
 
 **Step 5: Verify**
@@ -142,6 +157,22 @@ cd e:/zuoye/jialiangma/personal_agent && tar czf - --exclude='config/.env' --exc
 ssh ubuntu@193.112.29.164 "docker compose -f /opt/personal-agent/docker-compose.yml ps"
 curl -s -o /dev/null -w "HTTP %{http_code}" http://193.112.29.164:8080/api/health
 ```
+
+**Step 5b: 前端上线必查（上面那两个坑就是靠这步才暴露的）**
+
+光是 `index.html` 能打开**不代表前端部署成功** —— 上面第 2 个坑的表现正是
+"HTML 正常、JS 404、页面白屏"。必须把 HTML 里引用的资源逐个拉一遍：
+
+```bash
+# 从线上 HTML 里取出资源名，逐个验 HTTP 状态（应全是 200）
+for f in $(curl -s http://193.112.29.164:8080/ | grep -o 'assets/index-[^"]*'); do
+  curl -s -o /dev/null -w "$f → HTTP %{http_code} size=%{size_download}\n" "http://193.112.29.164:8080/$f"
+done
+```
+
+再和本地 `frontend/dist/index.html` 引用的文件名对一下：**不一致说明 dist 没同步上去**。
+最彻底的是跑一遍无头浏览器（登录 → 发一条消息 → 断言输入框清空 / 推理步骤无重复 /
+侧栏自动刷新），脚本见 `_voice_tmp/verify_deployed.py`。
 
 ### Deploy pitfalls (learned the hard way on Tencent Cloud)
 

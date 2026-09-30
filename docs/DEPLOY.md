@@ -39,13 +39,23 @@ HTTPS 经常超时，所以用 tar+SSH，不走 git）：
 ```bash
 cd e:/zuoye/jialiangma/personal_agent && tar czf - \
   --exclude='config/.env' --exclude='node_modules' --exclude='__pycache__' \
-  --exclude='*.pyc' --exclude='assets' --exclude='logs' \
-  --exclude='frontend/node_modules' --exclude='frontend/dist' \
+  --exclude='*.pyc' \
+  --exclude='frontend/node_modules' \
   api/ core/ config/ agent/ rag/ frontend/ scripts/ nginx/ .github/ \
-  requirements.txt Dockerfile docker-compose.yml main.py \
+  requirements.txt requirements-eval.txt Dockerfile docker-compose.yml \
+  .dockerignore main.py \
   | ssh ubuntu@193.112.29.164 \
     "cd /opt/personal-agent && tar xzf - && docker compose up -d --build app && echo 'deploy ok'"
 ```
+
+> ⚠️ **别加 `--exclude='frontend/dist'`，也别加 `--exclude='assets'`** —— 两个都实测过、
+> 都是把前端搞坏（详见 `CLAUDE.md` 的 Step 4b）：
+> - 排掉 `frontend/dist` → 服务器用它自己那份**旧** dist 构建，前端改动静默失效；
+> - 排掉 `assets` → tar 的 exclude **按路径分量匹配、不限层级**，会连
+>   `frontend/dist/assets/` 一起排掉，新 HTML 指向的 JS 不存在，**整站白屏 + 404**。
+>
+> 根目录 `assets/`、`logs/` 本来就不在上面的成员列表里，无需排除。
+> 改前端后必须先 `npm run build`（dist 随仓库提交，是镜像里前端的来源）。
 
 只改了静态文件（README、nginx 配置、docker-compose）时无需重建，直接秒传：
 
@@ -60,6 +70,19 @@ cd e:/zuoye/jialiangma/personal_agent && tar czf - <file1> <file2> \
 ssh ubuntu@193.112.29.164 "docker compose -f /opt/personal-agent/docker-compose.yml ps"
 curl -s -o /dev/null -w "HTTP %{http_code}\n" http://193.112.29.164:8080/api/health
 ```
+
+**前端必查这一步（`/api/health` 通过 ≠ 界面能用）：** 从线上 HTML 里取出它引用的
+资源，逐个验状态码 —— 全 200 才算前端真的上去了。白屏 + 资源 404 是"HTML 传上去了
+但 dist/assets 没传"的典型症状，而 `/api/health` 照样返回 200：
+
+```bash
+for f in $(curl -s http://193.112.29.164:8080/ | grep -o 'assets/index-[^"]*'); do
+  curl -s -o /dev/null -w "$f → HTTP %{http_code} size=%{size_download}\n" \
+    "http://193.112.29.164:8080/$f"
+done
+```
+
+再对一下本地 `frontend/dist/index.html` 引用的文件名，**不一致就是 dist 没同步上去**。
 
 ---
 
