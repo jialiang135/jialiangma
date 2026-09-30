@@ -391,20 +391,12 @@ def render_report(title: str, runs: list[tuple[str, dict]], ks: tuple[int, ...])
         delta = metric_delta(ma, mb)
 
         col = 22
-        header = (
-            f"{'指标':<24}"
-            f"{('A: ' + label_a):<{col}}"
-            f"{('B: ' + label_b):<{col}}"
-            f"Δ(B-A)"
-        )
+        header = f"{'指标':<24}{('A: ' + label_a):<{col}}{('B: ' + label_b):<{col}}Δ(B-A)"
         lines.append(header)
         lines.append("-" * 72)
         for key in metric_rows + extra_rows:
             lines.append(
-                f"{key:<24}"
-                f"{_fmt(ma.get(key), col)}"
-                f"{_fmt(mb.get(key), col)}"
-                f"{_fmt(delta.get(key))}"
+                f"{key:<24}{_fmt(ma.get(key), col)}{_fmt(mb.get(key), col)}{_fmt(delta.get(key))}"
             )
         lines.append("-" * 72)
         lines.append(
@@ -455,18 +447,24 @@ def main(argv: list[str] | None = None) -> int:
         description="检索质量评测（hit@k / MRR），支持 A/B 对比",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--testset", default=str(default_testset_path()),
-                        help="评测集 JSON 路径（默认 assets/test_data/retrieval_testset.json）")
-    parser.add_argument("--owner-id", type=int, default=None,
-                        help="知识库所有者 ID（默认取 settings.shared_kb_owner_id）")
+    parser.add_argument(
+        "--testset",
+        default=str(default_testset_path()),
+        help="评测集 JSON 路径（默认 assets/test_data/retrieval_testset.json）",
+    )
+    parser.add_argument(
+        "--owner-id",
+        type=int,
+        default=None,
+        help="知识库所有者 ID（默认取 settings.shared_kb_owner_id）",
+    )
     parser.add_argument("--ks", default="1,3,5", help="hit@k 的 k 列表，默认 1,3,5")
     parser.add_argument("--limit", type=int, default=None, help="只跑前 N 条（冒烟用）")
     parser.add_argument("--a", default=None, help="A 组覆盖参数，如 use_hybrid_search=true")
     parser.add_argument("--b", default=None, help="B 组覆盖参数（给了才做 A/B 对比）")
     parser.add_argument("--label-a", default="A", help="A 组显示名")
     parser.add_argument("--label-b", default="B", help="B 组显示名")
-    parser.add_argument("--cache", action="store_true",
-                        help="启用检索缓存（默认关闭，测真实耗时）")
+    parser.add_argument("--cache", action="store_true", help="启用检索缓存（默认关闭，测真实耗时）")
     parser.add_argument("--show-misses", action="store_true", help="打印未命中明细")
     parser.add_argument("--json", dest="json_out", default=None, help="把结果另存为 JSON")
     args = parser.parse_args(argv)

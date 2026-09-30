@@ -25,6 +25,7 @@
 
 退出码：0 = 全部通过；1 = 有检查项失败（可直接用于 CI / 部署前门禁）。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -81,8 +82,10 @@ def check_config() -> bool:
     """检查 1：配置是否可用。"""
     _section("1. 配置可用性")
     available, reason = tts_available()
-    print(f"  模型={settings.tts_model}  音色={settings.tts_voice}  "
-          f"并发上限={settings.tts_max_concurrent}")
+    print(
+        f"  模型={settings.tts_model}  音色={settings.tts_voice}  "
+        f"并发上限={settings.tts_max_concurrent}"
+    )
     if available:
         _ok(f"TTS 可用（{reason}）")
     else:
@@ -101,8 +104,12 @@ def check_markdown() -> None:
     for line in cleaned.splitlines():
         print(f"    {line}")
 
-    for junk, label in (("**", "加粗星号"), ("##", "标题井号"),
-                        ("- ", "列表符号"), ("`", "反引号")):
+    for junk, label in (
+        ("**", "加粗星号"),
+        ("##", "标题井号"),
+        ("- ", "列表符号"),
+        ("`", "反引号"),
+    ):
         if junk in cleaned:
             _bad(f"剥除不干净：仍残留{label} {junk!r}")
         else:

@@ -14,7 +14,8 @@ import asyncio
 from langchain_core.tools import tool
 from loguru import logger
 
-from core.database import get_chat_history, get_files_by_owner
+from core.db.chats import get_chat_history
+from core.db.files import get_files_by_owner
 from rag.retriever import format_context_for_prompt, retrieve
 from rag.vector_store import get_collection_stats
 

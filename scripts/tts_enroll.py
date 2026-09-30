@@ -44,6 +44,7 @@ DashScope 的服务器在北京，所以要选国内也能访问的地址。
 
 注意：声音复刻是**计费**服务，创建音色会产生费用（``--test-only`` 也会，只是建完就删）。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -81,6 +82,7 @@ def _infer_model(voice_id: str) -> str | None:
         if voice_id.startswith(model):
             return model
     return None
+
 
 # 自检用的合成文本：覆盖四声与常见韵母，长度约 20 秒
 _PROBE_TEXT = (
@@ -351,24 +353,29 @@ def main() -> int:
     p_enroll = sub.add_parser("enroll", help="用公网直链创建音色")
     p_enroll.add_argument("--url", required=True, help="录音的公网 http(s) 直链")
     p_enroll.add_argument(
-        "--name", default="myvoice",
+        "--name",
+        default="myvoice",
         help="音色前缀：小写字母+数字，<10 位（默认 myvoice）",
     )
     p_enroll.add_argument(
-        "--test-only", action="store_true",
+        "--test-only",
+        action="store_true",
         help="建完验证通过就删除，用来测地址能不能用",
     )
     p_enroll.add_argument(
-        "--prompt-seconds", type=float, default=None,
+        "--prompt-seconds",
+        type=float,
+        default=None,
         help="提示音取多少秒（默认只取 10 秒）。样本够长时调大能明显改善相似度 —— "
-             "比如录了 40 秒，默认会有 30 秒被丢掉。建议设成样本时长的 70%% 左右。",
+        "比如录了 40 秒，默认会有 30 秒被丢掉。建议设成样本时长的 70%% 左右。",
     )
     p_enroll.set_defaults(fn=cmd_enroll)
 
     p_use = sub.add_parser("use", help="把音色+配套模型写入 config/.env")
     p_use.add_argument("voice_id")
     p_use.add_argument(
-        "--model", default=None,
+        "--model",
+        default=None,
         help="合成模型；默认从音色 ID 前缀推断（如 cosyvoice-v3.5-flash-bailian-xxx → cosyvoice-v3.5-flash）",
     )
     p_use.set_defaults(fn=cmd_use)

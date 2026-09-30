@@ -442,7 +442,7 @@ class TestUTCDateTime:
     def test_roundtrip_format(self):
         from datetime import datetime
 
-        from core.database import UTCDateTime
+        from core.db.base import UTCDateTime
 
         td = UTCDateTime()
         stored = td.process_bind_param(datetime(2026, 9, 28, 7, 36, 52), None)
@@ -452,7 +452,7 @@ class TestUTCDateTime:
     def test_aware_datetime_converted_to_utc(self):
         from datetime import datetime, timedelta, timezone
 
-        from core.database import UTCDateTime
+        from core.db.base import UTCDateTime
 
         td = UTCDateTime()
         beijing = timezone(timedelta(hours=8))
@@ -462,13 +462,13 @@ class TestUTCDateTime:
     def test_parse_back(self):
         from datetime import datetime
 
-        from core.database import UTCDateTime
+        from core.db.base import UTCDateTime
 
         parsed = UTCDateTime().process_result_value("2026-09-28 07:36:52", None)
         assert parsed == datetime(2026, 9, 28, 7, 36, 52)
 
     def test_none_is_transparent(self):
-        from core.database import UTCDateTime
+        from core.db.base import UTCDateTime
 
         td = UTCDateTime()
         assert td.process_bind_param(None, None) is None
@@ -478,7 +478,7 @@ class TestUTCDateTime:
         """utcnow() 必须是 UTC（naive），否则与库中既有数据差 8 小时。"""
         from datetime import datetime, timezone
 
-        from core.database import utcnow
+        from core.db.base import utcnow
 
         diff = abs((utcnow() - datetime.now(UTC).replace(tzinfo=None)).total_seconds())
         assert diff < 5

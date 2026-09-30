@@ -45,7 +45,7 @@ from loguru import logger
 from agent.graph_workflow import get_agent_graph
 from agent.state import AgentState
 from config.settings import settings
-from core.database import run_async_blocking
+from core.db.engine import run_async_blocking
 from core.llm import extract_reasoning_delta, extract_usage
 
 # 落库时思考文本的截断上限，避免单轮对话把 reasoning 列撑爆
@@ -148,7 +148,7 @@ def _persist_turn(
     usage: dict,
 ):
     """落库 + 计费（协程工厂）。调用方决定是 await 还是跨线程跑。"""
-    from core.database import insert_chat_log
+    from core.db.chats import insert_chat_log
     from core.token_tracker import track_usage
 
     async def _run() -> None:

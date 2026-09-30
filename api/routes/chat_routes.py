@@ -10,7 +10,7 @@ from loguru import logger
 
 from api.sse_stream import sse_chat_generator
 from core.auth import get_current_user, get_optional_user
-from core.database import (
+from core.db.chats import (
     delete_conversation,
     get_chat_by_conversation_id,
     get_chat_history,

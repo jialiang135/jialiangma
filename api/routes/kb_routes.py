@@ -26,7 +26,7 @@ from loguru import logger
 from config.settings import settings
 from core.async_queue import async_queue
 from core.auth import get_current_user, require_admin
-from core.database import (
+from core.db.files import (
     create_upload_task,
     delete_all_file_records,
     delete_file_record,

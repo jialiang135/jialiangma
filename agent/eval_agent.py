@@ -20,11 +20,7 @@ from loguru import logger
 
 from agent.prompts import EVAL_AGENT_SYSTEM_PROMPT  # noqa: F401  (供上层/文档引用)
 from agent.state import AgentState
-from core.database import (
-    create_eval_report,
-    list_eval_reports,
-    update_eval_report,
-)
+from core.db.eval_reports import create_eval_report, list_eval_reports, update_eval_report
 from core.eval_runner import DEFAULT_METRICS, DEFAULT_SAMPLE_LIMIT, DEFAULT_TESTSET
 
 # 触发"运行评测"意图的关键词

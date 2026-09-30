@@ -4,7 +4,7 @@
 
 注意线程模型：APScheduler 的 BackgroundScheduler 在**自己的线程**里执行任务，
 那里没有 event loop。而数据层是 async 的，因此所有 DB 操作都要通过
-``core.database.run_async_from_thread`` 提交到主循环执行。
+``core.db.engine.run_async_from_thread`` 提交到主循环执行。
 """
 
 import time
@@ -45,8 +45,8 @@ def cleanup_old_logs(retention_days: int = 30):
 
 def cleanup_old_audit_logs(retention_days: int = 90):
     """清理过期审计日志"""
-    from core.database import cleanup_old_audit_logs as _cleanup
-    from core.database import run_async_from_thread
+    from core.db.audit import cleanup_old_audit_logs as _cleanup
+    from core.db.engine import run_async_from_thread
 
     try:
         deleted = run_async_from_thread(_cleanup(retention_days))
@@ -64,8 +64,8 @@ def backup_database():
     shutil.copy2**：启用 WAL 后主库文件可能缺少尚未 checkpoint 的事务，
     裸拷贝会得到不一致的副本。
     """
-    from core.database import backup_database as _backup
-    from core.database import run_async_from_thread
+    from core.db.engine import backup_database as _backup
+    from core.db.engine import run_async_from_thread
 
     backup_dir = ASSETS_DIR / "backups"
     timestamp = time.strftime("%Y%m%d_%H%M%S")

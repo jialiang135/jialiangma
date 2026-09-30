@@ -23,6 +23,7 @@
 注意：脚本会**真的发一条消息**，因此会消耗一次 LLM 额度并在该账号下留下
 一条对话记录（标题固定为下面的 QUESTION，跑完可在侧栏手动删掉）。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -53,7 +54,9 @@ async def main() -> int:
         page = await ctx.new_page()
 
         logs: list[str] = []
-        page.on("console", lambda m: logs.append(f"[{m.type}] {m.text}") if m.type == "error" else None)
+        page.on(
+            "console", lambda m: logs.append(f"[{m.type}] {m.text}") if m.type == "error" else None
+        )
         page.on("pageerror", lambda e: logs.append(f"[pageerror] {e}"))
 
         # ── 1. 路由守卫 ──

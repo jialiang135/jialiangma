@@ -20,7 +20,7 @@ from core.auth import (
     validate_password_strength,
     verify_password,
 )
-from core.database import (
+from core.db.users import (
     check_login_locked,
     create_user,
     get_user_by_id,

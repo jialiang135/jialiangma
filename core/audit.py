@@ -10,7 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 # 建表语句已收归 core/database.py 的 AuditLog 模型，
 # 这里不再自己建表 —— 表结构的唯一来源应当是数据层。
-from core.database import insert_audit_log
+from core.db.audit import insert_audit_log
 
 
 async def log_audit(

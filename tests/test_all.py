@@ -33,7 +33,8 @@ def client():
     from api.main import app
     from config.settings import settings
     from core.auth import hash_password
-    from core.database import create_admin_user, init_database
+    from core.db.engine import init_database
+    from core.db.users import create_admin_user
     from tests.conftest import run_async
 
     run_async(init_database())
@@ -120,7 +121,8 @@ class TestConfig:
 
 class TestDatabase:
     def test_init(self):
-        from core.database import get_db_path, init_database
+        from core.db.base import get_db_path
+        from core.db.engine import init_database
         from tests.conftest import run_async
 
         run_async(init_database())
@@ -135,7 +137,7 @@ class TestDatabase:
         以前它"通过"只是因为真实库里早就有管理员了。
         """
         from config.settings import settings
-        from core.database import get_user_by_username
+        from core.db.users import get_user_by_username
         from tests.conftest import run_async
 
         user = run_async(get_user_by_username(settings.admin_username))
@@ -143,7 +145,7 @@ class TestDatabase:
         assert user["username"] == settings.admin_username
 
     def test_file_crud(self):
-        from core.database import (
+        from core.db.files import (
             delete_file_record,
             get_file_by_id,
             get_files_by_owner,
@@ -160,7 +162,7 @@ class TestDatabase:
         assert run_async(delete_file_record(fid, 1))
 
     def test_chat_log(self):
-        from core.database import get_chat_history_count, insert_chat_log
+        from core.db.chats import get_chat_history_count, insert_chat_log
         from tests.conftest import run_async
 
         before = run_async(get_chat_history_count(1))

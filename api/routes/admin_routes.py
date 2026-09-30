@@ -10,19 +10,15 @@ from loguru import logger
 from core.async_queue import async_queue
 from core.auth import require_admin
 from core.circuit_breaker import embedding_circuit_breaker, llm_circuit_breaker
-from core.database import (
+from core.db.audit import get_audit_logs as db_get_audit_logs
+from core.db.chats import get_all_chat_logs
+from core.db.files import get_all_files, get_files_by_owner
+from core.db.stats import get_global_stats
+from core.db.users import (
     delete_user_cascade,
-    get_all_chat_logs,
-    get_all_files,
-    get_files_by_owner,
-    get_global_stats,
     get_user_by_id,
     get_users_with_counts,
     update_user_role,
-)
-from core.database import (
-    # 别名：本模块的路由函数也叫 get_audit_logs，直接同名导入会被它覆盖
-    get_audit_logs as db_get_audit_logs,
 )
 from core.paths import remove_within
 from core.schemas import (

@@ -8,7 +8,7 @@ pytest 全局配置 —— 测试隔离
 会把真实知识库清空。
 
 做法：在**任何应用模块被导入之前**把路径改到临时目录。
-conftest.py 的模块级代码先于测试模块执行，而 ``core.database`` 的 engine 是
+conftest.py 的模块级代码先于测试模块执行，而 ``core.db.engine`` 的 engine 是
 在模块导入时构建的，因此必须先改 settings。
 """
 

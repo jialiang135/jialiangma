@@ -88,7 +88,7 @@ class TestGlobalUsage:
         建表。测试库是临时目录（见 tests/conftest.py 的路径重定向），
         表由 ``init_database()`` 创建 —— 不建的话查询会报 no such table。
         """
-        from core.database import init_database
+        from core.db.engine import init_database
         from tests.conftest import run_async
 
         run_async(init_database())

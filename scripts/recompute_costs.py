@@ -22,6 +22,7 @@
 只改 ``cost_estimate`` 一个字段，**不动 token 数**——token 数是从 provider
 的 usage 记下来的真实值，重算成本不该碰它。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,7 +40,8 @@ for _stream in (sys.stdout, sys.stderr):
 
 from sqlalchemy import select  # noqa: E402
 
-from core.database import TokenUsage, session_scope  # noqa: E402
+from core.db.models import TokenUsage
+from core.db.engine import session_scope
 from core.token_tracker import COST_RATES, calculate_cost  # noqa: E402
 
 

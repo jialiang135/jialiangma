@@ -311,7 +311,7 @@ class TestEvidenceSseEvent:
 
 class TestPersistTurnEvidence:
     def test_reasoning_json_contains_evidence(self, monkeypatch):
-        import core.database as db
+        import core.db.chats as db
 
         captured: dict = {}
 
@@ -353,7 +353,7 @@ class TestPersistTurnEvidence:
 
     def test_evidence_uses_passed_in_truncated_array(self, monkeypatch):
         """落库存的是构造好的（已截断）数组，不再二次处理。"""
-        import core.database as db
+        import core.db.chats as db
 
         captured: dict = {}
 

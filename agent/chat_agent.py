@@ -80,7 +80,7 @@ async def _load_recent_history(state: AgentState) -> list:
     也传了 conversation_id，但模型看不到，于是"那它呢？""再详细说说"这类
     追问全部没有上下文。这里从 chat_logs 按 conversation_id 取最近若干轮补上。
     """
-    from core.database import get_chat_by_conversation_id
+    from core.db.chats import get_chat_by_conversation_id
 
     conversation_id = state.get("conversation_id")
     if not conversation_id:

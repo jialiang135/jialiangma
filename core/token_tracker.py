@@ -10,7 +10,9 @@ from loguru import logger
 from sqlalchemy import func, select
 
 from config.settings import settings
-from core.database import TokenUsage, User, session_scope, utcnow
+from core.db.base import utcnow
+from core.db.engine import session_scope
+from core.db.models import TokenUsage, User
 
 # 内置费率表（每 **100 万 token 的人民币价**）—— **只是兜底**。
 #

@@ -51,10 +51,8 @@ from typing import Any
 from loguru import logger
 
 from config.settings import settings
-from core.database import (
-    run_async_from_thread,
-    update_eval_report,
-)
+from core.db.engine import run_async_from_thread
+from core.db.eval_reports import update_eval_report
 from core.telemetry import span
 
 # 判定"如实回答不知道"的关键词。知识库检索为空时，系统提示词要求回答

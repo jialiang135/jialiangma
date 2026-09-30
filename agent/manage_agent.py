@@ -15,7 +15,7 @@ from loguru import logger
 
 from agent.state import AgentState
 from config.settings import settings
-from core.database import (
+from core.db.files import (
     delete_all_file_records,
     delete_file_record,
     get_file_by_id,

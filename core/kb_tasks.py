@@ -22,11 +22,11 @@ import shutil
 from loguru import logger
 
 from config.settings import settings
-from core.database import (
+from core.db.engine import run_async_from_thread
+from core.db.files import (
     find_file_by_hash_or_name,
     get_files_by_owner,
     insert_file_record,
-    run_async_from_thread,
     update_file_chunk_count,
     update_file_hash,
     update_upload_task,

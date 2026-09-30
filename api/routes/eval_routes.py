@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from core.async_queue import async_queue
 from core.auth import get_current_user, require_admin
-from core.database import (
+from core.db.eval_reports import (
     create_eval_report,
     delete_eval_report,
     get_eval_report,

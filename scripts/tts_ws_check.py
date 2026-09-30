@@ -25,6 +25,7 @@ TTS WebSocket 端点探针
 
 退出码：0 = 全部通过；1 = 有检查项失败。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -114,9 +115,11 @@ async def _check_happy_path(url: str, token: str, text: str) -> None:
 
         if total_bytes > 0:
             assert first_audio_at is not None
-            _ok(f"收到音频 {total_bytes} 字节 "
+            _ok(
+                f"收到音频 {total_bytes} 字节 "
                 f"（首包 {(first_audio_at - started_at) * 1000:.0f} ms，"
-                f"总耗时 {(time.perf_counter() - started_at):.2f}s）")
+                f"总耗时 {(time.perf_counter() - started_at):.2f}s）"
+            )
         else:
             _bad("未收到任何音频帧")
 

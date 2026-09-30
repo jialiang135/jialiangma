@@ -25,7 +25,8 @@ from api.routes.tool_routes import router as tool_router
 from api.routes.tts_routes import router as tts_router
 from config.settings import settings
 from core.auth import hash_password
-from core.database import create_admin_user, init_database
+from core.db.engine import init_database
+from core.db.users import create_admin_user
 
 
 @asynccontextmanager
@@ -37,7 +38,7 @@ async def lifespan(app: FastAPI):
 
     # 记录主事件循环：APScheduler 的后台线程需要把异步 DB 操作提交回来执行
     from config.settings import close_llm_clients
-    from core.database import bind_main_loop, dispose_engine
+    from core.db.engine import bind_main_loop, dispose_engine
     from core.telemetry import setup_telemetry
 
     # 链路追踪（未安装 OTel 时自动降级为 no-op，不影响启动）
@@ -59,7 +60,7 @@ async def lifespan(app: FastAPI):
     # 界面显示"知识库为空"，模型却仍能引用某份文档回答 ——
     # 用户看到的是一个自信的错答案。启动时主动查一次，别等用户发现。
     try:
-        from core.database import get_files_by_owner
+        from core.db.files import get_files_by_owner
         from rag.vector_store import get_collection_stats
 
         kb_files = {f["filename"] for f in await get_files_by_owner(1) if f.get("filename")}

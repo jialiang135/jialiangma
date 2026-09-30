@@ -358,7 +358,7 @@ class TestCompare:
     def test_compare_route_returns_payload(self, monkeypatch):
         """走一遍路由函数（不启 TestClient），确认取报告 + 组装链路通。"""
         from api.routes.eval_routes import compare_reports
-        from core.database import create_eval_report, update_eval_report
+        from core.db.eval_reports import create_eval_report, update_eval_report
 
         run_async(init_db())
 
@@ -399,7 +399,7 @@ class TestCompare:
 
 
 async def init_db():
-    from core.database import init_database
+    from core.db.engine import init_database
 
     await init_database()
 
@@ -472,7 +472,7 @@ def _run_eval(
     本地实现;RAGAS 由调用方先 ``_patch_ragas`` 或此处默认补一个成功的假实现。
     """
     from core import eval_runner
-    from core.database import create_eval_report, get_eval_report
+    from core.db.eval_reports import create_eval_report, get_eval_report
 
     run_async(init_db())
 
