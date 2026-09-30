@@ -31,6 +31,10 @@ from core.db.chats import (
     get_conversations,
     insert_chat_log,
 )
+from core.db.chunk_config import (
+    get_chunk_config,
+    upsert_chunk_config,
+)
 from core.db.engine import (
     async_session_factory,
     backup_database,
@@ -69,6 +73,7 @@ from core.db.models import (
     ChatLog,
     EvalReport,
     FileRecord,
+    KbChunkConfig,
     LoginAttempt,
     TokenUsage,
     UploadTask,
@@ -97,6 +102,7 @@ __all__ = [
     "ChatLog",
     "EvalReport",
     "FileRecord",
+    "KbChunkConfig",
     "LoginAttempt",
     "TokenUsage",
     "UTCDateTime",
@@ -129,6 +135,7 @@ __all__ = [
     "get_chat_history",
     "get_chat_history_count",
     "get_chat_log_by_id",
+    "get_chunk_config",
     "get_conversations",
     "get_db_path",
     "get_eval_report",
@@ -154,5 +161,6 @@ __all__ = [
     "update_file_hash",
     "update_upload_task",
     "update_user_role",
+    "upsert_chunk_config",
     "utcnow",
 ]

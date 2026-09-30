@@ -111,6 +111,21 @@ class KnowledgeBaseStats(BaseModel):
     files: list[FileMetaOut]
 
 
+class ChunkingConfigUpdate(BaseModel):
+    """
+    知识库切块配置的写请求（部分更新：只带想改的字段即可，缺省字段沿用当前值）。
+
+    刻意**不加** ``Field`` 约束：项目要求"越界值返回 400 且信息可读"，而 Field
+    约束触发的是 FastAPI 的 422（消息偏机读）。校验统一交给
+    ``core.chunking.validate_chunking_payload``，路由层把 ``ValueError`` 转成 400。
+    """
+
+    mode: str | None = None
+    chunk_size: int | None = None
+    chunk_overlap: int | None = None
+    separators: list[str] | None = None
+
+
 # ========================================
 # 对话
 # ========================================

@@ -72,6 +72,43 @@ class UploadTask(Base):
     )
 
 
+class KbChunkConfig(Base):
+    """
+    知识库级切块配置（每个知识库一行，``owner_id`` 即主键）。
+
+    **为什么单独开一张表，而不是塞进设置文件或复用某个大 JSON 列**
+    -------------------------------------------------------------
+    这三个参数（mode / chunk_size / chunk_overlap）是**运行期可改**、且**按知识库
+    隔离**的状态，和 ``config/settings.py`` 里"启动时读一次"的全局配置是两回事：
+
+    - 写进 ``.env``：settings 是**启动快照**（见 CLAUDE.md 的"配置是启动时快照"），
+      改完必须重启进程才生效，而用户期望"改完对后续上传即时生效"；而且它是全进程
+      单例，做不到按 owner 隔离（本项目的知识库归属规则见 ``core/kb_access.py``）。
+    - 塞进 ``files`` / 其它表的大 JSON 列：切块配置是**知识库级**的，跟任何单个文件
+      无关；写进文件表会随文件增删漂移，也没有自然的落点。
+    - 新建一张按实体拆分的表，正好吻合 ``core/db/`` "每块数据一个模块"的既有风格
+      （见 ``core/db/__init__.py`` 顶部说明）。
+
+    字段取值由 ``core/chunking.py`` 负责校验与兜底，模型这里只声明结构。
+    ``separators_json`` 装自定义分隔符列表（JSON-in-TEXT，与 ``eval_reports`` 存
+    ``metrics_json`` 同款做法）。
+    """
+
+    __tablename__ = "kb_chunk_config"
+
+    owner_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # server_default 只是"直接裸 SQL 插行"时的防御性兜底；**权威默认值在
+    # core/chunking.py 的 default_chunking_config()**（从 settings 派生，保证
+    # "没配置过"时行为与改造前逐字一致）。正常写入都走 upsert，显式带值。
+    mode: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'semantic'"))
+    chunk_size: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1000"))
+    chunk_overlap: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("200"))
+    separators_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 class ChatLog(Base):
     __tablename__ = "chat_logs"
 

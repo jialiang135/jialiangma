@@ -237,6 +237,9 @@ class SemanticTextSplitter:
         chunk_size:      定长兜底时的目标块大小（字符数）。
         chunk_overlap:   定长兜底时的块间重叠字符数（不回填到结构分块路径）。
         min_chunk_length: 过滤短块的最小字符数。
+        separators:      自定义分隔符优先级列表，仅用于定长路径（定长兜底 /
+                         大块二次切分）。为 ``None`` 时用 ``create_text_splitter``
+                         的内置默认，行为与改造前一致。
     """
 
     def __init__(
@@ -244,10 +247,12 @@ class SemanticTextSplitter:
         chunk_size: int = 1000,
         chunk_overlap: int = 200,
         min_chunk_length: int = 20,
+        separators: list[str] | None = None,
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.min_chunk_length = min_chunk_length
+        self.separators = separators
 
     # ------------------------------------------------------------------
     def split_text(self, text: str) -> list[str]:
@@ -280,6 +285,7 @@ class SemanticTextSplitter:
         splitter = create_text_splitter(
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,
+            separators=self.separators,
         )
         chunks = splitter.split_text(text)
         return self._post_process(chunks)
@@ -304,6 +310,7 @@ class SemanticTextSplitter:
                             splitter = create_text_splitter(
                                 chunk_size=self.chunk_size,
                                 chunk_overlap=self.chunk_overlap,
+                                separators=self.separators,
                             )
                             refined.extend(splitter.split_text(para))
                         else:
@@ -312,6 +319,7 @@ class SemanticTextSplitter:
                     splitter = create_text_splitter(
                         chunk_size=self.chunk_size,
                         chunk_overlap=self.chunk_overlap,
+                        separators=self.separators,
                     )
                     refined.extend(splitter.split_text(chunk))
             else:
@@ -385,6 +393,7 @@ def process_document(
     chunk_overlap: int = 200,
     min_chunk_length: int = 20,
     use_semantic_splitter: bool = False,
+    separators: list[str] | None = None,
 ) -> list[str]:
     """
     完整的文档处理流程：清洗 → 分块 → 过滤 → 去重。
@@ -399,6 +408,8 @@ def process_document(
                                带来重叠。
         min_chunk_length:      最短块长度。
         use_semantic_splitter: 是否使用 ``SemanticTextSplitter``（按结构分块）。
+        separators:            自定义分隔符优先级列表，同样只作用于定长路径。
+                               为 ``None`` 时用内置默认（与改造前一致）。
 
     Returns:
         最终的文本块列表。
@@ -415,6 +426,7 @@ def process_document(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             min_chunk_length=min_chunk_length,
+            separators=separators,
         )
         chunks = splitter.split_text(cleaned)
         logger.info(
@@ -424,7 +436,9 @@ def process_document(
             chunk_overlap,
         )
     else:
-        splitter = create_text_splitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        splitter = create_text_splitter(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap, separators=separators
+        )
         chunks = splitter.split_text(cleaned)
         logger.info(
             "递归分块完成: {} 块 (chunk_size={}, overlap={})",
@@ -448,6 +462,7 @@ def process_documents_batch(
     chunk_size: int = 1000,
     chunk_overlap: int = 200,
     use_semantic_splitter: bool = False,
+    separators: list[str] | None = None,
 ) -> list[dict]:
     """
     批量处理文档，返回 ``[{"filepath": ..., "filename": ..., "chunks": [...]}, ...]``。
@@ -457,6 +472,7 @@ def process_documents_batch(
         chunk_size:           分块大小。
         chunk_overlap:        分块重叠。
         use_semantic_splitter: 是否使用语义分块器。
+        separators:           自定义分隔符（仅定长路径生效）。
     """
     results = []
     for doc in docs:
@@ -465,6 +481,7 @@ def process_documents_batch(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             use_semantic_splitter=use_semantic_splitter,
+            separators=separators,
         )
         if chunks:
             results.append(

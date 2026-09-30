@@ -28,6 +28,12 @@ from loguru import logger
 from config.settings import settings
 from core.async_queue import async_queue
 from core.auth import get_current_user, require_admin
+from core.chunking import (
+    chunking_description,
+    load_chunking_config,
+    save_chunking_config,
+    validate_chunking_payload,
+)
 from core.db.files import (
     create_upload_task,
     delete_all_file_records,
@@ -45,7 +51,7 @@ from core.kb_tasks import (
     rebuild_task,
 )
 from core.paths import ensure_within, remove_within, safe_filename
-from core.schemas import APIResponse, FileMetaOut, KnowledgeBaseStats
+from core.schemas import APIResponse, ChunkingConfigUpdate, FileMetaOut, KnowledgeBaseStats
 from rag.document_loader import SUPPORTED_EXTENSIONS
 
 router = APIRouter(prefix="/api/kb", tags=["知识库"])
@@ -226,6 +232,62 @@ async def list_files(user: dict = Depends(get_current_user)):
             )
             for f in files
         ],
+    )
+
+
+# ── 切块配置（知识库级，像 Dify 的数据集分段设置） ──
+#
+# 归属仍由 `_kb_owner` 统一裁决 —— 读侧与写侧必须落到**同一个知识库**，
+# 这正是 `_kb_owner` docstring 里记的那次"看到的和改的不是同一个库"的坑。
+# 权限口径与 `/files` 对齐：读只要登录（知识库内容本就对所有登录用户开放），
+# 写按项目惯例走 `require_admin`。
+
+
+@router.get("/chunking")
+async def get_chunking_config(user: dict = Depends(get_current_user)):
+    """
+    读取当前知识库的切块配置（登录即可看，口径与 `/api/kb/files` 一致）。
+
+    返回里除了配置本体，还带默认值、合法区间与"改动何时生效"的说明 ——
+    让前端不必再抄一份规则，也避免用户误以为保存后立刻重切。
+    """
+    config = await load_chunking_config(_kb_owner(user))
+    return {"success": True, "data": chunking_description(config)}
+
+
+@router.put("/chunking", response_model=APIResponse)
+async def update_chunking_config(
+    payload: ChunkingConfigUpdate,
+    user: dict = Depends(require_admin),
+):
+    """
+    写入当前知识库的切块配置（仅管理员）。
+
+    只对**之后上传的新文件**即时生效；已入库文件需调用 `POST /api/kb/rebuild`
+    才会按新配置重切（见返回体里的 `applies_to`）。
+    """
+    owner_id = _kb_owner(user)
+    current = await load_chunking_config(owner_id)
+    try:
+        # exclude_unset：只覆盖客户端显式传来的字段，缺省字段沿用当前值（PUT 的部分更新语义）
+        config = validate_chunking_payload(payload.model_dump(exclude_unset=True), base=current)
+    except ValueError as e:
+        # 越界值（如 chunk_size=10 / overlap>=size）明确回 400 + 人话原因
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    await save_chunking_config(owner_id, config)
+    logger.info(
+        "[KB] 切块配置更新: owner={} mode={} size={} overlap={} separators={}",
+        owner_id,
+        config.mode,
+        config.chunk_size,
+        config.chunk_overlap,
+        config.separators,
+    )
+    return APIResponse(
+        success=True,
+        message="切块配置已保存：对之后上传的新文件生效，已入库文件需重建索引后生效",
+        data=chunking_description(config),
     )
 
 

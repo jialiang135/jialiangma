@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import hashlib
 import os
 import shutil
@@ -22,6 +23,7 @@ import shutil
 from loguru import logger
 
 from config.settings import settings
+from core.chunking import ChunkingConfig, resolve_chunking_config
 from core.db.engine import run_async_from_thread
 from core.db.files import (
     find_file_by_hash_or_name,
@@ -70,6 +72,40 @@ def _problem_label(reason: str, detail: str = "") -> str:
     return label
 
 
+# 当前生效的切块配置 —— 由入库 / 重建入口设置，``_split_loaded_document`` 读取。
+#
+# **为什么用 contextvar，而不是给 _split_loaded_document 加形参**：
+# 该函数是既有回归测试的打桩点，测试按 ``(outcome, semantic)`` 两个位置参数把它
+# 换掉（见 tests/test_silent_failures.py 的重建用例）。一旦加形参，这些桩会直接
+# 报 "unexpected keyword argument" —— 等于为了新功能打爆一堆旧用例。
+# contextvar 按线程 / 上下文隔离、不改调用签名；直接调用它的既有测试读不到值，
+# 自然回落到默认配置（= 改造前行为）。这不是新发明的套路：``core/eval_runner.py``
+# 的检索参数覆盖用的就是同一手法，理由也一样（不污染全局 settings）。
+_CURRENT_CHUNKING: contextvars.ContextVar[ChunkingConfig | None] = contextvars.ContextVar(
+    "kb_chunking_config", default=None
+)
+
+
+def _current_chunking() -> ChunkingConfig:
+    """取当前上下文里的切块配置；未显式设置时用默认值（等价改造前行为）。"""
+    config = _CURRENT_CHUNKING.get()
+    if config is not None:
+        return config
+    from core.chunking import default_chunking_config
+
+    return default_chunking_config()
+
+
+@contextlib.contextmanager
+def applied_chunking_config(config: ChunkingConfig):
+    """在上下文里临时启用一套切块配置（退出时务必 reset，线程池会复用线程）。"""
+    token = _CURRENT_CHUNKING.set(config)
+    try:
+        yield
+    finally:
+        _CURRENT_CHUNKING.reset(token)
+
+
 def _split_loaded_document(outcome, use_semantic_splitter: bool) -> list[dict]:
     """
     把加载结果切成 chunk 列表，并**尽量为每个 chunk 记录来源页码**。
@@ -90,9 +126,14 @@ def _split_loaded_document(outcome, use_semantic_splitter: bool) -> list[dict]:
     - 只有 PDF 有页码；其它格式 ``page`` 为 ``None``（行为与旧版一致）。
     - 页码来自 PDF 的文字层（pypdf ``extract_text``）。纯扫描件没有文字层 →
       本来就取不到文本，也就谈不上页码（需 OCR，当前不产出页码）。
+
+    切块参数（size / overlap / 分隔符）来自**当前上下文里的知识库配置**
+    （``applied_chunking_config`` 设置，默认回落到全局 settings），
+    所以同一个函数既能服务默认知识库，也能服务自定义过切块参数的知识库。
     """
     from rag.text_splitter import process_document, process_documents_batch
 
+    config = _current_chunking()
     pages = getattr(outcome, "pages", None) or []
     if pages:
         # PDF：逐页切分。**每页单独调用** process_document（无法复用批量入口，
@@ -101,7 +142,13 @@ def _split_loaded_document(outcome, use_semantic_splitter: bool) -> list[dict]:
         for page_no, page_text in enumerate(pages, start=1):
             if not page_text or not page_text.strip():
                 continue
-            for text in process_document(page_text, use_semantic_splitter=use_semantic_splitter):
+            for text in process_document(
+                page_text,
+                chunk_size=config.chunk_size,
+                chunk_overlap=config.chunk_overlap,
+                separators=config.separators,
+                use_semantic_splitter=use_semantic_splitter,
+            ):
                 chunks.append({"content": text, "page": page_no})
         return chunks
 
@@ -110,6 +157,9 @@ def _split_loaded_document(outcome, use_semantic_splitter: bool) -> list[dict]:
     # 相同的调用路径（含"单文档分块后为空"的既有行为）。
     processed = process_documents_batch(
         [{"filepath": outcome.filepath, "filename": outcome.filename, "content": outcome.content}],
+        chunk_size=config.chunk_size,
+        chunk_overlap=config.chunk_overlap,
+        separators=config.separators,
         use_semantic_splitter=use_semantic_splitter,
     )
     if not processed or not processed[0].get("chunks"):
@@ -161,13 +211,15 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
             "error": f"文件无可索引内容（{_problem_label(outcome.reason, outcome.detail)}）",
         }
 
-    with span(
-        "document.split",
-        filename=filename,
-        semantic_splitter=settings.use_semantic_splitter,
-    ):
+    # 取该知识库当前生效的切块配置（读取失败会回落到默认，不阻断入库）。
+    # 必须在这里取、而不是进 _split_loaded_document 里取：后者不知道 owner_id。
+    chunking = resolve_chunking_config(owner_id)
+    with (
+        span("document.split", filename=filename, semantic_splitter=chunking.use_semantic_splitter),
         # 按页切分（PDF 时每块带页码），见 _split_loaded_document 的精度说明
-        chunks = _split_loaded_document(outcome, settings.use_semantic_splitter)
+        applied_chunking_config(chunking),
+    ):
+        chunks = _split_loaded_document(outcome, chunking.use_semantic_splitter)
     if not chunks:
         return {"success": False, "error": "文件无可索引内容（分块后没有可用文本）"}
 
@@ -393,6 +445,10 @@ def _rebuild_knowledge_base_report(owner_id: int) -> dict:
     delete_all_by_owner(owner_id)
     reset_vector_store()
 
+    # 重建按"当前配置"重切：这正是"改了切块参数后对已有文件生效"的唯一入口。
+    # 在循环前取一次（重建期间配置不变，避免每个文件都查一次库）。
+    chunking = resolve_chunking_config(owner_id)
+
     total_chunks = 0
     succeeded = 0
     failed_files: list[dict] = []
@@ -423,7 +479,8 @@ def _rebuild_knowledge_base_report(owner_id: int) -> dict:
 
         try:
             # 按页切分（PDF 时每块带页码），见 _split_loaded_document 的精度说明
-            chunks = _split_loaded_document(outcome, settings.use_semantic_splitter)
+            with applied_chunking_config(chunking):
+                chunks = _split_loaded_document(outcome, chunking.use_semantic_splitter)
         except Exception as e:
             failed_files.append({"filename": filename, "reason": "split_error", "detail": str(e)})
             logger.error("[KB] 重建分块失败: {} - {}", filename, e)

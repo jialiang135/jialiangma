@@ -1,4 +1,4 @@
-import { del, get, getBlob, post, uploadFiles } from './index.js'
+import { del, get, getBlob, post, put, uploadFiles } from './index.js'
 
 export function getKbFiles() {
   return get('/kb/files')
@@ -18,6 +18,20 @@ export function clearKb() {
 
 export function getUploadStatus(taskId) {
   return get(`/kb/upload-status/${taskId}`)
+}
+
+// ── 切块设置（知识库级） ──
+//
+// 读：登录即可（与 /kb/files 同口径）；写：仅管理员（后端 require_admin）。
+
+/** 读取当前知识库的切块配置（含默认值、合法区间与"何时生效"说明） */
+export function getKbChunking() {
+  return get('/kb/chunking')
+}
+
+/** 保存切块配置（仅管理员）。越界值后端返回 400，错误信息可直接展示 */
+export function updateKbChunking(payload) {
+  return put('/kb/chunking', payload)
 }
 
 /**
