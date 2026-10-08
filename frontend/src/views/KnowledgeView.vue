@@ -37,7 +37,7 @@
             class="visually-hidden"
             type="file"
             multiple
-            accept=".pdf,.docx,.xlsx,.txt,.md,.py,.json,.zip,.png,.jpg"
+            :accept="acceptAttr"
             @change="onPickFiles"
           />
           <UiButton variant="secondary" :disabled="uploading" @click="fileInput?.click()">
@@ -58,7 +58,7 @@
         </div>
 
         <p class="upload-hint">
-          支持 PDF、Word、Excel、TXT、Markdown、代码文件、图片（OCR）与 ZIP；相同文件会自动跳过。
+          支持 {{ formatSummary }}；相同文件会自动跳过。
         </p>
 
         <!-- 逐文件处理进度 -->
@@ -183,7 +183,7 @@
             <UiInput
               v-model="chunkingForm.chunk_size"
               type="number"
-              :disabled="isSemantic || !auth.isAdmin"
+              :disabled="!auth.isAdmin || chunkingLoading"
               :placeholder="`${chunkingBounds.chunk_size_min} ~ ${chunkingBounds.chunk_size_max}`"
             />
           </label>
@@ -193,7 +193,7 @@
             <UiInput
               v-model="chunkingForm.chunk_overlap"
               type="number"
-              :disabled="isSemantic || !auth.isAdmin"
+              :disabled="!auth.isAdmin || chunkingLoading"
             />
           </label>
 
@@ -207,14 +207,65 @@
           </label>
         </div>
 
-        <!-- 选结构感知时把 size/overlap 置灰并不等于"这两项没用"：
-             它们仍作用于没有结构信息时的定长兜底，只是结构分块本身不加重叠 -->
+        <!-- 这段说明必须与**实测**一致。
+             原先写的是"块大小与重叠仅在定长兜底时生效"，还据此把两个输入框在
+             结构感知模式下禁用 —— 实测是错的：同一个文件（08_面试问答准备.md，
+             39038 字）块大小 1000→123 块、300→204 块，结构感知下**明显生效**。
+             它控制的是"结构块超过 1.5 倍块大小时要不要二次切分"。
+             现在没有"禁用"了，而且下面有试切预览 —— 改完立刻看得见效果。 -->
         <UiAlert v-if="isSemantic" tone="info" hide-icon>
           结构感知按文档结构切分（Markdown 标题 → 中文编号章节 → 段落）。
-          块大小与重叠仅在文档没有结构信息、走定长兜底时生效；结构分块本身不加重叠。
+          块大小仍有用：结构块超过它的 1.5 倍时会被二次切分（实测同一文件，
+          块大小 1000 → 123 块，300 → 204 块）；块间重叠只在二次切分与定长兜底时生效。
         </UiAlert>
 
         <p class="chunking-hint">{{ chunkingNote }}</p>
+
+        <!-- ── 试切预览：改配置之前先看看会切成什么样 ──
+             这一块是为了让上面的参数**可验证** —— 用户不必重建索引再肉眼比对，
+             改完立刻看到"当前 123 块 → 你的配置 204 块"，以及前几块长什么样。
+             实测就是靠它发现"自定义分隔符"对结构良好的文档几乎无效（123→122）。 -->
+        <div v-if="auth.isAdmin" class="chunking-preview">
+          <div class="preview-bar">
+            <span class="chunking-label">试切预览</span>
+            <UiSelect
+              v-model="previewFileId"
+              :options="previewFileOptions"
+              :disabled="previewLoading || !files.length"
+            />
+            <UiButton
+              variant="secondary"
+              :loading="previewLoading"
+              :disabled="!previewFileId"
+              @click="runChunkingPreview"
+            >
+              按当前填写的参数试切
+            </UiButton>
+          </div>
+
+          <div v-if="chunkingPreview" class="preview-result">
+            <div class="preview-compare">
+              <span>当前保存的配置：<b>{{ chunkingPreview.current.total_chunks }}</b> 块（平均 {{ chunkingPreview.current.avg_chars }} 字）</span>
+              <span class="preview-arrow">→</span>
+              <span>你填的配置：<b>{{ chunkingPreview.candidate.total_chunks }}</b> 块（平均 {{ chunkingPreview.candidate.avg_chars }} 字，最大 {{ chunkingPreview.candidate.max_chars }}）</span>
+            </div>
+
+            <UiAlert v-if="chunkingPreview.identical" tone="warning" hide-icon>
+              两套配置切出来的结果**完全一样** —— 说明你改的这项对<b>这个文件</b>没有影响。
+              换个文件试试，或改别的参数。
+            </UiAlert>
+
+            <div v-if="chunkingPreview.candidate.sample.length" class="preview-sample">
+              <div class="preview-sample-title">前 {{ chunkingPreview.candidate.sample.length }} 块长这样：</div>
+              <div v-for="c in chunkingPreview.candidate.sample" :key="c.index" class="preview-chunk">
+                <span class="preview-chunk-head">
+                  #{{ c.index }}<template v-if="c.page"> · 第 {{ c.page }} 页</template> · {{ c.chars }} 字
+                </span>
+                <pre class="preview-chunk-text">{{ c.content }}</pre>
+              </div>
+            </div>
+          </div>
+        </div>
 
         <div v-if="auth.isAdmin" class="chunking-actions">
           <UiButton variant="primary" :loading="chunkingSaving" @click="saveChunking">
@@ -275,7 +326,18 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { getKbFiles, uploadKbFiles, deleteKbFile, clearKb, rebuildKb, getUploadStatus, getKbChunking, updateKbChunking } from '../api/kb.js'
+import {
+  getKbFiles,
+  uploadKbFiles,
+  deleteKbFile,
+  clearKb,
+  rebuildKb,
+  getUploadStatus,
+  getKbChunking,
+  updateKbChunking,
+  previewKbChunking,
+  getKbFormats,
+} from '../api/kb.js'
 import { useAuthStore } from '../stores/auth.js'
 import { useToast } from '../composables/useToast.js'
 import { usePolling } from '../composables/usePolling.js'
@@ -318,6 +380,17 @@ const toast = useToast()
 // ── 文件列表：走 useAsyncData（并发保护 + 错误必落到 error，不再静默吞掉） ──
 const { data: kbStats, loading: filesLoading, error: filesError, run: loadFiles } =
   useAsyncData(() => getKbFiles())
+
+/** 上传支持的格式：从后端取，别在前端手抄（曾经抄漏过 6 种，见 /kb/formats 的注释） */
+const kbFormats = ref({ extensions: [], groups: [] })
+const acceptAttr = computed(() =>
+  kbFormats.value.extensions.length ? kbFormats.value.extensions.join(',') : undefined,
+)
+const formatSummary = computed(() =>
+  kbFormats.value.groups.length
+    ? kbFormats.value.groups.map((g) => g.label).join('、')
+    : 'PDF、Word、Excel、TXT、Markdown、代码、图片（OCR）与 ZIP',
+)
 
 const files = computed(() => kbStats.value?.files ?? [])
 const totalFiles = computed(() => kbStats.value?.total_files ?? files.value.length)
@@ -625,6 +698,41 @@ const chunkingForm = ref({ mode: 'semantic', chunk_size: 1000, chunk_overlap: 20
 const chunkingBounds = ref({ chunk_size_min: 100, chunk_size_max: 8000 })
 const chunkingNote = ref('')
 const isSemantic = computed(() => chunkingForm.value.mode === 'semantic')
+
+/* ── 试切预览：让上面的参数可验证，而不是靠说明文字让人相信 ── */
+const previewLoading = ref(false)
+const chunkingPreview = ref(null)
+/** 默认选**块数最多**的那个文件 —— 它最能体现出参数差异 */
+const previewFileId = ref(null)
+
+const previewFileOptions = computed(() =>
+  (files.value || [])
+    .slice()
+    .sort((a, b) => (b.chunk_count || 0) - (a.chunk_count || 0))
+    .map((f) => ({
+      value: f.id,
+      label: `${f.filename}（${formatTokens(f.chunk_count || 0)} 块）`,
+    })),
+)
+
+async function runChunkingPreview() {
+  if (!previewFileId.value) return
+  previewLoading.value = true
+  chunkingPreview.value = null
+  try {
+    const res = await previewKbChunking(previewFileId.value, {
+      mode: chunkingForm.value.mode,
+      chunk_size: Number(chunkingForm.value.chunk_size),
+      chunk_overlap: Number(chunkingForm.value.chunk_overlap),
+      separators: chunkingForm.value.separatorsText.trim() || null,
+    })
+    chunkingPreview.value = res?.data || null
+  } catch (e) {
+    toast.error(e?.message || '试切失败')
+  } finally {
+    previewLoading.value = false
+  }
+}
 const modeOptions = [
   { value: 'semantic', label: '结构感知（标题 / 章节 / 段落）' },
   { value: 'fixed', label: '定长切分' },
@@ -645,6 +753,15 @@ function applyChunkingConfig(data) {
   }
   if (data.bounds) chunkingBounds.value = data.bounds
   if (data.applies_to) chunkingNote.value = data.applies_to
+}
+
+async function loadFormats() {
+  try {
+    const res = await getKbFormats()
+    kbFormats.value = res?.data || { extensions: [], groups: [] }
+  } catch {
+    // 拿不到就回落内置文案与不设 accept（浏览器不过滤，用户仍可全选上传）
+  }
 }
 
 async function loadChunking() {
@@ -724,6 +841,7 @@ onMounted(() => {
   if (auth.isLoggedIn) {
     loadFiles()
     loadChunking()
+    loadFormats()
   }
 })
 
@@ -999,5 +1117,62 @@ watch(
   display: inline-flex;
   gap: var(--sp-2);
   justify-content: flex-end;
+}
+
+/* 试切预览：把"参数到底有没有效果"变成看得见的东西 */
+.chunking-preview {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px dashed var(--c-border);
+}
+.preview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+}
+.preview-result {
+  margin-top: var(--sp-3);
+}
+.preview-compare {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--c-text-2);
+}
+.preview-arrow {
+  color: var(--c-text-3);
+}
+.preview-compare b {
+  color: var(--c-text);
+}
+.preview-sample-title {
+  margin: var(--sp-3) 0 var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--c-text-3);
+}
+.preview-chunk {
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+}
+.preview-chunk-head {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--c-accent);
+}
+.preview-chunk-text {
+  margin: var(--sp-1) 0 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--c-text-2);
 }
 </style>

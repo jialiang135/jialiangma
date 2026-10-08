@@ -131,6 +131,17 @@ class ChunkingConfigUpdate(BaseModel):
 # ========================================
 
 
+class ChunkingPreviewRequest(BaseModel):
+    """
+    试切预览请求：拿一个**已入库**文件按候选配置试切，**不落库、不重建**。
+
+    ``config`` 省略时就用当前保存的配置 —— 那也是有用的（先看看现状切成什么样）。
+    """
+
+    file_id: int
+    config: ChunkingConfigUpdate | None = None
+
+
 class ChatRequest(BaseModel):
     message: str
     agent_mode: str = Field(default="chat", pattern="^(chat|manage|eval)$")

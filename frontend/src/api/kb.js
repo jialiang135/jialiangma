@@ -66,3 +66,18 @@ export function getKbFileText(fileId) {
 export function getKbFileBlob(fileId) {
   return getBlob(`/kb/files/${fileId}/content`, { mode: 'raw' })
 }
+
+/**
+ * 试切预览：按候选配置切一个已入库文件，并与**当前保存的配置**对比。
+ *
+ * 为什么不落库：用户只是想看看"改了会变成什么样"。重建索引要几十秒还要花
+ * embedding 钱，拿它当预览太贵。
+ */
+export function previewKbChunking(fileId, config) {
+  return post('/kb/chunking/preview', { file_id: fileId, config })
+}
+
+/** 上传支持的格式清单 —— 与后端同一份，别在前端手抄（抄漏过 .doc/.xls/.csv 等） */
+export function getKbFormats() {
+  return get('/kb/formats')
+}

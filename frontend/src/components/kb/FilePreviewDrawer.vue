@@ -33,8 +33,6 @@ const props = defineProps({
   open: { type: Boolean, default: false },
   /** { id, filename, chunk_count } */
   file: { type: Object, default: null },
-  /** 从证据轨跳进来时要高亮/滚动到的切片序号 */
-  focusChunk: { type: Number, default: null },
 })
 
 const emit = defineEmits(['close'])
@@ -137,20 +135,11 @@ async function loadChunks() {
     const data = res?.data || {}
     chunks.value = data.chunks || []
     chunkTotal.value = data.total || 0
-    scrollToFocus()
   } catch (e) {
     chunksError.value = e?.message || '加载切片失败'
   } finally {
     chunksLoading.value = false
   }
-}
-
-/** 从证据轨跳进来时，把目标切片滚到视野中间并高亮 */
-async function scrollToFocus() {
-  if (props.focusChunk === null || props.focusChunk === undefined) return
-  await new Promise((r) => requestAnimationFrame(r))
-  const el = document.querySelector(`[data-chunk-idx="${props.focusChunk}"]`)
-  el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
 }
 
 watch(
@@ -163,10 +152,6 @@ watch(
     reset()
     // 默认标签是"原文件"，切片等切过去再拉（省一次请求）
     loadRaw()
-    if (props.focusChunk !== null && props.focusChunk !== undefined) {
-      tab.value = 'chunks'
-      loadChunks()
-    }
   },
   { immediate: true },
 )
@@ -255,9 +240,7 @@ onBeforeUnmount(revokeRaw)
           <li
             v-for="c in chunks"
             :key="c.chunk_idx"
-            :data-chunk-idx="c.chunk_idx"
             class="chunk"
-            :class="{ 'is-focus': c.chunk_idx === focusChunk }"
           >
             <div class="chunk-head">
               <span class="chunk-idx">#{{ c.chunk_idx }}</span>
@@ -387,10 +370,6 @@ onBeforeUnmount(revokeRaw)
   background: var(--c-surface-2);
   border: 1px solid var(--c-border);
   border-radius: var(--r-md);
-}
-.chunk.is-focus {
-  border-color: var(--c-accent);
-  box-shadow: 0 0 0 3px var(--c-accent-soft);
 }
 .chunk-head {
   display: flex;

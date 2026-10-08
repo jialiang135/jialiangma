@@ -7,6 +7,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 
+from config.settings import settings
 from core.async_queue import async_queue
 from core.auth import require_admin
 from core.circuit_breaker import embedding_circuit_breaker, llm_circuit_breaker
@@ -99,7 +100,6 @@ async def remove_user(
         logger.warning(f"[Admin] 清理用户 {user_id} 向量库失败: {e}")
 
     # 清理上传文件
-    from config.settings import settings
 
     upload_dir = settings.resolve_path(settings.upload_dir)
     for record in await get_files_by_owner(user_id):
@@ -276,7 +276,7 @@ async def get_kb_consistency(current_user: dict = Depends(require_admin)):
     """
     from core.kb_tasks import check_kb_consistency
 
-    report = await asyncio.to_thread(check_kb_consistency, 1)
+    report = await asyncio.to_thread(check_kb_consistency, settings.shared_kb_owner_id)
     return {"success": True, **report}
 
 
@@ -291,7 +291,7 @@ async def repair_kb_consistency_endpoint(current_user: dict = Depends(require_ad
     """
     from core.kb_tasks import repair_kb_consistency
 
-    result = await asyncio.to_thread(repair_kb_consistency, 1)
+    result = await asyncio.to_thread(repair_kb_consistency, settings.shared_kb_owner_id)
     logger.info(
         "[Admin] 知识库一致性修复: {} 清除了 {} 个孤儿块",
         current_user["username"],

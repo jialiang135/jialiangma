@@ -106,6 +106,80 @@ def applied_chunking_config(config: ChunkingConfig):
         _CURRENT_CHUNKING.reset(token)
 
 
+def preview_split(
+    filepath: str,
+    upload_dir: str,
+    candidate: ChunkingConfig,
+    current: ChunkingConfig,
+    sample_limit: int = 3,
+    sample_chars: int = 400,
+) -> dict:
+    """
+    按两套配置**试切**同一个文件 —— "改配置之前先看看会切成什么样"。
+
+    为什么要给两套：只报候选结果的话，用户不知道"现在的"是多少，没有参照就
+    判断不了值不值得改。**解析只做一次**（PDF/OCR 才是贵的那步），**切分做两次**
+    （纯字符串处理，很便宜）。
+
+    为什么这个功能重要：切块参数原先最大的问题是**用户没法判断它有没有效果** ——
+    界面上一个"块大小"输入框，改了到底变没变？只能靠重建索引再肉眼比对。
+    有了试切，改完立刻看到块数与分块，**控件是真是假一目了然**。
+    （实测就是这么发现"自定义分隔符"在结构感知模式下完全无效的：
+     拿 08_面试问答准备.md 换配置试切，两次结果一字不差。）
+
+    **不落库、不写向量库、不改变任何状态。**
+    """
+    from rag.document_loader import load_document_detailed
+
+    outcome = load_document_detailed(filepath, upload_dir)
+    if outcome.status == "failed":
+        return {
+            "ok": False,
+            "reason": outcome.reason,
+            "detail": outcome.detail,
+            "filename": outcome.filename,
+        }
+
+    def _split(cfg: ChunkingConfig) -> list[dict]:
+        with applied_chunking_config(cfg):
+            return _split_loaded_document(outcome, cfg.use_semantic_splitter)
+
+    candidate_chunks = _split(candidate)
+    current_chunks = _split(current)
+
+    def _stats(chunks: list[dict]) -> dict:
+        sizes = [len(c["content"]) for c in chunks] or [0]
+        return {
+            "total_chunks": len(chunks),
+            "min_chars": min(sizes),
+            "max_chars": max(sizes),
+            "avg_chars": round(sum(sizes) / len(sizes), 1),
+        }
+
+    sample = [
+        {
+            "index": i,
+            "page": c.get("page"),
+            "chars": len(c["content"]),
+            "content": c["content"][:sample_chars]
+            + ("…" if len(c["content"]) > sample_chars else ""),
+        }
+        for i, c in enumerate(candidate_chunks[:sample_limit])
+    ]
+
+    return {
+        "ok": True,
+        "filename": outcome.filename,
+        "status": outcome.status,  # ok / empty —— empty 也照样能试切，只是没内容
+        "detail": outcome.detail,
+        "total_chars": len(outcome.content or ""),
+        "current": {"config": current.to_dict(), **_stats(current_chunks)},
+        "candidate": {"config": candidate.to_dict(), **_stats(candidate_chunks), "sample": sample},
+        "identical": [c["content"] for c in candidate_chunks]
+        == [c["content"] for c in current_chunks],
+    }
+
+
 def _split_loaded_document(outcome, use_semantic_splitter: bool) -> list[dict]:
     """
     把加载结果切成 chunk 列表，并**尽量为每个 chunk 记录来源页码**。

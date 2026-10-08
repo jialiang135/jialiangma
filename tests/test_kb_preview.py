@@ -237,3 +237,34 @@ class TestContentEndpoint:
 
         resp = client.get("/api/kb/files/7/content")
         assert resp.status_code == 409
+
+
+class TestSupportedFormatsEndpoint:
+    """
+    上传支持的格式清单必须由后端提供、前端取用。
+
+    前端原先手抄了一份 `accept`，抄漏了 .doc/.xls/.csv/.jpeg/.bmp/.tiff ——
+    页面文案说"支持 Excel"，选择器里却没有 .xls；切到"所有文件"又能传上去。
+    两边说法不一致，用户只能猜。现在只有一份清单。
+    """
+
+    def test_no_login_required_is_ok_but_content_is_generic(self, client):
+        """它不含敏感信息（只是扩展名），不强制登录；但要能正常返回。"""
+        resp = client.get("/api/kb/formats")
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["extensions"], "格式清单不能为空"
+
+    def test_matches_the_backend_whitelist_exactly(self, client):
+        """清单必须**等于**真正的上传白名单 —— 多一个会误导，少一个会让人以为不支持。"""
+        from api.routes.kb_routes import ALLOWED_UPLOAD_EXTENSIONS
+
+        assert set(client.get("/api/kb/formats").json()["data"]["extensions"]) == set(
+            ALLOWED_UPLOAD_EXTENSIONS
+        )
+
+    def test_covers_formats_the_frontend_used_to_miss(self, client):
+        """这几类正是当初抄漏的 —— 用断言钉住。"""
+        exts = set(client.get("/api/kb/formats").json()["data"]["extensions"])
+        for missing in (".doc", ".xls", ".csv", ".jpeg", ".bmp", ".tiff"):
+            assert missing in exts, f"{missing} 又漏了，前端选择器会过滤掉它"

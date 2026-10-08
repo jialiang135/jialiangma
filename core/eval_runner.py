@@ -815,9 +815,16 @@ def run_eval_task(
             honest = sum(1 for q in hallucination_items if q["refused"])
             honesty_rate = round(honest / len(hallucination_items), 4)
             hallucination_count = len(hallucination_items) - honest
+            # 幻觉率 = 该拒答却没拒答的比例。**必须在这里算出来**：
+            # 库里那一列只有 server_default 0.0，从来没人写过，于是接口返回的
+            # `hallucination_rate` 恒为 0 —— 一个看起来像指标、其实是常量的字段。
+            # 它和 honesty_rate 是同一件事的两个方向。
+            hallucination_rate = round(hallucination_count / len(hallucination_items), 4)
         else:
             honesty_rate = None
             hallucination_count = 0
+            # 没有"幻觉类"题目就**没有**这个指标，而不是 0（0 会被读成"零幻觉"）
+            hallucination_rate = None
 
         answered = [q for q in per_question if q["answer"]]
         avg_ctx = round(sum(q["contexts_count"] for q in per_question) / len(per_question), 2)
@@ -888,6 +895,11 @@ def run_eval_task(
                 config_json=json.dumps(config_snapshot, ensure_ascii=False),
                 honesty_rate=honesty_rate,
                 hallucination_count=hallucination_count,
+                # hallucination_rate 列是 NOT NULL（server_default 0.0），所以
+                # "没有幻觉类题目"时不能写 None。写 0 又会被读成"零幻觉" ——
+                # 于是这里只在**算得出**时写；读侧（core/db/eval_reports.py）
+                # 用 honesty_rate 是否为 None 判断"这个指标本次有没有算"。
+                hallucination_rate=(hallucination_rate if hallucination_rate is not None else 0.0),
                 avg_match_score=metric_scores.get("faithfulness"),
                 # poor_retrieval_count = 因检索为空被排除、未计入指标聚合的题数
                 poor_retrieval_count=retrieval_failed_count,

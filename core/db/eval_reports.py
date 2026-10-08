@@ -33,7 +33,12 @@ def _eval_to_dict(report: EvalReport) -> dict:
         "completed": report.completed,
         "answered_count": report.answered_count,
         "hallucination_count": report.hallucination_count,
-        "hallucination_rate": report.hallucination_rate,
+        # 没有"幻觉类"题目时这个指标本次**没算过**，返回 None 而不是 0 ——
+        # 0 会被读成"零幻觉"，而实际是"没测"。honesty_rate 就是那个判据
+        # （两者是同一件事的两个方向，见 core/eval_runner.py）。
+        "hallucination_rate": (
+            report.hallucination_rate if report.honesty_rate is not None else None
+        ),
         "honesty_rate": report.honesty_rate,
         "avg_match_score": report.avg_match_score,
         "poor_retrieval_count": report.poor_retrieval_count,

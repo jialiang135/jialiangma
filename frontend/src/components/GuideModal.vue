@@ -55,7 +55,7 @@ const emit = defineEmits(['close'])
       <ol class="steps">
         <li>
           <span class="step-num">1</span>
-          <span>在登录页注册账号（密码至少 8 位，且同时包含数字和字母），或用已有账号直接登录</span>
+          <span>在登录页注册账号，或用已有账号直接登录（密码规则以页面上的实时提示为准）</span>
         </li>
         <li>
           <span class="step-num">2</span>

@@ -10,7 +10,7 @@
       </template>
 
       <UiAlert tone="info" class="run-hint">
-        评测会对评测集中的每条问题跑一次完整问答，再用 RAGAS 逐条判定质量。
+        评测会对评测集中前 N 条问题各跑一次完整问答（N 由上面的「样本数」决定），再用 RAGAS 逐条判定质量。
         <strong>很慢</strong>（每条约 10~30 秒），因此是后台任务，可随时离开本页。
       </UiAlert>
 

@@ -220,9 +220,13 @@ class Settings(BaseSettings):
     # 那种语料下阈值很可能真正有效。重测方法见 scripts/eval_retrieval.py。
     #
     # 设为 0 或负数等于关闭过滤。
-    retrieval_min_score: float = 0.05
+    #
     # 注意：rerank 降级（分数未知为 None）时此阈值**不生效**，取舍见
     # ``rag/retriever.py`` 的 ``_retrieve_impl``。
+    #
+    # （这里原本**重复定义了两遍**，Pydantic 只认最后一个 —— 也就是说上面那一大段
+    #  实测记录当时是写在"被丢掉的那个"上。同一个字段定义两次，改一处另一处不生效，
+    #  而且编译器不会提醒。）
     retrieval_min_score: float = 0.05
 
     model_config = {

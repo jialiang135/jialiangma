@@ -51,7 +51,13 @@ from core.kb_tasks import (
     rebuild_task,
 )
 from core.paths import ensure_within, remove_within, safe_filename
-from core.schemas import APIResponse, ChunkingConfigUpdate, FileMetaOut, KnowledgeBaseStats
+from core.schemas import (
+    APIResponse,
+    ChunkingConfigUpdate,
+    ChunkingPreviewRequest,
+    FileMetaOut,
+    KnowledgeBaseStats,
+)
 from rag.document_loader import SUPPORTED_EXTENSIONS
 
 router = APIRouter(prefix="/api/kb", tags=["知识库"])
@@ -200,6 +206,30 @@ def _clear_upload_dir(upload_dir: Path) -> None:
 # ─── 路由 ───
 
 
+@router.get("/formats")
+async def get_supported_formats():
+    """
+    上传支持的格式清单（登录可读）。
+
+    为什么要有这个接口：前端文件选择器的 ``accept`` 与页面上的"支持 XX 格式"文案
+    需要和后端**同一份**清单。原先前端是手抄的，抄漏了 .doc/.xls/.csv/.jpeg/.bmp/
+    .tiff —— 用户以为不支持，切到"所有文件"却又能传上去，两边说法不一致。
+    """
+    return {
+        "success": True,
+        "data": {
+            "extensions": sorted(ALLOWED_UPLOAD_EXTENSIONS),
+            # 给界面文案用的分组（不是白名单本身，白名单以上面为准）
+            "groups": [
+                {"label": "文档", "exts": [".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv"]},
+                {"label": "文本", "exts": [".txt", ".md", ".json", ".py"]},
+                {"label": "图片（OCR）", "exts": [".png", ".jpg", ".jpeg", ".bmp", ".tiff"]},
+                {"label": "压缩包", "exts": [".zip"]},
+            ],
+        },
+    }
+
+
 @router.get("/files", response_model=KnowledgeBaseStats)
 async def list_files(user: dict = Depends(get_current_user)):
     """
@@ -253,6 +283,49 @@ async def get_chunking_config(user: dict = Depends(get_current_user)):
     """
     config = await load_chunking_config(_kb_owner(user))
     return {"success": True, "data": chunking_description(config)}
+
+
+@router.post("/chunking/preview")
+async def preview_chunking_config(
+    body: ChunkingPreviewRequest,
+    user: dict = Depends(require_admin),
+):
+    """
+    试切预览：按候选配置切一个已入库文件，并**与当前保存的配置对比**。
+
+    为什么需要它：切块参数最大的问题是**用户没法判断它有没有效果** ——
+    界面上有个"块大小"输入框，改了到底变没变？原先只能重建索引再肉眼比对。
+    现在改完立刻看到"当前 129 块 → 你的配置 214 块"，以及前几块长什么样。
+
+    实测就是靠它发现"自定义分隔符"在结构感知模式下完全无效的：同一个文件
+    换两套配置试切，结果一字不差（`identical: true`）。
+
+    只读：解析一次、切两次，不碰数据库与向量库。
+    """
+    owner_id = _kb_owner(user)
+    resolved = await _resolve_readable_file(body.file_id, user)
+
+    current = await load_chunking_config(owner_id)
+    try:
+        candidate = validate_chunking_payload(
+            body.config.model_dump(exclude_unset=True) if body.config else {},
+            base=current,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    from core.kb_tasks import preview_split
+
+    upload_dir = str(settings.resolve_path(settings.upload_dir))
+    result = await asyncio.to_thread(
+        preview_split, str(resolved["path"]), upload_dir, candidate, current
+    )
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"这个文件切不了：{result.get('detail') or result.get('reason')}",
+        )
+    return {"success": True, "data": result}
 
 
 @router.put("/chunking", response_model=APIResponse)
