@@ -154,3 +154,27 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 )
 
         return response
+
+
+# HTTP 方法与"这条记录是不是机器请求"的判定，供**历史清理**复用同一条规则。
+_HTTP_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
+
+
+def is_http_noise(action: str, status: str) -> bool:
+    """
+    这条**已有的**审计记录是不是"机械请求噪声"（供历史清理用）。
+
+    与 `should_audit` 的关系：那个决定"要不要写"，这个决定"要不要删"。
+    **必须同源** —— 各写一套必然漂移（删掉的类型还在写、或反过来），
+    所以这里直接调 `should_audit`，不重复实现规则。
+
+    语义事件（`login` / `register` / `delete_file`…）的 action 不是
+    "METHOD /path" 形态，**一律不算噪声** —— 它们才是审计日志的本体。
+    """
+    parts = action.split(" ", 1)
+    if len(parts) != 2 or not parts[1].startswith("/"):
+        return False
+    method, path = parts
+    if method not in _HTTP_METHODS:
+        return False
+    return not should_audit(method, path, 200 if status == "success" else 400)

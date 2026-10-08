@@ -628,3 +628,36 @@ class TestAuditScope:
             "/api/token/stats",
         ):
             assert not should_audit("GET", path), f"GET {path} 不该进审计"
+
+
+class TestAuditCleanupRule:
+    """
+    历史清理用的是**同一条规则**（`is_http_noise` 内部调 `should_audit`）——
+    如果各写一套，就会出现"删掉的类型还在写"或反之，两边静默漂移。
+    """
+
+    def test_semantic_events_are_never_noise(self):
+        """路由自己写的语义审计是审计日志的本体，绝不能当噪声删掉。"""
+        from core.audit import is_http_noise
+
+        for action in ("login", "register", "delete_file", "update_user_role"):
+            assert not is_http_noise(action, "success"), f"{action} 是语义事件，不该被清"
+
+    def test_machine_requests_are_noise(self):
+        from core.audit import is_http_noise
+
+        for action, status in (
+            ("GET /metrics", "success"),
+            ("GET /", "success"),
+            ("GET /index.php", "failure"),  # 扫描器探测
+            ("GET /api/kb/files", "success"),  # 普通读
+            ("POST /api/auth/login", "success"),  # 成功登录：路由已记，这条是重复
+        ):
+            assert is_http_noise(action, status), f"{action} 应当被清"
+
+    def test_failed_login_is_kept(self):
+        """失败登录必须留 —— 它是爆破检测唯一的证据来源。"""
+        from core.audit import is_http_noise
+
+        assert not is_http_noise("POST /api/auth/login", "failure")
+        assert not is_http_noise("POST /api/auth/register", "failure")
