@@ -30,6 +30,7 @@ from loguru import logger
 
 from agent.state import AgentState
 from core.db.files import get_files_by_owner
+from core.kb_access import resolve_kb_owner
 
 
 async def manage_agent_node(state: AgentState) -> dict:
@@ -39,8 +40,23 @@ async def manage_agent_node(state: AgentState) -> dict:
     不发 LLM —— 这是**确定性操作**，用提示词去"理解意图"只会引入不确定性
     （同一句话两次可能给不同结果），而它要回答的问题本来就有唯一答案。
     """
-    # 默认 0（匿名）而不是 1：缺 owner_id 时不该回落到管理员
-    owner_id = state.get("owner_id", 0)
+    # 归属必须走 core/kb_access 的单一裁决点 —— 与聊天检索、/api/kb/files 同源。
+    #
+    # 原来这里直接用 `state["owner_id"]`，于是 admin 角色但 owner_id ≠ 共享知识库
+    # 所有者的账号会看到**两个不同的知识库**：知识库页面显示 14 个文件，而
+    # 问它"列出知识库文件"却答"知识库为空"。实测踩到（线上 `agent_mode=manage`
+    # 返回"知识库为空"，而同一账号在页面上看得到 14 个文件）。
+    # 这与之前 kb_routes 那个"读侧写侧 owner 不一致"是同一类问题的第三个面。
+    owner_id = resolve_kb_owner(state.get("owner_id"))
+    if owner_id is None:
+        logger.info("[ManageAgent] 未登录且未开放匿名访问，不展示知识库")
+        message = "🔒 当前未登录，无法查看知识库。请先登录后再试。"
+        return {
+            "final_answer": message,
+            "reasoning_log": ["🔒 未登录，未展示知识库"],
+            "messages": [AIMessage(content=message)],
+        }
+
     logger.info("[ManageAgent] 汇报知识库概况, owner_id={}", owner_id)
 
     try:

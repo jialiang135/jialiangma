@@ -66,12 +66,15 @@ class TestManageNodeOverview:
         assert "知识库为空" in answer
         assert "上传" in answer, "空的时候要告诉用户去哪儿上传"
 
-    def test_missing_owner_id_does_not_fall_back_to_admin(self, monkeypatch):
+    def test_anonymous_is_refused_without_touching_the_kb(self, monkeypatch):
         """
-        缺 owner_id 时默认 0（匿名），**不能回落到 1** —— 那会把管理员的知识库
-        报给一个身份不明的调用方。这是项目里踩过的那类越权，值得钉住。
+        匿名（缺 owner_id / 为 0）**既不能回落到管理员**，也不该去查库。
+
+        归属统一由 `core.kb_access.resolve_kb_owner` 裁决：匿名默认拿不到知识库。
+        这条与聊天检索用的是同一个裁决函数，所以两者不会各说各话。
         """
         seen: list[int] = []
+
         import agent.manage_agent as ma
 
         async def _spy(owner_id):
@@ -80,9 +83,43 @@ class TestManageNodeOverview:
 
         monkeypatch.setattr(ma, "get_files_by_owner", _spy)
 
-        asyncio.run(manage_agent_node({}))
+        out = asyncio.run(manage_agent_node({}))
 
-        assert seen == [0], f"缺 owner_id 时应按匿名处理，实际用了 {seen}"
+        assert seen == [], f"匿名不该去查知识库，实际查了 owner={seen}"
+        assert "未登录" in out["final_answer"]
+
+    def test_admin_role_with_other_owner_id_sees_the_SHARED_kb(self, monkeypatch):
+        """
+        **线上实测踩到的那个 bug**：admin 角色但 owner_id ≠ 共享知识库所有者的账号，
+        原来看到的是**自己那个空库** —— 于是"知识库页面显示 14 个文件，
+        而问它『列出知识库文件』却答『知识库为空』"。
+
+        归属必须走 `resolve_kb_owner`（与 `/api/kb/files`、聊天检索同源），
+        而不是 `state["owner_id"]`。
+        """
+        from config.settings import settings
+
+        seen: list[int] = []
+
+        import agent.manage_agent as ma
+
+        async def _spy(owner_id):
+            seen.append(owner_id)
+            return _files(2)
+
+        monkeypatch.setattr(ma, "get_files_by_owner", _spy)
+        import rag.vector_store as vs
+
+        monkeypatch.setattr(
+            vs, "get_collection_stats", lambda _oid: {"total_chunks": 20, "unique_files": 2}
+        )
+
+        out = asyncio.run(manage_agent_node({"owner_id": 999}))
+
+        assert seen == [settings.shared_kb_owner_id], (
+            f"应当查共享知识库（owner={settings.shared_kb_owner_id}），实际查了 {seen}"
+        )
+        assert "文件数 | 2" in out["final_answer"]
 
     def test_does_not_call_the_llm(self, monkeypatch):
         """它是确定性节点。一旦有人往这里塞 LLM 调用，行为就不可复现了。"""
