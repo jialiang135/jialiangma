@@ -632,3 +632,73 @@ class TestRebuildPreflight:
         assert not report.get("aborted"), "文件都在却中止了，预检写得太严"
         assert deleted == [1], "文件都在时必须照常清旧索引，否则会留下重复内容"
         assert report["succeeded_files"] == 1
+
+
+class TestStaleTasksAreCleanedOnStartup:
+    """
+    进程重启会留下幽灵任务 —— 前端永远轮询一个不会结束的任务。
+
+    后台任务跑在**本进程的线程池**里，进程一没任务就没了，但库里那行还停在
+    running/pending。实测线上积了 **1 个卡住的评测 + 4 个卡住的上传**，
+    而原先没有任何地方清理它们（因为平时没人重启，问题只在重启后显形）。
+    """
+
+    def test_in_flight_tasks_are_marked_failed(self):
+        import asyncio
+
+        from core.db.engine import fail_stale_tasks, init_database, session_scope
+
+        async def _setup():
+            await init_database()
+            from core.db.eval_reports import create_eval_report, get_eval_report
+            from core.db.files import create_upload_task, get_upload_task
+
+            # 三个"进行中"的 + 一个已完成的（那个不能被碰）
+            r_run = await create_eval_report(1, "ts", 0)
+            r_done = await create_eval_report(1, "ts", 0)
+            from sqlalchemy import text
+
+            async with session_scope() as s:
+                await s.execute(
+                    text("UPDATE eval_reports SET status='running' WHERE id=:i"), {"i": r_run}
+                )
+                await s.execute(
+                    text("UPDATE eval_reports SET status='done' WHERE id=:i"), {"i": r_done}
+                )
+            await create_upload_task("stale-1", 1, "a.md", 10)  # 默认 pending
+            done_task = await create_upload_task("done-1", 1, "b.md", 10)
+            async with session_scope() as s:
+                await s.execute(
+                    text("UPDATE upload_tasks SET status='done' WHERE task_id='done-1'")
+                )
+            return r_run, r_done, done_task
+
+        r_run, r_done, _ = asyncio.run(_setup())
+
+        fixed = asyncio.run(fail_stale_tasks())
+
+        assert fixed.get("eval_reports", 0) >= 1, f"卡住的评测没被清理: {fixed}"
+        assert fixed.get("upload_tasks", 0) >= 1, f"卡住的上传没被清理: {fixed}"
+
+        from core.db.eval_reports import get_eval_report
+
+        async def _check():
+            run = await get_eval_report(r_run, 1)
+            done = await get_eval_report(r_done, 1)
+            return run, done
+
+        run, done = asyncio.run(_check())
+        assert run["status"] == "failed", "卡住的评测应被标为失败"
+        assert "中断" in (run.get("error") or ""), f"要说明原因: {run.get('error')}"
+        assert done["status"] == "done", "已完成的任务不能被误伤"
+
+    def test_cleanup_is_idempotent(self):
+        """再跑一次不该报错，也不该改动任何东西。"""
+        import asyncio
+
+        from core.db.engine import fail_stale_tasks, init_database
+
+        asyncio.run(init_database())
+        first = asyncio.run(fail_stale_tasks())
+        second = asyncio.run(fail_stale_tasks())
+        assert sum(second.values()) == 0, f"第二次不该再清理到东西: first={first} second={second}"

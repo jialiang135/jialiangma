@@ -83,6 +83,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.debug("知识库一致性自检跳过: {}", e)
 
+    # 清理上次进程留下的「进行中」任务
+    # 后台任务跑在本进程里，重启就没了，但库里那行还停在 running/pending ——
+    # 不处理的话前端会一直轮询一个永远不会结束的任务。
+    # 实测线上积了 1 个卡住的评测 + 4 个卡住的上传（每次部署/崩溃/重启都会留下）。
+    try:
+        from core.db.engine import fail_stale_tasks
+
+        fixed = await fail_stale_tasks()
+        if any(fixed.values()):
+            logger.warning("启动清理：上次中断的任务已标记为失败 {}", fixed)
+    except Exception as e:
+        logger.error("清理中断任务失败: {}", e)
+
     # 启动定时任务调度器
     from core.scheduler import start_scheduler
 

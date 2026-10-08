@@ -242,6 +242,50 @@ async def init_database() -> None:
 # ============================================================
 
 
+# 「进行中」状态 —— 进程没了，这些状态就永远不会再变
+_IN_FLIGHT_STATUS = {
+    "eval_reports": ("pending", "running"),
+    "upload_tasks": ("pending", "processing"),
+}
+_STALE_MSG = "任务因服务重启中断，未完成 —— 请重新发起"
+
+
+async def fail_stale_tasks() -> dict[str, int]:
+    """
+    把上次进程留下的「进行中」任务标成失败。启动时调用。
+
+    **为什么必须有这个**：后台任务跑在**本进程**的线程池里（见 core/async_queue.py），
+    进程一没任务就没了 —— 但数据库里那一行还停在 running/pending。不处理的话：
+
+    - 前端会**一直轮询**一个永远不会结束的任务（进度条永远卡在那里）；
+    - 报告/上传列表里挂着幽灵条目，用户以为还在跑；
+    - 而这件事**每次都会发生**：部署重建容器、进程崩溃、机器重启。
+
+    实测线上积了 **1 个卡住的评测 + 4 个卡住的上传任务**，而代码里原先没有任何
+    地方处理它们 —— 因为平时没人重启，问题只在重启后才显形，然后一直被忽略。
+
+    Returns:
+        每张表修正的行数，如 ``{"eval_reports": 1, "upload_tasks": 4}``。
+    """
+    from sqlalchemy import text
+
+    fixed: dict[str, int] = {}
+    async with session_scope() as session:
+        for table, states in _IN_FLIGHT_STATUS.items():
+            placeholders = ",".join(f"'{s}'" for s in states)
+            result = await session.execute(
+                text(
+                    f"UPDATE {table} SET status='failed', progress=100, "
+                    f"error=:msg WHERE status IN ({placeholders})"
+                ),
+                {"msg": _STALE_MSG},
+            )
+            fixed[table] = result.rowcount or 0
+    if any(fixed.values()):
+        logger.warning("启动清理：把上次中断的任务标为失败 {}", fixed)
+    return fixed
+
+
 async def backup_database(dest_path: Path) -> None:
     """
     在线备份数据库。
