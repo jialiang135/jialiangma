@@ -204,7 +204,11 @@ class EvalReport(Base):
     total_questions: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     completed: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     answered_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
-    accuracy: Mapped[float] = mapped_column(Float, server_default=text("0.0"))
+    # 这里原有 `accuracy` 列：**全项目从没被写过、也从没被读过**（连接口都不返回
+    # 它），一直恒为 server_default 的 0.0。与本次一起清掉的 `hallucination_rate`
+    # 是同一类"看起来像指标、其实是常量"的字段，只是它连暴露都没暴露。
+    # 已从模型移除；**旧库里那一列会作为孤儿列留着**（SQLite 不会自动删列），
+    # 不影响读写，也不必为它做迁移。
     hallucination_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     hallucination_rate: Mapped[float] = mapped_column(Float, server_default=text("0.0"))
     honesty_rate: Mapped[float | None] = mapped_column(Float, nullable=True)

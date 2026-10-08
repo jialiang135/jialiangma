@@ -520,6 +520,28 @@ def _has_substantive_content(answer: str) -> bool:
     return len(residual) >= _MIN_SUBSTANTIVE_CHARS
 
 
+# 「该拒答」类题目的分类关键词。
+#
+# **为什么是一个集合而不是单个词**：原实现只认 `"幻觉" in category`，而实测
+# 用户的 `retrieval_testset` 里那 10 道题分类叫 **「诚实度测试」** —— 于是它们
+# 一道都没被算进诚实度，指标永远是 None、界面上只显示 "—"，而原因谁也看不出来。
+# （`auto_eval_testset` 用的是「幻觉检测」，恰好命中，所以那个评测集能算。）
+_REFUSAL_CATEGORY_KEYWORDS = ("幻觉", "诚实", "拒答", "知识库外", "不存在")
+
+
+def _is_refusal_question(item: dict) -> bool:
+    """
+    这道题是不是"知识库中本就没有、正确行为是如实拒答"的类型。
+
+    除了分类关键词，也接受题目上显式的 ``should_refuse: true`` —— 那是更可靠的
+    表达方式（不依赖分类命名的措辞）。将来评测集加上这个字段就自动生效。
+    """
+    if item.get("should_refuse"):
+        return True
+    category = str(item.get("category") or "")
+    return any(kw in category for kw in _REFUSAL_CATEGORY_KEYWORDS)
+
+
 def _looks_like_refusal(answer: str) -> bool:
     """
     回答是否属于"如实说不知道"。
@@ -707,12 +729,18 @@ def run_eval_task(
                     answer_failed_count += 1
                     logger.info("[Eval] 回答为空，已排除出指标聚合: {}", question[:40])
 
+                # 这题是不是"该拒答"型 —— 它决定两件事：
+                #   1. 算不算进诚实度；
+                #   2. **不喂给 context_precision/context_recall**（见下面 reference 的处理）
+                is_refusal = _is_refusal_question(item)
+
                 refused = _looks_like_refusal(answer)
                 qidx = len(per_question)
                 per_question.append(
                     {
                         "id": item.get("id"),
                         "category": category,
+                        "should_refuse": is_refusal,
                         "question": question,
                         "expected_answer": expected,
                         "answer": answer,
@@ -739,7 +767,20 @@ def run_eval_task(
                     # 不给的后果是 ragas 对这些样本返回 NaN —— 那是**真实的**
                     # "这题没有标准答案、算不了"，会被覆盖率如实报成
                     # "context_recall 只算出 N/M 个样本"，比一个假分数好得多。
-                    if expected:
+                    # 「该拒答」型的题**不给 reference**，哪怕它有 expected_answer。
+                    #
+                    # 因为那类题的"期望答案"写的是**行为**（"知识库中未记录 X，
+                    # 应如实回答『没有相关信息』"），而不是**可检索的事实** ——
+                    # 拿它去算 context_precision / context_recall（两者都要求
+                    # reference，见它们的 MRO：LLMContextPrecisionWithReference /
+                    # LLMContextRecall）等于问裁判"这段行为描述能在这 5 条片段里
+                    # 找到吗"，必然低分，把检索质量指标整体拉低。
+                    #
+                    # 不给 reference 的后果是这两个指标对该样本返回 NaN ——
+                    # 由覆盖率如实报成"只算出 N/M"，比一个假低分好。
+                    # 而 faithfulness / answer_relevancy **不需要 reference**，
+                    # 所以这类题照样会被检查"有没有编造"（这正是我们想要的）。
+                    if expected and not is_refusal:
                         sample["reference"] = expected
                     samples.append(sample)
                     sample_qidx.append(qidx)
@@ -855,7 +896,10 @@ def run_eval_task(
         # "幻觉检测" 类问题 = 知识库中本就没有答案，正确行为是如实说不知道。
         # 注意:诚实度**不**按"检索是否为空"排除题目 —— 它衡量的是行为（该不该
         # 拒答），与有没有检索到上下文无关；知识库外问题本来就不该检索到东西。
-        hallucination_items = [q for q in per_question if "幻觉" in (q["category"] or "")]
+        # 用 `should_refuse`（由 _is_refusal_question 判定）而不是
+        # `"幻觉" in category` —— 后者认不出「诚实度测试」这类分类名，
+        # 会让整个诚实度指标静默变成 None。
+        hallucination_items = [q for q in per_question if q.get("should_refuse")]
         if hallucination_items:
             honest = sum(1 for q in hallucination_items if q["refused"])
             honesty_rate = round(honest / len(hallucination_items), 4)
@@ -901,6 +945,16 @@ def run_eval_task(
 
         # ── 5. 诊断建议 ──
         recommendations: list[str] = []
+
+        # 诚实度算不出来时**说清为什么**。它原本只是 None，界面上一个 "—"，
+        # 谁也看不出是"这个评测集没有该拒答的题"还是"功能坏了"。
+        if not hallucination_items:
+            recommendations.append(
+                "本次评测集里没有「该拒答」类题目，因此**诚实度未计算** —— "
+                "它是衡量防幻觉的关键指标（对知识库外的问题有没有如实说不知道）。"
+                "建议在评测集里补几道知识库外的问题，分类名含"
+                '「幻觉/诚实/拒答/知识库外」之一，或给题目加 "should_refuse": true。'
+            )
         if metric_scores.get("faithfulness") is not None and metric_scores["faithfulness"] < 0.8:
             recommendations.append(
                 "faithfulness 偏低：回答与检索内容的吻合度不足，"

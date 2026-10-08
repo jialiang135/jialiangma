@@ -819,3 +819,103 @@ class TestToolResultsCountAsContext:
         assert any("工具查到的片段" in c for c in contexts), (
             "工具结果也进了 prompt，必须算作上下文 —— 否则 faithfulness 被系统性压低"
         )
+
+
+class TestRefusalQuestionDetection:
+    """
+    「该拒答」类题目的识别，决定两件事，两件都曾静默出错：
+
+    1. **算不算进诚实度**。原实现只认 `"幻觉" in category`，而实测用户的
+       `retrieval_testset` 里那 10 道题分类叫 **「诚实度测试」** —— 一道都没算进去，
+       诚实度永远是 None、界面只显示 "—"，原因谁也看不出来。
+    2. **喂不喂给 context_precision / context_recall**。那类题的"期望答案"写的是
+       **行为**（"知识库中未记录 X，应如实回答『没有相关信息』"），不是**可检索的
+       事实** —— 拿它算检索质量必然低分，会把这两个指标整体拉低。
+       （两者都要求 reference，见它们各自的 MRO：LLMContextPrecisionWithReference /
+        LLMContextRecall。）
+    """
+
+    @staticmethod
+    def _refusal_answer(_q, _owner):
+        return "抱歉，我的知识库中暂时没有这方面的信息，无法回答这个问题。", ["片段"], ["步骤"]
+
+    def test_honesty_test_category_counts(self, monkeypatch):
+        """分类叫「诚实度测试」的题必须算进诚实度（原先只认「幻觉」）。"""
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
+        report = _run_eval(
+            monkeypatch,
+            questions=[
+                {"id": "n1", "category": "诚实度测试", "question": "期望薪资是多少"},
+                {"id": "n2", "category": "诚实度测试", "question": "感情状况如何"},
+            ],
+            answer_fn=self._refusal_answer,
+            metrics=["faithfulness"],
+            scores_patch=capture,
+        )
+        assert report["honesty_rate"] == 1.0, (
+            f"「诚实度测试」的题没被算进诚实度（得到 {report['honesty_rate']}）—— "
+            "这会让指标永远是 None，而界面上只显示一个 '—'"
+        )
+
+    def test_explicit_should_refuse_flag_works(self, monkeypatch):
+        """显式标记优先于分类命名 —— 将来评测集用这个字段就不依赖措辞了。"""
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
+        report = _run_eval(
+            monkeypatch,
+            questions=[
+                {
+                    "id": "x1",
+                    "category": "随便什么",
+                    "question": "问个知识库外的",
+                    "should_refuse": True,
+                }
+            ],
+            answer_fn=self._refusal_answer,
+            metrics=["faithfulness"],
+            scores_patch=capture,
+        )
+        assert report["honesty_rate"] == 1.0
+
+    def test_refusal_questions_get_no_reference(self, monkeypatch):
+        """拒答题不给 reference → 检索质量指标对它返回 NaN，由覆盖率如实报出。"""
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
+        _run_eval(
+            monkeypatch,
+            questions=[
+                {
+                    "id": "n1",
+                    "category": "诚实度测试",
+                    "question": "期望薪资",
+                    "expected_answer": "知识库中未记录，应如实回答「没有相关信息」。",
+                },
+                {
+                    "id": "q1",
+                    "category": "项目经验",
+                    "question": "做过什么项目",
+                    "expected_answer": "做过 RAG 项目。",
+                },
+            ],
+            metrics=["faithfulness", "context_recall"],
+            scores_patch=capture,
+        )
+        by_q = {s["user_input"]: s for s in capture["dataset"]}
+        assert "reference" not in by_q["期望薪资"], (
+            "拒答题的『期望答案』是行为描述、不是可检索的事实，喂给 context_recall 会拉低指标"
+        )
+        assert by_q["做过什么项目"]["reference"] == "做过 RAG 项目。"
+
+    def test_explains_when_honesty_cannot_be_computed(self, monkeypatch):
+        """没有拒答题时要**说清**诚实度为什么没算，而不是只给一个 '—'。"""
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
+        report = _run_eval(
+            monkeypatch,
+            questions=[{"id": "q1", "category": "项目经验", "question": "做过什么项目"}],
+            metrics=["faithfulness"],
+            scores_patch=capture,
+        )
+        import json as _json
+
+        recs = _json.loads(report["recommendations_json"] or "[]")
+        assert any("诚实度未计算" in r for r in recs), (
+            f"没有拒答题时应当说明诚实度为何未计算，实际建议: {recs}"
+        )
