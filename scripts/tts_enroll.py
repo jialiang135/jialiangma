@@ -322,7 +322,7 @@ def cmd_use(args) -> int:
     _upsert_env(env_path, "TTS_VOICE", args.voice_id)
 
     print("\n改完要**重启服务**才生效（配置是启动时读入的）")
-    print(f"重启后验证：python scripts/tts_check.py")
+    print("重启后验证：python scripts/tts_check.py")
     return 0
 
 

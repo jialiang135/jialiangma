@@ -40,8 +40,8 @@ for _stream in (sys.stdout, sys.stderr):
 
 from sqlalchemy import select  # noqa: E402
 
-from core.db.models import TokenUsage
 from core.db.engine import session_scope
+from core.db.models import TokenUsage
 from core.token_tracker import COST_RATES, calculate_cost  # noqa: E402
 
 

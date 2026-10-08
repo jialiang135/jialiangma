@@ -82,9 +82,7 @@ def check_config() -> bool:
     """检查 1：配置是否可用。"""
     _section("1. 配置可用性")
     available, reason = tts_available()
-    print(
-        f"  模型={settings.tts_model}  音色={settings.tts_voice}  "
-    )
+    print(f"  模型={settings.tts_model}  音色={settings.tts_voice}  ")
     if available:
         _ok(f"TTS 可用（{reason}）")
     else:

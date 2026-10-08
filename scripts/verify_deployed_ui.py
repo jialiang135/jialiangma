@@ -58,6 +58,28 @@ async def _check_kb_preview(page, ok: bool) -> bool:
         await page.locator(".ui-modal-close").first.click()
         await page.wait_for_timeout(400)
 
+    # 「切块设置」的控件必须**真的渲染出来** —— 不只是"页面没报错"。
+    # 这条正是那次事故留下的：三个输入框因为漏 import 而静默消失，
+    # 只有肉眼看页面/数元素才看得出来。
+    controls = await page.evaluate(
+        """() => Array.from(document.querySelectorAll('.chunking-field')).map(el => {
+            const c = el.querySelector('input, select');
+            return { label: el.querySelector('.chunking-label')?.textContent.trim(),
+                     present: !!c,
+                     visible: c ? c.getBoundingClientRect().width > 10 : false };
+        })"""
+    )
+    if len(controls) < 4:
+        print(f"[FAIL] 切块设置卡片只有 {len(controls)} 个字段，应有 4 个")
+        ok = False
+    else:
+        broken = [c["label"] for c in controls if not (c["present"] and c["visible"])]
+        if broken:
+            print(f"[FAIL] 这些控件没渲染出来（模板里用了但没 import？）: {broken}")
+            ok = False
+        else:
+            print("[OK]   切块设置 4 个控件都渲染出来了")
+
     view_buttons = page.locator("button", has_text="查看")
     count = await view_buttons.count()
     if count == 0:
@@ -119,8 +141,15 @@ async def main() -> int:
         page = await ctx.new_page()
 
         logs: list[str] = []
+        # **warning 也要收**：Vue 对"模板里用了未导入的组件"只打 warning，
+        # 而那个组件一个元素都不渲染。实测事故：切块设置卡片的三个输入框因为
+        # 漏了 `import UiInput`，在界面上只剩标签、用户没法填 —— 而只抓 error
+        # 的验收脚本一路全绿，直到用户截图过来说"你这个都没给框我咋填"。
         page.on(
-            "console", lambda m: logs.append(f"[{m.type}] {m.text}") if m.type == "error" else None
+            "console",
+            lambda m: (
+                logs.append(f"[{m.type}] {m.text}") if m.type in ("error", "warning") else None
+            ),
         )
         page.on("pageerror", lambda e: logs.append(f"[pageerror] {e}"))
 
