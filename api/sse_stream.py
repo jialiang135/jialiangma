@@ -83,9 +83,6 @@ def _initial_state(
         "available_tools": [],
         "iteration_count": 0,
         "error": None,
-        "upload_files": None,
-        "operation": None,
-        "operation_result": None,
     }
 
 

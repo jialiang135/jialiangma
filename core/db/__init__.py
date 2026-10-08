@@ -11,7 +11,6 @@ core/db —— 数据库层（按实体拆分的包）
 
 from core.db.audit import (
     cleanup_old_audit_logs,
-    count_audit_logs,
     get_audit_logs,
     insert_audit_log,
 )
@@ -84,11 +83,9 @@ from core.db.stats import (
 )
 from core.db.users import (
     check_login_locked,
-    count_recent_failed_logins,
     create_admin_user,
     create_user,
     delete_user_cascade,
-    get_all_users,
     get_user_by_id,
     get_user_by_username,
     get_users_with_counts,
@@ -113,8 +110,6 @@ __all__ = [
     "bind_main_loop",
     "check_login_locked",
     "cleanup_old_audit_logs",
-    "count_audit_logs",
-    "count_recent_failed_logins",
     "create_admin_user",
     "create_eval_report",
     "create_upload_task",
@@ -129,7 +124,6 @@ __all__ = [
     "find_file_by_hash_or_name",
     "get_all_chat_logs",
     "get_all_files",
-    "get_all_users",
     "get_audit_logs",
     "get_chat_by_conversation_id",
     "get_chat_history",

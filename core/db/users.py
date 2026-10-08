@@ -135,39 +135,6 @@ async def record_login_attempt(
         )
 
 
-async def count_recent_failed_logins(username: str) -> int:
-    """最近锁定窗口内的失败次数（供管理接口/诊断使用）。"""
-    cutoff = utcnow() - timedelta(minutes=settings.login_lockout_minutes)
-    async with session_scope() as session:
-        return (
-            await session.execute(
-                select(func.count())
-                .select_from(LoginAttempt)
-                .where(
-                    LoginAttempt.username == username,
-                    LoginAttempt.success == 0,
-                    LoginAttempt.created_at > cutoff,
-                )
-            )
-        ).scalar_one()
-
-
-# ============================================================
-# 管理员：用户管理
-# ============================================================
-
-
-async def get_all_users() -> list[dict]:
-    async with session_scope() as session:
-        rows = (
-            (await session.execute(select(User).order_by(User.created_at.desc()))).scalars().all()
-        )
-        return [
-            {"id": u.id, "username": u.username, "role": u.role, "created_at": u.created_at}
-            for u in rows
-        ]
-
-
 async def get_users_with_counts() -> list[dict]:
     """
     用户列表 + 每人的文件数/对话数。

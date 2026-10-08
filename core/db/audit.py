@@ -13,7 +13,6 @@ from datetime import timedelta
 from loguru import logger
 from sqlalchemy import (
     delete,
-    func,
     select,
 )
 
@@ -107,13 +106,3 @@ async def cleanup_old_audit_logs(retention_days: int) -> int:
     async with session_scope() as session:
         result = await session.execute(delete(AuditLog).where(AuditLog.created_at < cutoff))
         return result.rowcount or 0
-
-
-async def count_audit_logs() -> int:
-    async with session_scope() as session:
-        return (await session.execute(select(func.count()).select_from(AuditLog))).scalar_one()
-
-
-# ============================================================
-# 评测报告
-# ============================================================

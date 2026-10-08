@@ -84,7 +84,6 @@ def check_config() -> bool:
     available, reason = tts_available()
     print(
         f"  模型={settings.tts_model}  音色={settings.tts_voice}  "
-        f"并发上限={settings.tts_max_concurrent}"
     )
     if available:
         _ok(f"TTS 可用（{reason}）")

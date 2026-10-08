@@ -65,9 +65,10 @@ class Settings(BaseSettings):
     tts_enabled: bool = True
     tts_model: str = "cosyvoice-v2"
     tts_voice: str = "longxiaochun_v2"
-    # 单连接同时进行的合成数上限。DashScope 侧对并发有配额，
-    # 而且合成是"一句话一个请求"，并发过高会被限流。
-    tts_max_concurrent: int = 2
+    # 这里原有 `tts_max_concurrent`（注释声称"单连接同时进行的合成数上限"），
+    # 但全项目**没有任何限流代码读它** —— 只有 scripts/tts_check.py 把它打印出来。
+    # 一个不起作用的旋钮比没有更糟：运维照着它调，以为能控住并发。
+    # 需要真正的并发限制时再实现（要按连接计数 + 排队，不是加个配置项就完事）。
 
     # --- 管理员 ---
     admin_username: str = "admin"

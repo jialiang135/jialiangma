@@ -58,8 +58,8 @@ class AgentState(TypedDict):
     error: str | None
 
     # --- 知识库管理专用 ---
-    upload_files: list[str] | None
-    operation: str | None  # upload / delete / list / rebuild
-    operation_result: str | None
+    # 这里原有 upload_files / operation / operation_result 三个字段：
+    # 它们只被写入、**全项目没有任何读取点**（`operation` 更是只被置为 None，
+    # 导致 manage 节点的四个分支永远走不到）。按"做不成就删掉"一并移除。
 
     # --- 预留扩展字段 ---

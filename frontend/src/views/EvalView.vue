@@ -212,6 +212,17 @@
         </div>
         <p v-else class="muted detail-none">本次评测没有可展示的指标。</p>
 
+        <!-- 样本构成：解释"这个平均值是怎么来的"。
+             这几个字段（已回答 / 因检索为空被排除 / 该拒答却作答）后端一直在返回，
+             但原先前端不读 —— 等于白算。缺了它们，用户看到 0.4 的忠实度也不知道
+             到底有多少题真的参与了统计。 -->
+        <div v-if="detailFacts.length" class="detail-facts">
+          <span v-for="f in detailFacts" :key="f.label" class="fact">
+            <span class="fact-k">{{ f.label }}</span>
+            <span class="fact-v">{{ f.value }}</span>
+          </span>
+        </div>
+
         <!-- 改进建议 -->
         <div v-if="detailRecommendations.length" class="block">
           <h3 class="block-title">
@@ -450,6 +461,33 @@ const isLive = computed(() =>
  *
  * 只列没算全的；全部算全时不显示任何东西（不给正常报告添噪声）。
  */
+/** 样本构成：让"平均值是基于多少题算出来的"看得见 */
+const detailFacts = computed(() => {
+  const d = detail.value || {}
+  const out = []
+
+  const total = Number(d.total_questions)
+  if (Number.isFinite(total) && total > 0) {
+    const answered = Number(d.answered_count)
+    out.push({
+      label: '已回答',
+      value: `${Number.isFinite(answered) ? answered : '—'} / ${total} 题`,
+    })
+  }
+
+  const poor = Number(d.poor_retrieval_count)
+  if (Number.isFinite(poor) && poor > 0) {
+    out.push({ label: '因检索为空被排除', value: `${poor} 题（未计入指标）` })
+  }
+
+  const halluc = Number(d.hallucination_count)
+  if (Number.isFinite(halluc) && halluc > 0) {
+    out.push({ label: '该拒答却作答', value: `${halluc} 题` })
+  }
+
+  return out
+})
+
 const detailCoverage = computed(() => {
   const raw = parseJson(detail.value?.metrics_json, {})?._coverage
   if (!raw || typeof raw !== 'object') return []
@@ -981,5 +1019,22 @@ onMounted(async () => {
 .coverage-hint {
   font-size: var(--fs-xs);
   color: var(--c-text-3);
+}
+
+/* 样本构成：一行小字，解释平均值是基于多少题算的 */
+.detail-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  margin-top: var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--c-text-3);
+}
+.fact-k {
+  margin-right: var(--sp-1);
+}
+.fact-v {
+  color: var(--c-text-2);
+  font-variant-numeric: tabular-nums;
 }
 </style>

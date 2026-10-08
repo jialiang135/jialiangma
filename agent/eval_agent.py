@@ -136,7 +136,6 @@ async def eval_agent_node(state: AgentState) -> dict:
             )
             return {
                 "final_answer": message,
-                "operation_result": message,
                 "reasoning_log": reasoning,
                 "messages": [AIMessage(content=message)],
             }
@@ -161,7 +160,6 @@ async def eval_agent_node(state: AgentState) -> dict:
 
         return {
             "final_answer": message,
-            "operation_result": message,
             "reasoning_log": reasoning,
             "messages": [AIMessage(content=message)],
         }
@@ -171,7 +169,6 @@ async def eval_agent_node(state: AgentState) -> dict:
         message = f"❌ 评测操作失败: {str(e)[:200]}"
         return {
             "final_answer": message,
-            "operation_result": message,
             "reasoning_log": [*reasoning, f"❌ 错误: {str(e)[:200]}"],
             "messages": [AIMessage(content=message)],
         }
