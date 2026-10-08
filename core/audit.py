@@ -53,7 +53,10 @@ async def log_audit(
 _SKIP_PREFIXES = ("/assets/", "/metrics", "/nginx-health", "/favicon")
 _SKIP_EXACT = ("/", "/index.html", "/docs", "/redoc", "/openapi.json")
 _WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
-_AUDIT_PATH_PREFIXES = ("/api/auth", "/api/admin")
+# 只有**管理侧**的读需要审计（它触及他人数据）。auth 的读不用：
+# `/api/auth/requirements` 是登录页渲染表单时拉的公开配置，每个访客都拉，
+# `/api/auth/me` 是前端加载时的会话自检 —— 都不是审计事件。
+_AUDIT_READ_PREFIXES = ("/api/admin",)
 
 
 def should_audit(method: str, path: str, status_code: int | None = None) -> bool:
@@ -65,7 +68,7 @@ def should_audit(method: str, path: str, status_code: int | None = None) -> bool
     - **写操作**（POST/PUT/PATCH/DELETE）→ 记（会改变状态）
     - `/api/auth/*` → **成功不记、失败才记**（见下）
     - `/api/admin/*`（管理员看全量数据）→ 记（触及他人数据）
-    - 其余读取 → 不记
+    - 其余读取（含 `/api/auth/*` 的读）→ 不记
 
     为什么 auth 只记失败：登录/注册**成功**时路由自己会写一条语义审计
     （`log_audit("login", user_id=..., username=..., ip_address=...)`），信息比
@@ -75,7 +78,14 @@ def should_audit(method: str, path: str, status_code: int | None = None) -> bool
     但**失败必须由中间件记**：路由在"密码错/账号锁定"时直接抛异常，不写审计，
     于是失败登录会一条记录都没有 —— 而那正是最该审计的（爆破检测）。
     """
-    if path in _SKIP_EXACT or path.startswith(_SKIP_PREFIXES):
+    # **只审计我们自己的 API 面**。非 /api/ 的路径一律不记，这一步同时挡掉两类噪声：
+    #
+    #   1. 自家前端的机械请求：SPA 外壳 `/`（每次打开页面一条）、静态资源
+    #      `/assets/*`、`/favicon.ico`；
+    #   2. **互联网扫描器的探测**：公网 IP 暴露后必然被扫，实测日志里有
+    #      `/index.php`（PHP 漏洞探测）、`/SDK/webLanguage`、`/robots.txt`
+    #      —— 都不是我们的路由，却每条都进审计表，把真事件淹没。
+    if not path.startswith("/api/"):
         return False
 
     if path.startswith("/api/auth") and method in _WRITE_METHODS:
@@ -83,7 +93,7 @@ def should_audit(method: str, path: str, status_code: int | None = None) -> bool
 
     if method in _WRITE_METHODS:
         return True
-    return path.startswith(_AUDIT_PATH_PREFIXES)
+    return path.startswith(_AUDIT_READ_PREFIXES)
 
 
 class AuditMiddleware(BaseHTTPMiddleware):

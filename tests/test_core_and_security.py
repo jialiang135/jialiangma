@@ -555,6 +555,18 @@ class TestAuditScope:
         for path in ("/metrics", "/nginx-health", "/api/health", "/assets/index-x.js", "/"):
             assert not should_audit("GET", path), f"{path} 不该进审计"
 
+    def test_ignores_scanner_probes(self):
+        """
+        **公网 IP 必然被扫**。实测日志里有 /index.php（PHP 漏洞探测）、
+        /SDK/webLanguage、/robots.txt —— 都不是我们的路由，却每条都进审计表。
+        非 /api/ 的路径一律不记。
+        """
+        from core.audit import should_audit
+
+        for path in ("/index.php", "/SDK/webLanguage", "/robots.txt", "/.env", "/wp-login.php"):
+            assert not should_audit("GET", path), f"扫描器探测 {path} 不该进审计"
+            assert not should_audit("POST", path), f"扫描器探测 {path} 不该进审计"
+
     def test_records_write_operations(self):
         from core.audit import should_audit
 
@@ -572,6 +584,17 @@ class TestAuditScope:
 
         assert should_audit("GET", "/api/admin/users")
         assert should_audit("GET", "/api/admin/audit-logs")
+
+    def test_auth_reads_are_not_audited(self):
+        """
+        `/api/auth/requirements` 是登录页渲染表单时拉的公开配置（每个访客都拉），
+        `/api/auth/me` 是前端加载时的会话自检 —— 都不是审计事件。
+        第一版规则把它们当"认证读"留下了，实测占保留量的绝大多数。
+        """
+        from core.audit import should_audit
+
+        assert not should_audit("GET", "/api/auth/requirements", 200)
+        assert not should_audit("GET", "/api/auth/me", 200)
 
     def test_auth_success_is_left_to_the_route(self):
         """
