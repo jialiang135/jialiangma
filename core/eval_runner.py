@@ -471,6 +471,8 @@ def _answer_one_sync(question: str, owner_id: int) -> tuple[str, list[str], list
     """
     import asyncio
 
+    from langchain_core.messages import ToolMessage
+
     from agent.graph_workflow import get_agent_graph
     from api.sse_stream import _initial_state
 
@@ -479,9 +481,26 @@ def _answer_one_sync(question: str, owner_id: int) -> tuple[str, list[str], list
     final_state = asyncio.run(graph.ainvoke(state))
 
     answer = final_state.get("final_answer", "") or ""
+
+    # ── 上下文 = 模型**实际看到**的全部证据，不只是前置检索那一次 ──
+    #
+    # 这是评测模块里最要命的一个错：`retrieved_docs` 只有前置检索那 5 条，而回答
+    # 是 ReAct Agent 产的 —— 它还会自己调 search_knowledge_base / get_kb_summary
+    # 再检索，那些工具结果**同样进了 prompt**。实测一次提问里模型调了 7 次工具、
+    # 拉进约 18000 字，而 retrieved_docs 只有 5 条约 5000 字。
+    #
+    # 只喂前者，裁判就是在拿"5 条材料"判"依据 23 千字材料写出的回答" ——
+    # 凡出自工具结果的句子全被判成"没有依据"，faithfulness 被系统性压低
+    # （这正解释了它长期只有 0.35）。修法是：把工具结果一并算作上下文。
     contexts = [
         d.get("content", "") for d in (final_state.get("retrieved_docs") or []) if d.get("content")
     ]
+    for msg in final_state.get("messages") or []:
+        if isinstance(msg, ToolMessage):
+            text = str(msg.content or "").strip()
+            if text:
+                contexts.append(text)
+
     steps = [s for s in (final_state.get("reasoning_log") or []) if isinstance(s, str)]
     return answer, contexts, steps
 
@@ -653,6 +672,7 @@ def run_eval_task(
         sample_qidx: list[int] = []  # samples[i] 对应 per_question[sample_qidx[i]]
         per_question: list[dict] = []
         retrieval_failed_count = 0
+        answer_failed_count = 0
         with applied_retrieve_overrides(retrieve_overrides):
             for i, item in enumerate(questions, start=1):
                 question = item.get("question", "")
@@ -674,6 +694,19 @@ def run_eval_task(
                     retrieval_failed_count += 1
                     logger.info("[Eval] 检索为空，已排除出指标聚合: {}", question[:40])
 
+                # 回答为空 → 同样**标记 + 排除**，理由与"检索为空"完全一样：
+                # 塞一个占位串（原来是 "（无回答）"）进去，faithfulness /
+                # answer_relevancy 会拿它当真实回答去判定，产出一个看似合理、
+                # 实则无意义的分数。**比崩溃更糟。**
+                #
+                # 注意顺序：必须在下面 append 逐题记录**之前**算出来，
+                # 否则记录的 answer_failed 是未定义的（第一版就是这么写错的，
+                # 整个评测直接 NameError → 报告 failed）。
+                answer_failed = not answer.strip()
+                if answer_failed:
+                    answer_failed_count += 1
+                    logger.info("[Eval] 回答为空，已排除出指标聚合: {}", question[:40])
+
                 refused = _looks_like_refusal(answer)
                 qidx = len(per_question)
                 per_question.append(
@@ -685,18 +718,30 @@ def run_eval_task(
                         "answer": answer,
                         "contexts_count": len(contexts),
                         "retrieval_failed": retrieval_failed,
+                        "answer_failed": answer_failed,
                         "refused": refused,
                     }
                 )
-                if not retrieval_failed:
-                    samples.append(
-                        {
-                            "user_input": question,
-                            "response": answer or "（无回答）",
-                            "retrieved_contexts": contexts,
-                            "reference": expected or "（无期望答案）",
-                        }
-                    )
+
+                if not retrieval_failed and not answer_failed:
+                    sample = {
+                        "user_input": question,
+                        "response": answer,
+                        "retrieved_contexts": contexts,
+                    }
+                    # **只在真的有期望答案时才给 reference**。
+                    #
+                    # 原来缺期望答案时塞的是 "（无期望答案）"，而 context_recall
+                    # 正是拿 reference 当标准答案去比 —— 占位串会让这个指标变成
+                    # 垃圾数（sample_eval_testset 8 题全缺、auto_eval_testset 里
+                    # 那 5 道"该拒答"的题也缺，而它们**本来就没有期望答案**）。
+                    #
+                    # 不给的后果是 ragas 对这些样本返回 NaN —— 那是**真实的**
+                    # "这题没有标准答案、算不了"，会被覆盖率如实报成
+                    # "context_recall 只算出 N/M 个样本"，比一个假分数好得多。
+                    if expected:
+                        sample["reference"] = expected
+                    samples.append(sample)
                     sample_qidx.append(qidx)
 
                 progress = 10 + int(45 * i / len(questions))
@@ -835,7 +880,7 @@ def run_eval_task(
         # 现在按"请求的指标是否真的产出、有没有题被排除"如实分档。
         requested_count = len(metrics)
         produced_count = sum(1 for m in metrics if isinstance(metric_scores.get(m), (int, float)))
-        excluded = retrieval_failed_count
+        excluded = retrieval_failed_count + answer_failed_count
         if produced_count == 0:
             status = "failed"
         elif produced_count < requested_count or excluded > 0 or coverage_gaps:
@@ -848,8 +893,10 @@ def run_eval_task(
         reasons: list[str] = []
         if rag_error:
             reasons.append(rag_error)
-        if excluded:
-            reasons.append(f"{excluded} 题因检索为空被排除，未计入 RAGAS 指标聚合")
+        if retrieval_failed_count:
+            reasons.append(f"{retrieval_failed_count} 题因检索为空被排除，未计入 RAGAS 指标聚合")
+        if answer_failed_count:
+            reasons.append(f"{answer_failed_count} 题因回答为空被排除，未计入 RAGAS 指标聚合")
         status_error = "；".join(reasons) if status != "done" else ""
 
         # ── 5. 诊断建议 ──

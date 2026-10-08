@@ -440,6 +440,7 @@ def _patch_ragas(monkeypatch, scores=None, raise_error=False) -> dict:
         if raise_error:
             raise RuntimeError("ragas boom")
         capture["n_samples"] = len(dataset or [])
+        capture["dataset"] = list(dataset or [])
         return _FakeResult(scores or {})
 
     class _FakeRunConfig:
@@ -720,3 +721,101 @@ class TestJudgeConcurrencyAndTimeout:
             "超时不能沿用 ragas 的默认 180s —— 实测不够"
         )
         assert capture["run_config"]["timeout"] == settings.eval_judge_timeout_seconds
+
+
+class TestEvalSamplesAreHonest:
+    """
+    送进 RAGAS 的样本必须是**真东西**，不能塞占位串。
+
+    两次真实事故（同一类错误的两个面）：
+
+    1. **占位串当参考答案**：缺 expected_answer 时原来塞 "（无期望答案）"，
+       而 context_recall 正是拿 reference 当标准答案去比 —— 于是这个指标变成
+       垃圾数（`sample_eval_testset` 8 题全缺、`auto_eval_testset` 里那 5 道
+       "该拒答"的题也缺，而它们**本来就没有期望答案**）。
+       项目自己对 contexts 早就学过这一课（注释里写着"比崩溃更糟"），
+       但 reference / response 漏了。
+    2. **回答为空也塞占位串**（"（无回答）"）→ faithfulness / answer_relevancy
+       拿它当真实回答判定。
+    """
+
+    def test_missing_expected_answer_is_not_faked(self, monkeypatch):
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
+        _run_eval(
+            monkeypatch,
+            questions=[
+                {
+                    "id": "q1",
+                    "category": "项目",
+                    "question": "有期望答案",
+                    "expected_answer": "RAG",
+                },
+                {"id": "q2", "category": "幻觉", "question": "没有期望答案"},
+            ],
+            metrics=["faithfulness"],
+            scores_patch=capture,
+        )
+
+        by_q = {s["user_input"]: s for s in capture["dataset"]}
+        assert by_q["有期望答案"]["reference"] == "RAG"
+        assert "reference" not in by_q["没有期望答案"], (
+            "缺期望答案的题不该被塞占位串当参考答案 —— context_recall 会拿它去比，"
+            "产出看似合理实则无意义的分数"
+        )
+
+    def test_answer_is_passed_verbatim(self, monkeypatch):
+        """回答原样送进去，不包装成 "（无回答）" 之类。"""
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
+        _run_eval(monkeypatch, metrics=["faithfulness"], scores_patch=capture)
+
+        assert all(s["response"] not in ("（无回答）", "") for s in capture["dataset"])
+        assert any("RAG" in s["response"] for s in capture["dataset"])
+
+
+class TestToolResultsCountAsContext:
+    """
+    上下文必须是**模型实际看到的全部证据**，不能只有前置检索那一次。
+
+    实测（一次真实提问）：模型调了 7 次 `search_knowledge_base`、往 prompt 里
+    拉进约 18000 字；而 `retrieved_docs` 只有 5 条约 5000 字。只喂前者，裁判
+    就是在拿"5 条材料"判"依据 23 千字材料写出的回答" —— 凡出自工具结果的
+    句子全被判成"没有依据"，**faithfulness 被系统性压低**（这解释了它长期只有
+    0.35）。
+    """
+
+    def test_contexts_include_tool_messages(self, monkeypatch):
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        from core import eval_runner
+
+        fake_state = {
+            "final_answer": "依据工具结果写的回答",
+            "retrieved_docs": [{"content": "前置检索片段"}],
+            "reasoning_log": ["步骤"],
+            "messages": [
+                AIMessage(content="我去查一下"),
+                ToolMessage(
+                    content="【检索结果】工具查到的片段，长度远超前置检索", tool_call_id="c1"
+                ),
+            ],
+        }
+
+        class _FakeGraph:
+            async def ainvoke(self, _state):
+                return fake_state
+
+        # `get_agent_graph` / `_initial_state` 都是 `_answer_one_sync` 里**函数内导入**的，
+        # 所以要打在源模块上，不能打在 eval_runner 的名下。
+        import agent.graph_workflow as gw
+        import api.sse_stream as sse
+
+        monkeypatch.setattr(gw, "get_agent_graph", lambda: _FakeGraph())
+        monkeypatch.setattr(sse, "_initial_state", lambda *a, **k: {})
+
+        answer, contexts, _steps = eval_runner._answer_one_sync("问题", 1)
+
+        assert answer == "依据工具结果写的回答"
+        assert "前置检索片段" in contexts, "前置检索的片段不能丢"
+        assert any("工具查到的片段" in c for c in contexts), (
+            "工具结果也进了 prompt，必须算作上下文 —— 否则 faithfulness 被系统性压低"
+        )
