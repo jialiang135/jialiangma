@@ -56,19 +56,31 @@ _WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 _AUDIT_PATH_PREFIXES = ("/api/auth", "/api/admin")
 
 
-def should_audit(method: str, path: str) -> bool:
+def should_audit(method: str, path: str, status_code: int | None = None) -> bool:
     """
     这次请求值不值得进审计日志。
 
     规则（可解释、可测）：
     - 监控探针 / 静态资源 / SPA 外壳 → 不记（机械请求，无审计语义）
     - **写操作**（POST/PUT/PATCH/DELETE）→ 记（会改变状态）
-    - `/api/auth/*`（登录、注册、改密）→ 记
+    - `/api/auth/*` → **成功不记、失败才记**（见下）
     - `/api/admin/*`（管理员看全量数据）→ 记（触及他人数据）
     - 其余读取 → 不记
+
+    为什么 auth 只记失败：登录/注册**成功**时路由自己会写一条语义审计
+    （`log_audit("login", user_id=..., username=..., ip_address=...)`），信息比
+    中间件的通用条目全；而中间件那条在登录时**还没有 token、拿不到用户身份**
+    （实测库里两条并存，中间件那条 user_id 是空的）—— 留着就是每登录一次多一条垃圾。
+
+    但**失败必须由中间件记**：路由在"密码错/账号锁定"时直接抛异常，不写审计，
+    于是失败登录会一条记录都没有 —— 而那正是最该审计的（爆破检测）。
     """
     if path in _SKIP_EXACT or path.startswith(_SKIP_PREFIXES):
         return False
+
+    if path.startswith("/api/auth") and method in _WRITE_METHODS:
+        return status_code is not None and status_code >= 400
+
     if method in _WRITE_METHODS:
         return True
     return path.startswith(_AUDIT_PATH_PREFIXES)
@@ -110,7 +122,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
         # 抛出，客户端拿到 500 —— 而操作其实已经成功了。
         # 这是"日志把成功变成失败"的典型，所以这里吞掉异常，但**留下错误日志**，
         # 而不是静默丢弃（否则审计坏了也没人知道）。
-        if should_audit(request.method, request.url.path):
+        if should_audit(request.method, request.url.path, response.status_code):
             try:
                 await log_audit(
                     action=f"{request.method} {request.url.path}",

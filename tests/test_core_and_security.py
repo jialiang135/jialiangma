@@ -566,14 +566,33 @@ class TestAuditScope:
         ):
             assert should_audit(method, path), f"{method} {path} 是写操作，必须记"
 
-    def test_records_auth_and_admin_reads(self):
-        """登录/注册要记；管理员读全量数据也要记（触及他人数据）。"""
+    def test_records_admin_reads(self):
+        """管理员读全量数据要记（触及他人数据）。"""
         from core.audit import should_audit
 
-        assert should_audit("POST", "/api/auth/login")
-        assert should_audit("POST", "/api/auth/register")
         assert should_audit("GET", "/api/admin/users")
         assert should_audit("GET", "/api/admin/audit-logs")
+
+    def test_auth_success_is_left_to_the_route(self):
+        """
+        登录/注册**成功**时路由自己会写一条带 user_id 的语义审计，
+        中间件不该再补一条（它那时还没 token、拿不到身份）。
+        """
+        from core.audit import should_audit
+
+        assert not should_audit("POST", "/api/auth/login", 200)
+        assert not should_audit("POST", "/api/auth/register", 200)
+
+    def test_auth_failure_MUST_be_recorded(self):
+        """
+        失败登录必须记 —— 路由在失败分支直接抛异常、不写审计，
+        所以这是**唯一**的记录来源，而它正是爆破检测最需要的证据。
+        """
+        from core.audit import should_audit
+
+        assert should_audit("POST", "/api/auth/login", 401)
+        assert should_audit("POST", "/api/auth/login", 403)
+        assert should_audit("POST", "/api/auth/register", 400)
 
     def test_ignores_plain_reads(self):
         """读自己的数据不是审计事件 —— 这是把噪声压下去的关键。"""
