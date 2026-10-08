@@ -355,6 +355,7 @@ import UiAlert from '../components/ui/UiAlert.vue'
 import UiTable from '../components/ui/UiTable.vue'
 import UiModal from '../components/ui/UiModal.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
+import UiInput from '../components/ui/UiInput.vue'
 import FilePreviewDrawer from '../components/kb/FilePreviewDrawer.vue'
 import UiProgress from '../components/ui/UiProgress.vue'
 import UiIcon from '../components/ui/UiIcon.vue'
@@ -713,6 +714,18 @@ const previewFileOptions = computed(() =>
       value: f.id,
       label: `${f.filename}（${formatTokens(f.chunk_count || 0)} 块）`,
     })),
+)
+
+// 默认选中**块数最多**的文件 —— 它最能体现参数差异。
+//
+// 少了这一步，`previewFileId` 一直是 null，试切按钮就永远禁用（它 `:disabled="!previewFileId"`），
+// 用户看到的是"填了参数、按钮点不动"。第一版就是这样：只给选项排了序，忘了给默认值。
+watch(
+  previewFileOptions,
+  (opts) => {
+    if (!previewFileId.value && opts.length) previewFileId.value = opts[0].value
+  },
+  { immediate: true },
 )
 
 async function runChunkingPreview() {
