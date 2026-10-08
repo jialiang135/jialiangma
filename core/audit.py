@@ -38,6 +38,42 @@ async def log_audit(
     )
 
 
+# ── 审计范围 ──
+#
+# **审计日志记的是"谁改了什么、谁碰了别人的数据"**，不是"收到过哪些 HTTP 请求"。
+#
+# 原实现只跳过 `/api/health`，其余一律入库 —— 实测线上 10 天攒了 17,470 行，其中：
+#     GET /metrics                 9,897 行（56%）  ← Prometheus 每 15 秒抓一次
+#     GET /                        1,993 行        ← SPA 首页
+#     GET /assets/index-*.js         173 行        ← 静态资源
+# 真正的审计事件（登录、改角色、删用户、删文件）淹没在这些噪声里，
+# 而每一条噪声都是一次 SQLite 写入（写放大），审计表还会无限膨胀。
+#
+# 现在的规则：**写操作 + 认证 + 管理接口**。读自己的数据不入库。
+_SKIP_PREFIXES = ("/assets/", "/metrics", "/nginx-health", "/favicon")
+_SKIP_EXACT = ("/", "/index.html", "/docs", "/redoc", "/openapi.json")
+_WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+_AUDIT_PATH_PREFIXES = ("/api/auth", "/api/admin")
+
+
+def should_audit(method: str, path: str) -> bool:
+    """
+    这次请求值不值得进审计日志。
+
+    规则（可解释、可测）：
+    - 监控探针 / 静态资源 / SPA 外壳 → 不记（机械请求，无审计语义）
+    - **写操作**（POST/PUT/PATCH/DELETE）→ 记（会改变状态）
+    - `/api/auth/*`（登录、注册、改密）→ 记
+    - `/api/admin/*`（管理员看全量数据）→ 记（触及他人数据）
+    - 其余读取 → 不记
+    """
+    if path in _SKIP_EXACT or path.startswith(_SKIP_PREFIXES):
+        return False
+    if method in _WRITE_METHODS:
+        return True
+    return path.startswith(_AUDIT_PATH_PREFIXES)
+
+
 class AuditMiddleware(BaseHTTPMiddleware):
     """自动记录所有 HTTP API 请求到审计日志"""
 
@@ -74,7 +110,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
         # 抛出，客户端拿到 500 —— 而操作其实已经成功了。
         # 这是"日志把成功变成失败"的典型，所以这里吞掉异常，但**留下错误日志**，
         # 而不是静默丢弃（否则审计坏了也没人知道）。
-        if request.url.path != "/api/health":
+        if should_audit(request.method, request.url.path):
             try:
                 await log_audit(
                     action=f"{request.method} {request.url.path}",

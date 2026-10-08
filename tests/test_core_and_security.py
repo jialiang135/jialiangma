@@ -538,3 +538,51 @@ class TestToolRegistry:
         from core.tool_registry import tool_registry
 
         assert len(tool_registry.list_categories()) >= 3
+
+
+class TestAuditScope:
+    """
+    审计日志只记**有语义的操作**，不是"收到过哪些 HTTP 请求"。
+
+    真实数据：线上 10 天攒了 17,470 行，其中 **9,897 行（56%）是 Prometheus 抓
+    `/metrics`**，另有 1,993 行是 SPA 首页、173 行是静态 JS。真正的审计事件
+    （登录、改角色、删用户、删文件）淹没在噪声里，而每条噪声都是一次 SQLite 写入。
+    """
+
+    def test_skips_monitoring_and_static(self):
+        from core.audit import should_audit
+
+        for path in ("/metrics", "/nginx-health", "/api/health", "/assets/index-x.js", "/"):
+            assert not should_audit("GET", path), f"{path} 不该进审计"
+
+    def test_records_write_operations(self):
+        from core.audit import should_audit
+
+        for method, path in (
+            ("POST", "/api/kb/upload"),
+            ("DELETE", "/api/kb/files/7"),
+            ("PUT", "/api/kb/chunking"),
+            ("POST", "/api/chat/stream"),
+        ):
+            assert should_audit(method, path), f"{method} {path} 是写操作，必须记"
+
+    def test_records_auth_and_admin_reads(self):
+        """登录/注册要记；管理员读全量数据也要记（触及他人数据）。"""
+        from core.audit import should_audit
+
+        assert should_audit("POST", "/api/auth/login")
+        assert should_audit("POST", "/api/auth/register")
+        assert should_audit("GET", "/api/admin/users")
+        assert should_audit("GET", "/api/admin/audit-logs")
+
+    def test_ignores_plain_reads(self):
+        """读自己的数据不是审计事件 —— 这是把噪声压下去的关键。"""
+        from core.audit import should_audit
+
+        for path in (
+            "/api/chat/conversations",
+            "/api/kb/files",
+            "/api/eval/reports/6",
+            "/api/token/stats",
+        ):
+            assert not should_audit("GET", path), f"GET {path} 不该进审计"
