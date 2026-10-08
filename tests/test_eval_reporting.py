@@ -919,3 +919,48 @@ class TestRefusalQuestionDetection:
         assert any("诚实度未计算" in r for r in recs), (
             f"没有拒答题时应当说明诚实度为何未计算，实际建议: {recs}"
         )
+
+
+class TestRubricReferenceIsNotAnAnswer:
+    """
+    期望答案写的是"评分要点"时，**不能当 reference** 喂给需要参考答案的指标。
+
+    实测：`ai_interview_testset` 8 题里 5 题的 expected_answer 是
+    "应包含姓名、技术栈…" 这类**评分标准**。而 context_recall 问的是
+    "参考答案里的信息能不能在检索到的片段里找到" —— 喂给它一句元指令，
+    指标必然低且**纹丝不动**（实测 top_k_rerank 5→8，两臂都是 0.25）。
+    """
+
+    def test_rubric_style_reference_is_not_passed(self, monkeypatch):
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
+        _run_eval(
+            monkeypatch,
+            questions=[
+                {
+                    "id": "r1",
+                    "category": "自我介绍",
+                    "question": "介绍一下你自己",
+                    "expected_answer": "应包含姓名、技术栈、核心技能和项目经验",
+                },
+                {
+                    "id": "f1",
+                    "category": "个人信息",
+                    "question": "你叫什么",
+                    "expected_answer": "马佳良，西北师范大学",
+                },
+            ],
+            metrics=["faithfulness", "context_recall"],
+            scores_patch=capture,
+        )
+        by_q = {s["user_input"]: s for s in capture["dataset"]}
+        assert "reference" not in by_q["介绍一下你自己"], (
+            "评分标准不是参考答案，喂给 context_recall 会得到一个动不了的假数字"
+        )
+        assert by_q["你叫什么"]["reference"] == "马佳良，西北师范大学"
+
+    def test_real_answers_containing_those_words_are_kept(self, monkeypatch):
+        """反向保护：只检查**开头**，正文里偶然出现"应包含"的真实答案不能误伤。"""
+        from core.eval_runner import _is_rubric_reference
+
+        assert not _is_rubric_reference("马佳良的自我介绍应包含姓名与技术栈两部分")
+        assert _is_rubric_reference("应包含姓名、技术栈")

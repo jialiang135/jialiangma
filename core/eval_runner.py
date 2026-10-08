@@ -529,6 +529,28 @@ def _has_substantive_content(answer: str) -> bool:
 _REFUSAL_CATEGORY_KEYWORDS = ("幻觉", "诚实", "拒答", "知识库外", "不存在")
 
 
+# 期望答案里如果写的是"评分要点"而不是"答案本身"，它也**不能当 reference**。
+#
+# 实测：`ai_interview_testset` 8 题里有 5 题的 expected_answer 长这样 ——
+#     "应包含姓名、技术栈、核心技能和项目经验"
+#     "应描述具体项目背景、遇到的困难、解决方案和成果"
+# 那是**评分标准**，不是参考答案。而 context_precision / context_recall 问的是
+# "参考资料里的信息能不能在检索到的片段里找到" —— 喂给它一句元指令，
+# 裁判当然一条都找不到，指标必然低且**纹丝不动**
+# （实测：top_k_rerank 5→8，context_recall 两臂都是 0.25 —— 不是杠杆不对，
+#  是仪表没接上）。
+#
+# 判据是**以评分词开头**，不是"包含"——实测那 5 条全都是"应包含…""应描述…"起头，
+# 而真实答案以事实起头（"马佳良，西北师范大学…"）。用"包含"会误伤正文里偶然提到
+# 这些词的真实答案（第一版就是这么写的，"马佳良的自我介绍应包含姓名…"被误判）。
+_RUBRIC_MARKERS = ("应包含", "应描述", "应说明", "应如实", "应体现", "需包含", "需说明", "给出")
+
+
+def _is_rubric_reference(reference: str) -> bool:
+    """期望答案写的是"评分要点"而非"答案本身" → 不能用于需要 reference 的指标。"""
+    return (reference or "").strip().startswith(_RUBRIC_MARKERS)
+
+
 def _is_refusal_question(item: dict) -> bool:
     """
     这道题是不是"知识库中本就没有、正确行为是如实拒答"的类型。
@@ -741,6 +763,7 @@ def run_eval_task(
                         "id": item.get("id"),
                         "category": category,
                         "should_refuse": is_refusal,
+                        "rubric_reference": _is_rubric_reference(expected),
                         "question": question,
                         "expected_answer": expected,
                         "answer": answer,
@@ -780,7 +803,7 @@ def run_eval_task(
                     # 由覆盖率如实报成"只算出 N/M"，比一个假低分好。
                     # 而 faithfulness / answer_relevancy **不需要 reference**，
                     # 所以这类题照样会被检查"有没有编造"（这正是我们想要的）。
-                    if expected and not is_refusal:
+                    if expected and not is_refusal and not _is_rubric_reference(expected):
                         sample["reference"] = expected
                     samples.append(sample)
                     sample_qidx.append(qidx)
