@@ -44,10 +44,22 @@ const {
 
 const TABS = [
   { key: 'login', label: '登录', icon: 'user' },
-  { key: 'register', label: '注册', icon: 'plus' },
+  { key: 'register', label: '注册体验', icon: 'plus' },
 ]
 
 const mode = ref('login')
+const modeTouched = ref(false)
+
+function setMode(next) {
+  modeTouched.value = true
+  mode.value = next
+}
+
+async function initializeAuthPage() {
+  await loadRules()
+  // 新访客优先看到注册；已有账号可切回登录。若用户已手动选择，则尊重他的选择。
+  if (!modeTouched.value && allowRegistration.value) mode.value = 'register'
+}
 const username = ref('')
 const password = ref('')
 const showPassword = ref(false)
@@ -98,7 +110,7 @@ function goAfterAuth() {
   router.replace(safe)
 }
 
-onMounted(loadRules)
+onMounted(initializeAuthPage)
 </script>
 
 <template>
@@ -108,18 +120,17 @@ onMounted(loadRules)
       <div class="brand-top">
         <span class="brand-mark"><UiIcon name="layers" :size="20" /></span>
         <span class="brand-name">
-          <strong>私人知识库</strong>
-          <small>PERSONAL AI WORKSPACE</small>
+          <strong>个人数字分身</strong>
+          <small>KNOWLEDGE-BASED DEMO</small>
         </span>
-        <span class="brand-status"><i /> PRIVATE</span>
+        <span class="brand-status"><i /> DEMO SPACE</span>
       </div>
 
       <div class="brand-copy">
         <span class="brand-kicker"><UiIcon name="shield" :size="13" /> EVIDENCE-FIRST AI</span>
         <h1 class="brand-title">让经验沉淀下来，<br /><span>让回答有据可查。</span></h1>
         <p class="brand-desc">
-          将简历、项目文档与技术笔记汇入个人知识库，让 AI 基于其中的经验回答问题，
-          并清楚展示答案来自哪里。
+          简历、项目文档与技术笔记已整理为演示知识库。注册体验账号即可提问；所有体验账号共用这份知识库，回答会展示对应来源。
         </p>
       </div>
 
@@ -127,7 +138,7 @@ onMounted(loadRules)
         <div class="preview-topbar">
           <span class="preview-dots"><i /><i /><i /></span>
           <span class="preview-window-title">个人数字分身 <span>·</span> 新对话</span>
-          <span class="preview-lock"><UiIcon name="shield" :size="12" /> PRIVATE</span>
+          <span class="preview-lock"><UiIcon name="layers" :size="12" /> SHARED DEMO</span>
         </div>
         <div class="preview-question">你做过哪些 AI Agent 项目？</div>
         <div class="preview-answer">
@@ -148,7 +159,7 @@ onMounted(loadRules)
         <li><UiIcon name="zap" :size="15" /><span>检索与推理过程可查看</span></li>
         <li><UiIcon name="shield" :size="15" /><span>没有依据时如实说明</span></li>
       </ul>
-      <p class="brand-footer">私有知识库驱动 <span>·</span> 证据优先 <span>·</span> 可追溯</p>
+      <p class="brand-footer">演示知识库 <span>·</span> 证据优先 <span>·</span> 来源可追溯</p>
     </section>
 
     <!-- 右栏：登录 / 注册 -->
@@ -157,14 +168,16 @@ onMounted(loadRules)
         <div class="auth-heading">
           <span class="auth-heading-icon"><UiIcon :name="mode === 'login' ? 'user' : 'plus'" :size="17" /></span>
           <div>
-            <p class="auth-eyebrow">WORKSPACE ACCESS</p>
-            <h2>{{ mode === 'login' ? '欢迎回来' : '创建访问账号' }}</h2>
+            <p class="auth-eyebrow">{{ mode === 'login' ? 'WELCOME BACK' : 'START YOUR DEMO' }}</p>
+            <h2>{{ mode === 'login' ? '欢迎回来' : '创建体验账号' }}</h2>
           </div>
         </div>
         <p class="auth-intro">
-          {{ mode === 'login' ? '登录后继续体验个人数字分身问答。' : '创建账号，开始体验知识库问答。' }}
+          {{ mode === 'login'
+            ? '已有账号请登录；首次体验可创建账号，注册后立即进入问答。'
+            : '注册后自动进入问答。所有体验账号共用同一份演示知识库。' }}
         </p>
-        <UiTabs v-model="mode" :tabs="TABS" variant="pill" />
+        <UiTabs :model-value="mode" :tabs="TABS" variant="pill" @update:model-value="setMode" />
 
         <form class="auth-form" @submit.prevent="submit">
           <label class="field">
@@ -241,11 +254,11 @@ onMounted(loadRules)
           <p class="switch-hint">
             <template v-if="mode === 'login'">
               还没有账号？
-              <button type="button" class="link" @click="mode = 'register'">去注册</button>
+              <button type="button" class="link" @click="setMode('register')">创建体验账号</button>
             </template>
             <template v-else>
               已有账号？
-              <button type="button" class="link" @click="mode = 'login'">去登录</button>
+              <button type="button" class="link" @click="setMode('login')">去登录</button>
             </template>
           </p>
         </form>

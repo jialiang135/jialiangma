@@ -22,16 +22,26 @@ defineProps({
   activeId: { type: String, default: null },
 })
 
-const emit = defineEmits(['select', 'delete', 'refresh', 'new'])
+const emit = defineEmits(['select', 'delete', 'refresh', 'new', 'close'])
 </script>
 
 <template>
   <aside class="sidebar">
     <div class="sidebar-head">
       <span class="sidebar-title">历史对话</span>
-      <button class="icon-btn" type="button" title="刷新" @click="emit('refresh')">
-        <UiIcon name="refresh" :size="15" />
-      </button>
+      <div class="sidebar-head-actions">
+        <button class="icon-btn" type="button" title="刷新历史" aria-label="刷新历史" @click="emit('refresh')">
+          <UiIcon name="refresh" :size="15" />
+        </button>
+        <button
+          class="icon-btn mobile-close"
+          type="button"
+          aria-label="关闭历史对话"
+          @click="emit('close')"
+        >
+          <UiIcon name="close" :size="16" />
+        </button>
+      </div>
     </div>
 
     <button class="new-chat" type="button" @click="emit('new')">
@@ -53,31 +63,30 @@ const emit = defineEmits(['select', 'delete', 'refresh', 'new'])
       />
 
       <template v-else>
-        <button
+        <div
           v-for="item in items"
           :key="item.group_id"
-          class="conv"
+          class="conv-row"
           :class="{ 'is-active': item.group_id === activeId }"
-          type="button"
-          @click="emit('select', item)"
         >
-          <span class="conv-title">{{ truncate(item.first_question || '新对话', 30) }}</span>
-          <span class="conv-meta">
-            <span>{{ item.turn_count }} 轮</span>
-            <span class="conv-dot">·</span>
-            <span>{{ formatRelativeTime(item.last_at) }}</span>
-          </span>
-          <span
+          <button class="conv" type="button" @click="emit('select', item)">
+            <span class="conv-title">{{ truncate(item.first_question || '新对话', 30) }}</span>
+            <span class="conv-meta">
+              <span>{{ item.turn_count }} 轮</span>
+              <span class="conv-dot">·</span>
+              <span>{{ formatRelativeTime(item.last_at) }}</span>
+            </span>
+          </button>
+          <button
             class="conv-delete"
-            role="button"
-            tabindex="0"
+            type="button"
+            :aria-label="`删除对话：${item.first_question || '新对话'}`"
             title="删除此对话"
-            @click.stop="emit('delete', item)"
-            @keydown.enter.stop="emit('delete', item)"
+            @click="emit('delete', item)"
           >
             <UiIcon name="trash" :size="14" />
-          </span>
-        </button>
+          </button>
+        </div>
       </template>
     </div>
   </aside>
@@ -103,6 +112,14 @@ const emit = defineEmits(['select', 'delete', 'refresh', 'new'])
   font-size: var(--fs-sm);
   font-weight: var(--fw-semibold);
   color: var(--c-text-2);
+}
+.sidebar-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.icon-btn.mobile-close {
+  display: none;
 }
 
 .icon-btn {
@@ -150,20 +167,23 @@ const emit = defineEmits(['select', 'delete', 'refresh', 'new'])
   padding: var(--sp-6);
 }
 
-.conv {
+.conv-row {
   position: relative;
-  display: block;
-  width: 100%;
-  padding: var(--sp-2) var(--sp-3);
-  text-align: left;
   border-radius: var(--r-md);
   transition: background var(--dur-fast) var(--ease);
 }
-.conv:hover {
+.conv-row:hover {
   background: var(--c-surface-2);
 }
-.conv.is-active {
+.conv-row.is-active {
   background: var(--c-accent-soft);
+}
+.conv {
+  display: block;
+  width: 100%;
+  padding: var(--sp-2) 42px var(--sp-2) var(--sp-3);
+  text-align: left;
+  border-radius: var(--r-md);
 }
 
 .conv-title {
@@ -174,7 +194,7 @@ const emit = defineEmits(['select', 'delete', 'refresh', 'new'])
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.conv.is-active .conv-title {
+.conv-row.is-active .conv-title {
   color: var(--c-accent-text);
   font-weight: var(--fw-medium);
 }
@@ -197,16 +217,21 @@ const emit = defineEmits(['select', 'delete', 'refresh', 'new'])
   position: absolute;
   top: 50%;
   right: var(--sp-2);
-  display: flex;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--touch-min);
+  height: var(--touch-min);
   padding: var(--sp-1);
   color: var(--c-text-3);
   background: var(--c-surface);
+  border: 1px solid var(--c-border);
   border-radius: var(--r-sm);
   opacity: 0;
   transform: translateY(-50%);
   transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.conv:hover .conv-delete,
+.conv-row:hover .conv-delete,
 .conv-delete:focus-visible {
   opacity: 1;
 }
@@ -223,6 +248,9 @@ const emit = defineEmits(['select', 'delete', 'refresh', 'new'])
 @media (max-width: 768px) {
   .sidebar {
     display: none;
+  }
+  .icon-btn.mobile-close {
+    display: inline-flex;
   }
 }
 </style>

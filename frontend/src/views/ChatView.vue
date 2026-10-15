@@ -163,7 +163,14 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="chat">
+  <div class="chat" @keydown.esc.window="showSidebar = false">
+    <button
+      v-if="showSidebar"
+      class="sidebar-backdrop"
+      type="button"
+      aria-label="关闭历史对话"
+      @click="showSidebar = false"
+    />
     <ConversationSidebar
       class="chat-sidebar"
       :class="{ 'is-open': showSidebar }"
@@ -174,6 +181,7 @@ onMounted(() => {
       @delete="pendingDelete = $event"
       @refresh="loadHistory()"
       @new="newChat"
+      @close="showSidebar = false"
     />
 
     <div class="chat-main">
@@ -182,6 +190,8 @@ onMounted(() => {
           class="toolbar-btn"
           type="button"
           title="历史对话"
+          aria-label="历史对话"
+          :aria-expanded="showSidebar"
           @click="showSidebar = !showSidebar"
         >
           <UiIcon name="menu" :size="16" />
@@ -199,7 +209,7 @@ onMounted(() => {
         <section v-if="showEmptyState" class="chat-welcome" aria-labelledby="welcome-title">
           <div class="welcome-hero">
             <span class="welcome-mark"><UiIcon name="layers" :size="22" /></span>
-            <p class="welcome-kicker"><i /> 私有知识库 · 证据优先</p>
+            <p class="welcome-kicker"><i /> 个人数字分身演示 · 证据优先</p>
             <h1 id="welcome-title">你好，今天想聊点什么？</h1>
             <p class="welcome-desc">
               我可以结合知识库中的项目、技能和经历作答。每个回答都尽量附上来源，
@@ -582,6 +592,10 @@ onMounted(() => {
   color: var(--c-text-2);
 }
 
+.sidebar-backdrop {
+  display: none;
+}
+
 /* ── 窄屏 ── */
 @media (max-width: 768px) {
   .chat-toolbar {
@@ -617,12 +631,20 @@ onMounted(() => {
     padding: 10px var(--sp-3) var(--sp-2);
   }
   /* 侧栏改抽屉式：默认移出屏幕，靠工具条的汉堡按钮拉出 */
+  .sidebar-backdrop {
+    position: fixed;
+    inset: var(--header-h) 0 0;
+    z-index: calc(var(--z-drawer) - 1);
+    display: block;
+    background: var(--c-overlay);
+    border: 0;
+  }
   .chat-sidebar {
     position: fixed;
     top: var(--header-h);
     bottom: 0;
     left: 0;
-    z-index: var(--z-dropdown);
+    z-index: var(--z-drawer);
     display: flex;
     box-shadow: var(--sh-3);
     transform: translateX(-100%);

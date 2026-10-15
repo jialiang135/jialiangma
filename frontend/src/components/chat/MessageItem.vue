@@ -33,19 +33,48 @@ const props = defineProps({
 const emit = defineEmits(['speak', 'stop-speak'])
 
 const copied = ref(false)
+const copyError = ref('')
 let copyTimer = null
 
-async function copyContent() {
+function copyWithFallback(text) {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+
   try {
-    await navigator.clipboard.writeText(props.message.content || '')
-    copied.value = true
-    clearTimeout(copyTimer)
-    copyTimer = setTimeout(() => {
-      copied.value = false
-    }, 1600)
-  } catch {
-    // 剪贴板不可用（非 HTTPS 或用户拒绝）：静默失败，不值得打断对话
+    if (!document.execCommand?.('copy')) throw new Error('复制失败')
+  } finally {
+    textarea.remove()
   }
+}
+
+async function copyContent() {
+  const text = props.message.content || ''
+  try {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('剪贴板 API 不可用')
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // HTTP / 权限受限时回退到同步复制，避免按钮点击后静默无反馈。
+      copyWithFallback(text)
+    }
+
+    copied.value = true
+    copyError.value = ''
+  } catch {
+    copied.value = false
+    copyError.value = '复制失败，请手动选择文本。'
+  }
+
+  clearTimeout(copyTimer)
+  copyTimer = setTimeout(() => {
+    copied.value = false
+    copyError.value = ''
+  }, 2000)
 }
 
 const isAssistant = () => props.message.role === 'assistant'
@@ -101,6 +130,7 @@ const isAssistant = () => props.message.role === 'assistant'
           <UiIcon name="alert" :size="13" />
           {{ speakError }}
         </span>
+        <span v-if="copyError" class="copy-error" role="status">{{ copyError }}</span>
       </div>
 
       <ReasoningPanel
@@ -237,7 +267,8 @@ const isAssistant = () => props.message.role === 'assistant'
   background: var(--c-accent);
 }
 
-.speak-error {
+.speak-error,
+.copy-error {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
