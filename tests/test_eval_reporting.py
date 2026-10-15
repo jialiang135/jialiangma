@@ -877,7 +877,7 @@ class TestRefusalQuestionDetection:
         assert report["honesty_rate"] == 1.0
 
     def test_refusal_questions_get_no_reference(self, monkeypatch):
-        """拒答题不给 reference → 检索质量指标对它返回 NaN，由覆盖率如实报出。"""
+        """拒答题不给 reference，且不应作为 context 指标的失败样本计入覆盖率。"""
         capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
         _run_eval(
             monkeypatch,
@@ -903,6 +903,46 @@ class TestRefusalQuestionDetection:
             "拒答题的『期望答案』是行为描述、不是可检索的事实，喂给 context_recall 会拉低指标"
         )
         assert by_q["做过什么项目"]["reference"] == "做过 RAG 项目。"
+
+    def test_reference_free_refusal_does_not_reduce_recall_coverage(self, monkeypatch):
+        """没有 reference 的拒答题不应被当成 context_recall 裁判失败。"""
+        import json as _json
+
+        nan = float("nan")
+        capture = _patch_ragas(
+            monkeypatch,
+            scores={
+                "faithfulness": [0.8, 0.9],
+                "answer_relevancy": [0.7, 0.8],
+                "context_precision": [nan, 0.75],
+                "context_recall": [nan, 0.5],
+            },
+        )
+        report = _run_eval(
+            monkeypatch,
+            questions=[
+                {
+                    "id": "n1",
+                    "category": "幻觉检测",
+                    "question": "期望薪资是多少",
+                    "expected_answer": "知识库中未记录，应如实拒答。",
+                },
+                {
+                    "id": "q1",
+                    "category": "项目经验",
+                    "question": "做过什么项目",
+                    "expected_answer": "做过 RAG 项目。",
+                },
+            ],
+            metrics=list(ALL_METRICS),
+            scores_patch=capture,
+        )
+
+        metrics = _json.loads(report["metrics_json"])
+        assert metrics["context_recall"] == 0.5
+        assert metrics["_coverage"]["context_recall"] == "1/1"
+        assert report["status"] == "done"
+        assert report["error"] == ""
 
     def test_explains_when_honesty_cannot_be_computed(self, monkeypatch):
         """没有拒答题时要**说清**诚实度为什么没算，而不是只给一个 '—'。"""

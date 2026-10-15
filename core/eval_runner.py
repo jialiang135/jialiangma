@@ -162,6 +162,7 @@ _RETRIEVE_DEFAULTS = {"top_k_search": 10, "top_k_rerank": 5, "bm25_weight": 0.3}
 
 # 逐题判"答对"时 faithfulness 的及格线（与诊断建议里的阈值一致）
 _FAITHFULNESS_PASS = 0.8
+_REFERENCE_REQUIRED_METRICS = frozenset({"context_precision", "context_recall"})
 
 # 当前上下文里的检索覆盖参数；None = 未设覆盖，走默认/配置
 _RETRIEVE_OVERRIDES: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
@@ -717,6 +718,7 @@ def run_eval_task(
         # 但不会污染全局 settings，也不会串到别的评测任务或用户请求上。
         samples: list[dict] = []
         sample_qidx: list[int] = []  # samples[i] 对应 per_question[sample_qidx[i]]
+        sample_has_reference: list[bool] = []
         per_question: list[dict] = []
         retrieval_failed_count = 0
         answer_failed_count = 0
@@ -810,6 +812,7 @@ def run_eval_task(
                         sample["reference"] = expected
                     samples.append(sample)
                     sample_qidx.append(qidx)
+                    sample_has_reference.append("reference" in sample)
 
                 progress = 10 + int(45 * i / len(questions))
                 run_async_from_thread(update_eval_report(report_id, progress=progress))
@@ -870,8 +873,8 @@ def run_eval_task(
                         else dict(result)
                     )
                     per_metric_rows: dict[str, list] = {}
-                    # 每个指标"实际算出了几条 / 总共几条"。ragas 把失败样本记成 NaN，
-                    # 聚合时又被剔除 —— 于是平均值可能只覆盖一小部分样本。
+                    # 每个指标"实际算出了几条 / 适用样本数"。RAGAS 把失败样本记成 NaN，
+                    # 聚合时又被剔除 —— 于是平均值可能只覆盖一小部分适用样本。
                     # **必须把它显式记下来**，否则"5 题里只有 1 题算出分"的那个平均值
                     # 会被当成整体指标展示（实测踩过：0.1951 其实是 1 个样本的平均）。
                     metric_coverage: dict[str, tuple[int, int]] = {}
@@ -883,8 +886,19 @@ def run_eval_task(
                         except TypeError:
                             continue
                         nums = [_as_number(v) for v in rows]
+                        if key in _REFERENCE_REQUIRED_METRICS:
+                            # 拒答题、缺 reference 题和 rubric 题按设计不适用；
+                            # 它们不能被算作裁判失败而压低适用样本的覆盖率。
+                            eligible = sample_has_reference[: len(nums)]
+                            nums = [
+                                value if pos < len(eligible) and eligible[pos] else None
+                                for pos, value in enumerate(nums)
+                            ]
+                            denominator = sum(eligible)
+                        else:
+                            denominator = len(nums)
                         vals = [v for v in nums if v is not None]
-                        metric_coverage[key] = (len(vals), len(nums))
+                        metric_coverage[key] = (len(vals), denominator)
                         if vals:
                             metric_scores[key] = round(sum(vals) / len(vals), 4)
                             per_metric_rows[key] = nums
@@ -894,8 +908,9 @@ def run_eval_task(
                             if pos < len(nums) and nums[pos] is not None:
                                 per_question[qidx][key] = round(nums[pos], 4)
                     # 覆盖率如实记下来（键以下划线开头，前端不会把它当指标渲染），
-                    # 并且**只要有指标没覆盖全部样本，就把状态压成 partial 并写进原因**。
-                    # 否则会出现"状态 done、其实是 1/5 个样本的平均值"这种最坏情况。
+                    # 并且**只要有指标没覆盖全部适用样本，就把状态压成 partial 并写进原因**。
+                    # 无 reference 的拒答题 / rubric 题不适用于 context 指标，不计入分母。
+                    # 否则会出现"状态 done、其实是 1/5 个适用样本的平均值"这种最坏情况。
                     metric_scores["_coverage"] = {
                         k: f"{n}/{m}" for k, (n, m) in metric_coverage.items()
                     }
@@ -905,7 +920,7 @@ def run_eval_task(
                         if m and n < m
                     ]
                     if coverage_gaps:
-                        note = "部分样本未算出（裁判调用失败）：" + "；".join(coverage_gaps)
+                        note = "部分适用样本未算出分数（裁判调用失败或返回无效结果）：" + "；".join(coverage_gaps)
                         rag_error = f"{rag_error}；{note}" if rag_error else note
 
                     if not any(k for k in metric_scores if not k.startswith("_")):
