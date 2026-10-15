@@ -44,6 +44,21 @@ class _AlwaysToolLLM:
         )
 
 
+class _RefusalThenAdviceLLM:
+    """模拟模型先拒答、随后追加无依据通用建议。"""
+
+    def bind_tools(self, _tools):
+        return self
+
+    async def ainvoke(self, _messages):
+        return AIMessage(
+            content=(
+                "抱歉，我的知识库中暂时没有这方面的信息，无法回答这个问题。"
+                "一般来说，可以参考行业平均水平再做判断。"
+            )
+        )
+
+
 class _FinalAnswerLLM:
     """用于超限后综合：不绑定工具，返回基于已有证据的最终回答。"""
 
@@ -149,6 +164,32 @@ def _run_react(state: dict, max_steps: int = 30) -> dict:
 # ============================================================
 # 1. ReAct 轮次溢出兜底
 # ============================================================
+
+
+class TestRefusalNormalization:
+    def test_truncates_substantive_text_after_leading_kb_refusal(self, monkeypatch):
+        from agent.chat_agent import chat_agent_node
+        from agent.prompts import KB_REFUSAL_RESPONSE
+        from core.eval_runner import _looks_like_refusal
+
+        _patch_llm(monkeypatch, _RefusalThenAdviceLLM())
+        out = run_async(chat_agent_node(_fresh_state("期望薪资是多少")))
+
+        assert out["final_answer"] == KB_REFUSAL_RESPONSE
+        assert out["messages"][0].content == KB_REFUSAL_RESPONSE
+        assert _looks_like_refusal(out["final_answer"]) is True
+
+    def test_does_not_rewrite_a_normal_answer(self):
+        from agent.chat_agent import _normalize_refusal_followup
+
+        answer = "我做过个人知识库项目，主要使用 Python 和 ChromaDB。"
+        assert _normalize_refusal_followup(answer) == answer
+
+    def test_does_not_trim_a_refusal_that_follows_an_answer(self):
+        from agent.chat_agent import _normalize_refusal_followup
+
+        answer = "项目使用 Python。抱歉，知识库中没有相关信息。"
+        assert _normalize_refusal_followup(answer) == answer
 
 
 class TestReActOverflow:

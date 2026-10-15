@@ -7,7 +7,7 @@ import asyncio
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from loguru import logger
 
-from agent.prompts import CHAT_AGENT_SYSTEM_PROMPT
+from agent.prompts import CHAT_AGENT_SYSTEM_PROMPT, KB_REFUSAL_RESPONSE
 from agent.state import AgentState
 from agent.tools import (
     get_chat_context,
@@ -63,6 +63,34 @@ MAX_TOOL_RESULT_CHARS = 4000
 # 截断时的标注：必须让模型知道"你看到的不是全部"，否则它会拿残缺内容
 # 当完整证据下结论。
 TOOL_RESULT_TRUNCATED_MARK = "…（内容已截断）"
+_REFUSAL_LEAD_INS = ("抱歉", "很抱歉", "对不起", "我的知识库", "知识库中", "我不知道", "我不清楚")
+_REFUSAL_SENTENCE_MARKERS = (
+    "知识库中没有",
+    "知识库中未找到",
+    "没有相关信息",
+    "未找到相关",
+    "没有这方面的信息",
+    "暂无相关",
+    "没有记录",
+    "无法回答",
+    "不知道",
+    "不清楚",
+)
+
+
+def _normalize_refusal_followup(answer: str) -> str:
+    """If the answer opens with an explicit KB refusal, discard contradictory follow-up text."""
+    text = str(answer or "").strip()
+    if not text:
+        return ""
+
+    end = next((i for i, char in enumerate(text) if char in "。！？!?"), len(text))
+    first_sentence = text[:end].lstrip(" \t\r\n>*-•")
+    starts_with_refusal = first_sentence.startswith(_REFUSAL_LEAD_INS)
+    contains_refusal = any(marker in first_sentence for marker in _REFUSAL_SENTENCE_MARKERS)
+    if starts_with_refusal and contains_refusal:
+        return KB_REFUSAL_RESPONSE
+    return text
 
 
 def _truncate_tool_result(text: str) -> str:
@@ -170,7 +198,7 @@ async def _finalize_at_react_limit(messages: list, iteration: int) -> str:
 
     if getattr(response, "tool_calls", None):
         raise RuntimeError("无工具 finalizer 仍请求工具")
-    return str(response.content or "").strip()
+    return _normalize_refusal_followup(response.content)
 
 
 async def chat_agent_node(state: AgentState) -> dict:
@@ -241,11 +269,12 @@ async def chat_agent_node(state: AgentState) -> dict:
             }
 
         # 无工具调用 → 最终回答
-        logger.info("[ChatAgent] LLM 输出最终回答 ({} 字符)", len(response.content))
+        final_answer = _normalize_refusal_followup(response.content)
+        logger.info("[ChatAgent] LLM 输出最终回答 ({} 字符)", len(final_answer))
 
         return {
-            "messages": [response],
-            "final_answer": response.content,
+            "messages": [AIMessage(content=final_answer)],
+            "final_answer": final_answer,
             "needs_tool_call": False,
             "reasoning_log": ["✅ 推理完成，生成最终回答"],
         }

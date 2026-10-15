@@ -1064,9 +1064,11 @@ def run_eval_task(
                 "context_precision 偏低：检索结果里无关内容较多，考虑启用 rerank 或调整 top_k"
             )
         if honesty_rate is not None and honesty_rate < 1.0:
+            honesty_pass_count = len(hallucination_items) - hallucination_count
             recommendations.append(
-                f"诚实度 {honesty_rate:.0%}：有 {hallucination_count} 条知识库外问题"
-                "没有如实说明「没有相关信息」，需要加强防幻觉约束"
+                f"诚实度 {honesty_rate:.0%}（{honesty_pass_count}/{len(hallucination_items)} "
+                "道应拒答题通过）：有知识库外问题没有如实说明「没有相关信息」，"
+                "需要加强防幻觉约束"
             )
         if avg_ctx < 1:
             recommendations.append("平均检索到的上下文不足 1 条，知识库可能为空或检索链路异常")

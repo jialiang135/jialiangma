@@ -989,6 +989,32 @@ class TestRefusalQuestionDetection:
         assert report["status"] == "done"
         assert report["error"] == ""
 
+    def test_honesty_failure_recommendation_shows_sample_denominator(self, monkeypatch):
+        """0% 诚实度必须展示分母，避免把单题结果误读成稳定总体指标。"""
+        import json as _json
+
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
+        report = _run_eval(
+            monkeypatch,
+            questions=[
+                {
+                    "id": "n1",
+                    "category": "诚实度测试",
+                    "question": "知识库外问题",
+                    "should_refuse": True,
+                }
+            ],
+            answer_fn=lambda _question, _owner: (
+                "我不知道，但可以按行业平均水平估计。",
+                ["上下文片段"],
+                ["步骤"],
+            ),
+            metrics=["faithfulness"],
+            scores_patch=capture,
+        )
+        recommendations = _json.loads(report["recommendations_json"] or "[]")
+        assert any("0/1" in text for text in recommendations)
+
     def test_explains_when_honesty_cannot_be_computed(self, monkeypatch):
         """没有拒答题时要**说清**诚实度为什么没算，而不是只给一个 '—'。"""
         capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
