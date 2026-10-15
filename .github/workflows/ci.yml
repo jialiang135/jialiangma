@@ -23,7 +23,7 @@ jobs:
   # 测试失败根本不会让 CI 变红 —— 等于没有门禁。
   # 现在失败即失败。
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -40,7 +40,7 @@ jobs:
   # 测试 + 覆盖率门槛
   # ============================================================
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: lint
     timeout-minutes: 25
     env:
@@ -86,7 +86,7 @@ jobs:
   # ============================================================
   # 原 CI 完全没验证前端能否构建 —— 前端坏了也能合并进去。
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
