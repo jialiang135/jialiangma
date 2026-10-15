@@ -352,12 +352,15 @@ def _load_ragas():
         from ragas import EvaluationDataset, RunConfig, evaluate
         from ragas.embeddings import LangchainEmbeddingsWrapper
         from ragas.llms import LangchainLLMWrapper
-        from ragas.metrics.collections import (
-            answer_relevancy,
-            context_precision,
-            context_recall,
-            faithfulness,
-        )
+        from ragas.metrics._answer_relevance import answer_relevancy
+        from ragas.metrics._context_precision import context_precision
+        from ragas.metrics._context_recall import context_recall
+        from ragas.metrics._faithfulness import faithfulness
+
+        # RAGAS 0.4.3's collections package exports modern metric *classes*, not the
+        # legacy instances expected by evaluate() and LangchainLLMWrapper below. Use
+        # the pinned-profile implementation modules until the evaluator is migrated
+        # to RAGAS's instructor-based API.
     except ImportError as e:
         # ragas 被拆到 requirements-eval.txt：它的依赖（instructor → jiter<0.15）
         # 与主依赖树的 openai（→ jiter>=0.16）互斥，混在一起会让整份

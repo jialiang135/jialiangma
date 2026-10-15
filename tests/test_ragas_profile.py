@@ -18,3 +18,5 @@ def test_optional_ragas_text_metrics_load():
         "context_precision",
         "context_recall",
     }
+    for name, metric in loaded["metrics"].items():
+        assert getattr(metric, "name", None) == name
