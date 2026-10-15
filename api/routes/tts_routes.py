@@ -60,22 +60,16 @@ _AUTH_TIMEOUT_SECONDS = 10
 _MAX_TEXT_LENGTH = 1000
 
 
-def _user_from_token(token: str | None) -> dict | None:
-    """校验 JWT，返回用户信息；失败返回 None。"""
+async def _user_from_token(token: str | None) -> dict | None:
+    """校验 JWT 与账号当前状态；失败返回 None。"""
     if not token:
         return None
     try:
-        from core.auth import decode_token
+        from core.auth import get_active_user_from_token
 
-        payload = decode_token(token)
-        if not payload:
-            return None
-        return {
-            "owner_id": int(payload.get("sub")),
-            "username": payload.get("username", ""),
-        }
+        return await get_active_user_from_token(token)
     except Exception as e:
-        logger.debug("[TTS] token 解析失败: {}", e)
+        logger.debug("[TTS] token 认证失败: {}", e)
         return None
 
 
@@ -155,7 +149,7 @@ async def tts_stream(ws: WebSocket) -> None:
         await ws.close(code=4401, reason="auth required")
         return
 
-    user = _user_from_token(first.get("token")) if first.get("type") == "auth" else None
+    user = await _user_from_token(first.get("token")) if first.get("type") == "auth" else None
     if not user:
         await _send_json(ws, {"type": "error", "message": "未认证"})
         await ws.close(code=4401, reason="unauthorized")

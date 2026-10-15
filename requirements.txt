@@ -9,22 +9,21 @@
 # 1. **世代混装**：langchain-core 装到 1.x，而 langchain-openai 是 0.2.x
 #    （为 core 0.3 构建）。后果不是报错，而是**静默丢功能**：
 #    推理模型的 reasoning_content 在流式路径上被整段丢弃。
-# 2. **版本漂移**：本地验证通过的 FastAPI 0.115 / Starlette 0.41 /
-#    SQLAlchemy 2.0，在全新环境里会被解析成 0.141 / 1.7 / 2.1 ——
-#    容器里跑的是和"验证过的"完全不同的栈。
+# 2. **版本漂移**：生产依赖使用精确版本，并在升级后跑完整回归，避免
+#    全新环境解析出与验证环境不同的依赖组合。
 #
 # 因此这里的版本就是**实测通过的那一套**。升级时请整组升，
 # 并在本地跑完 `pytest tests/ -q --cov` 与真实端到端验证再改这里。
 # ============================================
 
 # --- Web 框架 ---
-fastapi==0.115.6
-starlette==0.41.3
+fastapi==0.143.1
+starlette==1.8.0
 uvicorn==0.29.0
 # 语音合成的 /api/tts/stream 是 WebSocket —— uvicorn 只有装上它才支持 WS 协议，
 # 否则握手直接被拒（本地环境巧合已有此包，Docker 里没写就会 404）
 websockets==16.0
-python-multipart==0.0.17
+python-multipart==0.0.32
 
 # --- LangChain / LangGraph（同一世代，勿混代，见顶部说明）---
 langchain==1.4.2
@@ -46,6 +45,8 @@ sqlalchemy==2.0.36
 aiosqlite==0.20.0
 
 # --- 向量库 ---
+# pip-audit 当前报告该版本存在 Chroma 服务端 API/RBAC 漏洞且未列修复版本。
+# 本项目只用嵌入式 PersistentClient，不启动/暴露 Chroma HTTP 服务；边界说明见 docs/SECURITY.md。
 chromadb==1.5.9
 
 # --- 阿里云 DashScope（Embedding + Rerank）---
@@ -54,9 +55,9 @@ dashscope==1.26.4
 # --- 文档解析 ---
 python-docx==1.2.0
 openpyxl==3.1.5
-pypdf==6.10.2
+pypdf==6.20.1
 pytesseract==0.3.13
-pillow==12.1.1
+pillow==12.3.0
 
 # --- 检索增强 ---
 rank-bm25==0.2.2
@@ -66,7 +67,7 @@ rank-bm25==0.2.2
 jieba==0.42.1
 
 # --- 安全与鉴权 ---
-PyJWT==2.12.1
+PyJWT==2.15.1
 bcrypt==5.0.0
 slowapi==0.1.9
 
@@ -76,14 +77,11 @@ tenacity==8.5.0
 # 且没有 worker 消费时任务会静默卡在 pending。取舍见 core/async_queue.py。
 
 # --- 可观测性与调度 ---
-# ⚠️ 必须钉在 7.x：8.0.0 起它要求 starlette>=1.0.0，而 fastapi 0.115.6 要求
-# starlette<0.42.0 —— 两者互斥，pip 会直接 ResolutionImpossible，
-# 整份 requirements 一个包装不上（实测：Docker 构建在这一步失败）。
-# 本机环境里"8.0.2 和 starlette 0.41.3 共存"是因为它是历史上一个个装上去的，
-# pip 从没一次性解过整张表 —— 所以本机跑得通不代表这份文件装得上。
-prometheus-fastapi-instrumentator==7.1.0
-opentelemetry-api==1.41.1         # core/telemetry.py 里是可选导入，没装也能跑
-opentelemetry-sdk==1.41.1
+# 固定监控中间件版本，避免未验证的自动升级影响指标路由。
+# FastAPI 0.143.x 要求较新的 OpenTelemetry API，SDK/API/semantic conventions 同步钉版。
+prometheus-fastapi-instrumentator==8.1.0
+opentelemetry-api==1.45.1
+opentelemetry-sdk==1.45.1
 apscheduler==3.11.0
 psutil==7.2.2
 
@@ -91,18 +89,8 @@ psutil==7.2.2
 loguru==0.7.3
 
 # --- 评测（RAGAS）---
-# ⚠️ ragas 不在这个文件里，它在 requirements-eval.txt —— 原因是**装不上**：
-#
-#   ragas 0.4.3 → instructor → 要求 jiter<0.15
-#   而 langchain-openai 1.6.2 → openai → 要求 jiter>=0.16
-#
-# 两者互斥，没有交集，pip 会直接 ResolutionImpossible 让**整份文件**装不上。
-# 本机环境里它们能共存，是因为那是历史上一个个装上去的，pip 从没一次性
-# 解过整张表 —— 所以"我本机能跑"不等于"这份文件装得上"。
-#
-# 评测功能因此改为**可选**：不装 ragas 时应用照常运行，只是执行评测会给出
-# "评测依赖未安装"的明确提示。需要时单独装：
-#   pip install -r requirements-eval.txt
-#
-# 另外 ragas 会拖进 datasets / pandas / pyarrow(50MB) / instructor 一整套，
-# 装上后镜像会大几百 MB、构建时间翻倍 —— 这也是把它拆出去的另一个理由。
+# ragas 在 requirements-eval.txt 作为可选覆盖配置安装。它与主运行配置的
+# LangChain/OpenAI 依赖有冲突；评测配置单独固定为一套经 pip check 验证的版本。
+# 不装 ragas 时应用照常运行，只是执行评测会给出"评测依赖未安装"的明确提示。
+# Docker 默认安装评测依赖；可用 INSTALL_EVAL_DEPS=false 关闭。
+# ragas 会额外引入 datasets / pandas / pyarrow 等较大的依赖，因此单独拆分。

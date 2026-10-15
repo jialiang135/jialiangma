@@ -27,7 +27,12 @@ const routes = [
   // 用量统计原先是对话页底部的一条折叠横条 —— 那是"偶尔看一眼"的信息，
   // 却常年占着一行高度，而且和"对话"本来就是两件事。现在独立成页。
   { path: '/stats', component: StatsView, name: 'stats' },
-  { path: '/admin', component: AdminView, name: 'admin' },
+  {
+    path: '/admin',
+    component: AdminView,
+    name: 'admin',
+    meta: { requiresAdmin: true },
+  },
 ]
 
 const router = createRouter({
@@ -57,6 +62,8 @@ router.beforeEach((to) => {
     const redirect = to.fullPath && to.fullPath !== '/' ? { redirect: to.fullPath } : {}
     return { name: 'login', query: redirect }
   }
+
+  if (to.meta.requiresAdmin && !auth.isAdmin) return { name: 'chat' }
 
   return true
 })

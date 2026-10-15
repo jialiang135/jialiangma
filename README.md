@@ -416,7 +416,7 @@ pip install -r requirements-dev.txt
 # 质量门禁（与 CI 完全一致）
 ruff check .                      # 规则集与豁免项见 pyproject.toml
 pytest tests/ -q --cov            # 慢测试默认跳过；覆盖率门槛 55%
-cd frontend && npm run build      # 前端构建
+cd frontend && npm ci && npm test && npm run build  # 前端逻辑测试 + 生产构建
 
 # 可选：提交前自动跑 lint（首次运行需从 GitHub 拉钩子仓库）
 pip install pre-commit && pre-commit install

@@ -2,9 +2,31 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { login as apiLogin, register as apiRegister } from '../api/auth.js'
 
+function readStoredSession() {
+  try {
+    const token = localStorage.getItem('token') || ''
+    const rawUser = localStorage.getItem('user')
+    const user = rawUser ? JSON.parse(rawUser) : null
+    if (token && user && typeof user === 'object' && !Array.isArray(user)) {
+      return { token, user }
+    }
+  } catch {
+    // 本地存储内容可能被浏览器扩展/手动编辑破坏；不要让应用启动崩溃。
+  }
+
+  try {
+    localStorage.removeItem('token')
+    localStorage.removeItem('user')
+  } catch {
+    // Storage 被浏览器禁用时也要允许应用以未登录状态启动。
+  }
+  return { token: '', user: null }
+}
+
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref(localStorage.getItem('token') || '')
-  const user = ref(JSON.parse(localStorage.getItem('user') || 'null'))
+  const storedSession = readStoredSession()
+  const token = ref(storedSession.token)
+  const user = ref(storedSession.user)
   const loading = ref(false)
   const error = ref('')
 

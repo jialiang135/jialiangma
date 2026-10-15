@@ -98,6 +98,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       echo "跳过评测依赖（INSTALL_EVAL_DEPS=false）：评测页会提示「依赖未安装」"; \
     fi
 
+# 安装完成后验证两个依赖层的最终组合，避免冲突藏到运行时才暴露。
+RUN python -m pip check
+
 # 复制后端代码（目录级 COPY，新增文件自动包含）
 COPY main.py ./
 COPY config/ ./config/

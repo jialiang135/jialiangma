@@ -10,7 +10,9 @@ Features:
     - invalidate_bm25_cache(): 文档更新时使索引失效
 """
 
+import heapq
 import re
+from threading import Lock
 
 from loguru import logger
 from rank_bm25 import BM25Okapi
@@ -131,6 +133,10 @@ class BM25IndexManager:
 
     def __init__(self):
         self._indices: dict[int, tuple[BM25Okapi, list[dict]]] = {}
+        self._lock = Lock()
+        self._build_locks: dict[int, Lock] = {}
+        self._owner_versions: dict[int, int] = {}
+        self._generation = 0
 
     # ------------------------------------------------------------------
     def build_index(self, owner_id: int) -> tuple[BM25Okapi | None, list[dict]]:
@@ -179,14 +185,39 @@ class BM25IndexManager:
 
     # ------------------------------------------------------------------
     def get_index(self, owner_id: int) -> tuple[BM25Okapi | None, list[dict]]:
-        """获取 (或惰性构建) 指定用户的 BM25 索引。"""
-        if owner_id not in self._indices:
-            result = self.build_index(owner_id)
-            if result[0] is not None:
-                self._indices[owner_id] = result  # type: ignore[assignment]
-            else:
-                return None, []
-        return self._indices.get(owner_id, (None, []))
+        """获取 (或惰性构建) 指定用户的 BM25 索引。
+
+        同一用户的并发首次请求共用一个构建过程，避免重复读取和分词整份语料。
+        构建期间若索引被失效，则丢弃旧结果并重建，避免旧索引被重新写入缓存。
+        """
+        with self._lock:
+            cached = self._indices.get(owner_id)
+            if cached is not None:
+                return cached
+            build_lock = self._build_locks.setdefault(owner_id, Lock())
+
+        with build_lock:
+            while True:
+                with self._lock:
+                    cached = self._indices.get(owner_id)
+                    if cached is not None:
+                        return cached
+                    generation = self._generation
+                    owner_version = self._owner_versions.get(owner_id, 0)
+
+                result = self.build_index(owner_id)
+
+                with self._lock:
+                    # 文档更新可能与 Chroma 拉取并发发生。若失效版本已变化，
+                    # 这次构建可能读到旧数据；不要缓存或返回它，重新构建一次。
+                    if (
+                        generation != self._generation
+                        or owner_version != self._owner_versions.get(owner_id, 0)
+                    ):
+                        continue
+                    if result[0] is not None:
+                        self._indices[owner_id] = result  # type: ignore[assignment]
+                    return result
 
     # ------------------------------------------------------------------
     def invalidate(self, owner_id: int | None = None) -> None:
@@ -196,11 +227,17 @@ class BM25IndexManager:
         Args:
             owner_id: 指定用户；为 ``None`` 时清空所有缓存。
         """
+        with self._lock:
+            if owner_id is None:
+                self._generation += 1
+                self._indices.clear()
+            else:
+                self._owner_versions[owner_id] = self._owner_versions.get(owner_id, 0) + 1
+                self._indices.pop(owner_id, None)
+
         if owner_id is None:
-            self._indices.clear()
             logger.info("BM25 索引缓存已全部清除")
-        elif owner_id in self._indices:
-            del self._indices[owner_id]
+        else:
             logger.info("BM25 索引缓存已清除: owner_id={}", owner_id)
 
 
@@ -241,20 +278,22 @@ def bm25_search(
 
     scores = bm25.get_scores(tokenized_q)
 
-    scored: list[dict] = []
-    for i, s in enumerate(scores):
-        if s > 0:
-            scored.append(
-                {
-                    "doc_id": documents[i]["doc_id"],
-                    "content": documents[i]["content"],
-                    "metadata": documents[i]["metadata"],
-                    "score": float(s),
-                }
-            )
-
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    result = scored[:top_k]
+    # Keep only top-k indices while scanning the score vector. This avoids
+    # allocating a result dictionary for every match and sorting all matches.
+    top_indices = heapq.nlargest(
+        top_k,
+        (i for i, score in enumerate(scores) if score > 0),
+        key=lambda i: (scores[i], -i),
+    )
+    result = [
+        {
+            "doc_id": documents[i]["doc_id"],
+            "content": documents[i]["content"],
+            "metadata": documents[i]["metadata"],
+            "score": float(scores[i]),
+        }
+        for i in top_indices
+    ]
 
     logger.debug(
         "BM25 检索: query='{}', owner_id={}, results={}", query[:50], owner_id, len(result)

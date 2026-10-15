@@ -61,6 +61,20 @@ jobs:
           python -m pip install --upgrade pip
           # dev 依赖里 -r requirements.txt，一次装齐运行时 + 测试工具
           pip install -r requirements-dev.txt
+          # 对齐 Dockerfile 默认行为：单独安装可选的 RAGAS 评测依赖
+          pip install -r requirements-eval.txt
+          pip check
+      - name: Audit Python dependencies
+        # All exceptions are documented with reachability notes in docs/SECURITY.md;
+        # do not add IDs here without reviewing that document.
+        run: >-
+          pip-audit
+          --ignore-vuln PYSEC-2026-311
+          --ignore-vuln PYSEC-2026-3813
+          --ignore-vuln PYSEC-2026-3814
+          --ignore-vuln PYSEC-2026-3815
+          --ignore-vuln PYSEC-2026-2447
+          --ignore-vuln PYSEC-2026-3046
       - name: Run tests with coverage
         # 覆盖率门槛在 pyproject.toml 的 [tool.coverage.report] fail_under。
         # 慢测试（真实调用 LLM/Embedding）由 addopts = -m 'not slow' 默认跳过 ——
@@ -84,6 +98,12 @@ jobs:
       - name: Install dependencies
         working-directory: frontend
         run: npm ci
+      - name: Audit frontend dependencies
+        working-directory: frontend
+        run: npm audit
+      - name: Test frontend logic
+        working-directory: frontend
+        run: npm test
       - name: Build
         working-directory: frontend
         run: npm run build

@@ -1,33 +1,23 @@
 # ============================================
-# 可选依赖：评测（RAGAS）
+# 可选依赖：RAGAS 评测兼容配置
 # ============================================
 #
-# **不要**把这里的内容合进 requirements.txt —— 它们和主依赖树冲突：
+# Dockerfile 与 CI 会在安装 requirements.txt 后再安装本文件。
+# RAGAS 的 instructor 依赖要求 jiter<0.15；主运行配置的 OpenAI 3.x
+# 需要较新的 jiter，因此评测使用一组单独验证过的兼容版本：
 #
-#     ragas   → instructor → 要求 jiter<0.15
-#     openai  →            要求 jiter>=0.16
+#   instructor 1.17.0 + OpenAI 2.26.0 + langchain-openai 1.1.14 + jiter 0.14.0
 #
-# 互斥。合在一起会让 pip 解析失败，连主依赖都装不上。
+# 这组组合通过 pip check；langchain-openai 1.1.14 同时包含其已知 SSRF 修复。
+# 若升级其中任何一项，请重新解析、运行 pip check、依赖审计和完整回归测试。
+# 安装后镜像中的这几项版本会覆盖 requirements.txt 的主配置。
 #
-# 用法：
-#     pip install -r requirements-eval.txt
-#
-# 装完后评测功能可用；不装时应用照常运行，执行评测会提示依赖未安装。
-#
-# 注意体积：ragas 会拖进 datasets / pandas / pyarrow(约 50MB) / instructor
-# 等一整套数据科依赖，镜像会显著变大、构建时间明显变长。
-# 如果只是演示主流程（问答 + 证据轨 + 朗读），可以不装。
-ragas==0.4.3
+# RAGAS 本身仍有未修复的安全公告；当前评测只使用文本指标，风险例外和
+# 可达性分析见 docs/SECURITY.md。
+# ============================================
 
-# ⚠️ 装它会让 pip **降级** langchain-openai 那一支，而且无法避免：
-#
-#     instructor（ragas 的依赖）要求 openai<0.28.0
-#     langchain-openai 1.6.2     要求 openai>=2.45.0     ← 互斥
-#
-# 实测把两个 requirements 文件放进同一次 `pip install` 会直接 ResolutionImpossible。
-# 所以 Dockerfile 里是**分两步**装的：第二步退让，把 openai 3.17.0→1.109.1、
-# langchain-openai 1.6.2→1.1.9，换来一套内部自洽的组合（`pip check` 干净，
-# 普通问答与走工具的 ReAct 问答都实测可用）。
-#
-# 后果只有一个，但要知道：**镜像里的版本不再等于 requirements.txt 的钉版**。
-# 想要那个钉版就别装评测依赖：`INSTALL_EVAL_DEPS=false docker compose up -d --build app`
+ragas==0.4.3
+instructor==1.17.0
+openai==2.26.0
+langchain-openai==1.1.14
+jiter==0.14.0

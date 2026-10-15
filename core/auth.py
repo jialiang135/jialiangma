@@ -126,6 +126,35 @@ def verify_token(token: str) -> dict:
         raise unauthorized("无效的 Token") from None
 
 
+async def _user_from_payload(payload: dict) -> dict | None:
+    """从数据库读取当前用户状态；JWT 中的角色/用户名只用于签发时，不作授权依据。"""
+    try:
+        owner_id = int(payload.get("sub"))
+    except (TypeError, ValueError):
+        return None
+
+    # 本地导入避免鉴权模块加载时初始化数据库层；每个请求都读取当前角色，
+    # 使管理员降权和账号删除立即撤销现存 JWT 的权限。
+    from core.db.users import get_user_by_id
+
+    user = await get_user_by_id(owner_id)
+    if not user:
+        return None
+    return {
+        "owner_id": owner_id,
+        "username": user["username"],
+        "role": user["role"],
+    }
+
+
+async def get_active_user_from_token(token: str) -> dict | None:
+    """校验 JWT 并返回数据库中的活动用户；无效、过期或已删除账号返回 None。"""
+    payload = decode_token(token)
+    if not payload:
+        return None
+    return await _user_from_payload(payload)
+
+
 # ========================================
 # FastAPI 鉴权依赖
 # ========================================
@@ -145,11 +174,16 @@ async def get_current_user(
         raise unauthorized("缺少 Authorization 头")
 
     payload = verify_token(credentials.credentials)
-    owner_id = int(payload.get("sub"))
-    username = payload.get("username", "")
-    role = payload.get("role", "user")
-    logger.debug(f"鉴权通过: owner_id={owner_id}, username={username}, role={role}")
-    return {"owner_id": owner_id, "username": username, "role": role}
+    user = await _user_from_payload(payload)
+    if user is None:
+        raise unauthorized("用户不存在或账号已失效")
+    logger.debug(
+        "鉴权通过: owner_id={}, username={}, role={}",
+        user["owner_id"],
+        user["username"],
+        user["role"],
+    )
+    return user
 
 
 async def require_admin(

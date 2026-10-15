@@ -137,13 +137,15 @@ RUN --mount=type=cache,target=/root/.cache/pip pip install -i https://mirrors.cl
 
 ### 5. 依赖冲突（已修，改依赖时勿踩回去）
 
-- **`prometheus-fastapi-instrumentator` 必须钉 7.x**（现为 `7.1.0`）。
-  8.0.0+ 要求 `starlette>=1.0.0`，而 `fastapi 0.115.6` 要求 `starlette<0.42.0` ——
-  两者互斥，pip 直接 `ResolutionImpossible`，**整份 requirements 一个都装不上**。
-  "本机能跑"是因为那些包是历史上一个个装上去的，pip 从没一次性解过整张表。
-- **`ragas` 拆到 `requirements-eval.txt`**。它的 `instructor` 要求 `jiter<0.15`，
-  与 `openai`（经 `langchain-openai`）要求的 `jiter>=0.16` 死锁，合在一起会让主依赖
-  也装不上。评测因此是**可选功能**：不装 ragas 时应用照常跑，只是执行评测会提示依赖未安装。
+- **FastAPI / Starlette / Instrumentator 必须成组升级和验证**。当前已验证组合为
+  `fastapi==0.143.1`、`starlette==1.8.0`、
+  `prometheus-fastapi-instrumentator==8.1.0`；旧版 FastAPI 0.115.x 与 Starlette 1.x
+  不兼容，不能只升级其中一个。
+- **`ragas` 拆到 `requirements-eval.txt`**。主运行配置与 RAGAS 的 `instructor` 有
+  `jiter` / OpenAI 版本冲突。Dockerfile 在安装主依赖后单独安装一组已验证的覆盖版本：
+  `instructor==1.17.0`、`openai==2.26.0`、`langchain-openai==1.1.14`、`jiter==0.14.0`。
+  CI 会复现 Docker 的安装顺序并执行 `pip check`、依赖审计和测试。评测仍可通过
+  `INSTALL_EVAL_DEPS=false` 关闭；RAGAS 及其依赖的未修复安全公告见 `docs/SECURITY.md`。
 
 ### 6. `config/.env` 在服务器上单独维护
 

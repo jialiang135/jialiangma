@@ -212,6 +212,23 @@ class TestTtsWebSocket:
         finally:
             ws.__exit__(None, None, None)
 
+    def test_deleted_account_token_rejected(self, ws_client, routes, monkeypatch):
+        """用户被删后，未过期的 WebSocket token 也必须立即失效。"""
+        import core.db.users as user_db
+
+        async def missing_user(_user_id: int):
+            return None
+
+        monkeypatch.setattr(user_db, "get_user_by_id", missing_user)
+        ws = ws_client.websocket_connect("/api/tts/stream")
+        ws.__enter__()
+        try:
+            ws.send_json({"type": "auth", "token": _token()})
+            msg = ws.receive_json()
+            assert msg == {"type": "error", "message": "未认证"}
+        finally:
+            ws.__exit__(None, None, None)
+
     def test_first_message_must_be_auth(self, ws_client, routes):
         """首条不是 auth 就拒绝 —— token 不放 query，认证只能靠第一条消息。"""
         ws = ws_client.websocket_connect("/api/tts/stream")
