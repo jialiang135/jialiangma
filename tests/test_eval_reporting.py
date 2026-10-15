@@ -771,6 +771,35 @@ class TestEvalSamplesAreHonest:
         assert all(s["response"] not in ("（无回答）", "") for s in capture["dataset"])
         assert any("RAG" in s["response"] for s in capture["dataset"])
 
+    def test_report_keeps_redacted_retrieval_diagnostics(self, monkeypatch):
+        """报告保留溯源元数据与溢出标记，但不落库检索正文。"""
+        import json as _json
+
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.5]})
+        report = _run_eval(
+            monkeypatch,
+            questions=[{"id": "q1", "category": "项目", "question": "项目经历"}],
+            answer_fn=lambda _question, _owner: (
+                "回答",
+                ["不应写入逐题溯源的上下文正文"],
+                ["⚠️ 已达最大工具调用轮次"],
+                {
+                    "initial": [
+                        {"source": "project.md", "chunk_idx": 4, "page": None, "score": 0.8}
+                    ],
+                    "tool_sources": [{"source": "project.md", "score": 0.7}],
+                    "react_overflow": True,
+                },
+            ),
+            metrics=["faithfulness"],
+            scores_patch=capture,
+        )
+
+        result = _json.loads(report["results_json"])[0]
+        assert result["react_overflow"] is True
+        assert result["retrieved_evidence"]["initial"][0]["source"] == "project.md"
+        assert "不应写入逐题溯源的上下文正文" not in report["results_json"]
+
 
 class TestToolResultsCountAsContext:
     """
@@ -790,12 +819,21 @@ class TestToolResultsCountAsContext:
 
         fake_state = {
             "final_answer": "依据工具结果写的回答",
-            "retrieved_docs": [{"content": "前置检索片段"}],
-            "reasoning_log": ["步骤"],
+            "retrieved_docs": [
+                {
+                    "content": "前置检索片段",
+                    "source": "initial.md",
+                    "chunk_idx": 2,
+                    "page": None,
+                    "score": 0.81,
+                }
+            ],
+            "reasoning_log": ["⚠️ 已达最大工具调用轮次，基于已有证据生成最终回答"],
             "messages": [
                 AIMessage(content="我去查一下"),
                 ToolMessage(
-                    content="【检索结果】工具查到的片段，长度远超前置检索", tool_call_id="c1"
+                    content="【片段 1】来源: tool.md | 相关度: 0.72\n工具查到的片段，长度远超前置检索",
+                    tool_call_id="c1",
                 ),
             ],
         }
@@ -812,13 +850,20 @@ class TestToolResultsCountAsContext:
         monkeypatch.setattr(gw, "get_agent_graph", lambda: _FakeGraph())
         monkeypatch.setattr(sse, "_initial_state", lambda *a, **k: {})
 
-        answer, contexts, _steps = eval_runner._answer_one_sync("问题", 1)
+        answer, contexts, _steps, diagnostics = eval_runner._answer_one_sync("问题", 1)
 
         assert answer == "依据工具结果写的回答"
         assert "前置检索片段" in contexts, "前置检索的片段不能丢"
         assert any("工具查到的片段" in c for c in contexts), (
             "工具结果也进了 prompt，必须算作上下文 —— 否则 faithfulness 被系统性压低"
         )
+        assert diagnostics["react_overflow"] is True
+        assert diagnostics["initial"] == [
+            {"source": "initial.md", "chunk_idx": 2, "page": None, "score": 0.81}
+        ]
+        assert diagnostics["tool_sources"] == [{"source": "tool.md", "score": 0.72}]
+        assert all("content" not in evidence for evidence in diagnostics["initial"])
+
 
 
 class TestRefusalQuestionDetection:

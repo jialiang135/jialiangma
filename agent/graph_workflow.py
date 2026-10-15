@@ -47,11 +47,11 @@ def should_continue_chat(state: AgentState) -> str:
     如果 LLM 请求了工具调用 → "tools"，否则 → "end"。
 
     **轮次上限由 chat_agent 节点自己把守**：它在 `iteration_count` 达到
-    `MAX_REACT_ITERATIONS` 且模型仍要工具时，会给出兜底 `final_answer` 并把
-    `needs_tool_call` 置回 False。
+    `MAX_REACT_ITERATIONS` 且模型仍要工具时，会停止工具调用，尝试基于已有证据
+    生成最终答案；失败时才用兜底，并把 `needs_tool_call` 置回 False。
 
     原实现在这里用 `iteration < 5` 抢先把超限的那一轮判给 END，导致 chat_agent
-    根本没机会产出兜底答案，`final_answer` 始终为空 —— 上层于是拿过渡语凑答案。
+    根本没机会产出最终结果，`final_answer` 始终为空 —— 上层于是拿过渡语凑答案。
     所以这里只跟随 `needs_tool_call`，不再自己截断。
     """
     if not state.get("needs_tool_call", False):

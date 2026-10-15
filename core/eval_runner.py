@@ -467,9 +467,9 @@ def load_testset(name: str) -> list[dict]:
 # ------------------------------------------------------------
 
 
-def _answer_one_sync(question: str, owner_id: int) -> tuple[str, list[str], list[str]]:
+def _answer_one_sync(question: str, owner_id: int) -> tuple[str, list[str], list[str], dict[str, Any]]:
     """
-    对单条问题跑一次问答图，取回：回答、检索到的上下文、推理步骤。
+    对单条问题跑一次问答图，取回回答、上下文、推理步骤与不含正文的检索溯源。
 
     **同步函数**，在线程池里执行（内部要跑整张图，包含同步的检索链路）。
     """
@@ -499,14 +499,50 @@ def _answer_one_sync(question: str, owner_id: int) -> tuple[str, list[str], list
     contexts = [
         d.get("content", "") for d in (final_state.get("retrieved_docs") or []) if d.get("content")
     ]
+    initial_evidence = []
+    for doc in final_state.get("retrieved_docs") or []:
+        if not doc.get("source"):
+            continue
+        score = doc.get("score")
+        initial_evidence.append(
+            {
+                "source": str(doc["source"])[:200],
+                "chunk_idx": doc.get("chunk_idx"),
+                "page": doc.get("page"),
+                "score": round(float(score), 4)
+                if isinstance(score, (int, float)) and math.isfinite(score)
+                else None,
+            }
+        )
+
+    tool_evidence = []
+    seen_tool_evidence = set()
+    source_pattern = re.compile(r"(?:【片段\s*\d+】\s*)?来源:\s*(.+?)\s*\|\s*相关度:\s*([^\s\r\n]+)")
     for msg in final_state.get("messages") or []:
         if isinstance(msg, ToolMessage):
             text = str(msg.content or "").strip()
             if text:
                 contexts.append(text)
+                for match in source_pattern.finditer(text):
+                    source = match.group(1).strip()[:200]
+                    score_text = match.group(2).strip()
+                    try:
+                        score = round(float(score_text), 4)
+                    except ValueError:
+                        score = None
+                    item = {"source": source, "score": score}
+                    key = (source, score)
+                    if source and key not in seen_tool_evidence:
+                        seen_tool_evidence.add(key)
+                        tool_evidence.append(item)
 
     steps = [s for s in (final_state.get("reasoning_log") or []) if isinstance(s, str)]
-    return answer, contexts, steps
+    diagnostics = {
+        "initial": initial_evidence,
+        "tool_sources": tool_evidence,
+        "react_overflow": any("最大工具调用轮次" in step for step in steps),
+    }
+    return answer, contexts, steps, diagnostics
 
 
 def _has_substantive_content(answer: str) -> bool:
@@ -727,9 +763,14 @@ def run_eval_task(
                 question = item.get("question", "")
                 expected = item.get("expected_answer", "") or ""
                 category = item.get("category", "")
+                steps: list[str] = []
+                diagnostics: dict[str, Any] = {}
                 try:
                     with span("eval.question", category=category, qid=str(item.get("id", ""))):
-                        answer, contexts, _steps = _answer_one_sync(question, owner_id)
+                        result = _answer_one_sync(question, owner_id)
+                    answer, contexts, steps = result[:3]
+                    if len(result) > 3 and isinstance(result[3], dict):
+                        diagnostics = result[3]
                 except Exception as e:
                     logger.error("[Eval] 生成回答失败: {} - {}", question[:40], e)
                     answer, contexts = "", []
@@ -776,6 +817,12 @@ def run_eval_task(
                         "retrieval_failed": retrieval_failed,
                         "answer_failed": answer_failed,
                         "refused": refused,
+                        "react_overflow": bool(diagnostics.get("react_overflow"))
+                        or any("最大工具调用轮次" in step for step in steps),
+                        "retrieved_evidence": {
+                            "initial": diagnostics.get("initial", []),
+                            "tool_sources": diagnostics.get("tool_sources", []),
+                        },
                     }
                 )
 

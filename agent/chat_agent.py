@@ -152,6 +152,27 @@ async def build_chat_messages(state: AgentState) -> list:
     return messages
 
 
+async def _finalize_at_react_limit(messages: list, iteration: int) -> str:
+    """Stop tool use at the loop limit and synthesize an answer from evidence collected so far."""
+    finalizer_messages = list(messages)
+    instruction = SystemMessage(
+        content=(
+            "检索轮次已达到上限。请只根据上面已经收集到的知识库证据，直接给出最终回答；"
+            "不要再请求工具。证据不足的部分要明确说明知识库未提供，不得猜测或补充外部事实。"
+        )
+    )
+    insert_at = 1 if finalizer_messages and isinstance(finalizer_messages[0], SystemMessage) else 0
+    finalizer_messages.insert(insert_at, instruction)
+
+    finalizer = get_context().chat.chat_model(temperature=0.3, streaming=False)
+    with span("llm.finalize", iteration=iteration, message_count=len(finalizer_messages)):
+        response = await llm_circuit_breaker.call(finalizer.ainvoke, finalizer_messages)
+
+    if getattr(response, "tool_calls", None):
+        raise RuntimeError("无工具 finalizer 仍请求工具")
+    return str(response.content or "").strip()
+
+
 async def chat_agent_node(state: AgentState) -> dict:
     """
     ReAct 问答 Agent 节点。
@@ -191,24 +212,32 @@ async def chat_agent_node(state: AgentState) -> dict:
                 "iteration_count": iteration + 1,
             }
 
-        # 达到轮次上限却仍在请求工具：这里**不能**像原来那样把请求丢掉，
-        # 让 final_answer 空着（上层会拿过渡语凑答案）。给一条明确的兜底，
-        # 并把"溢出"记进 reasoning_log 与日志，让运维看得见。
+        # 达到轮次上限却仍在请求工具：不再执行新工具，也不把未配对的 tool_call
+        # 写入消息历史。用一次无工具调用的模型请求基于已收集证据生成最终答案；
+        # 若综合失败，再退回明确兜底，避免长问题直接得到低相关的固定提示。
         if response.tool_calls:
-            tool_names = [tc["name"] for tc in response.tool_calls]
             logger.warning(
-                "[ChatAgent] ReAct 达到最大轮次上限({})，仍有工具请求 {}，返回兜底回答",
+                "[ChatAgent] ReAct 达到最大轮次上限({})，停止工具调用并尝试综合已有证据",
                 MAX_REACT_ITERATIONS,
-                tool_names,
             )
+            try:
+                final_answer = await _finalize_at_react_limit(messages, iteration)
+            except Exception as e:
+                logger.warning("[ChatAgent] 达到轮次上限后的最终综合失败: {}", e)
+                final_answer = ""
+
+            if not final_answer:
+                final_answer = REACT_OVERFLOW_ANSWER
+                reasoning = "⚠️ 已达最大工具调用轮次，最终综合失败，返回兜底回答"
+            else:
+                reasoning = "⚠️ 已达最大工具调用轮次，停止检索并基于已收集证据生成最终回答"
+
             return {
-                "messages": [response],
-                "final_answer": REACT_OVERFLOW_ANSWER,
+                # 忽略本轮未执行的 tool_calls，只追加无工具调用的最终消息。
+                "messages": [AIMessage(content=final_answer)],
+                "final_answer": final_answer,
                 "needs_tool_call": False,
-                "reasoning_log": [
-                    f"⚠️ 已达最大工具调用轮次({MAX_REACT_ITERATIONS})，"
-                    f"未能完成检索（最后一次仍请求: {', '.join(tool_names)}），返回兜底回答"
-                ],
+                "reasoning_log": [reasoning],
             }
 
         # 无工具调用 → 最终回答

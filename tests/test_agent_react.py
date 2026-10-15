@@ -5,15 +5,14 @@ Agent 层缺陷回归测试（全部离线，不调真实 LLM / 向量库）
 参考 ``tests/test_evidence.py`` 的写法：把外部依赖换成本地实现，只做纯逻辑断言。
 覆盖本轮修的四个问题：
 
-1. **ReAct 轮次溢出兜底**：永远请求工具的假 LLM 跑到轮次上限时，必须产出
-   非空的 ``final_answer``，且它**不是**过渡语（"我先查一下……"）拼接的结果
-   —— 否则 ``api/sse_stream.py`` 会把过渡语当答案下发并落库。
+1. **ReAct 轮次溢出收敛**：永远请求工具的假 LLM 跑到轮次上限时，必须用已有证据
+   生成非空的 ``final_answer``；最终综合失败才返回兜底，不能把过渡语拼接后下发。
 2. **工具结果截断**：超长工具返回值塞回 messages 前被截断并带"（内容已截断）"标注。
 3. **user_query 只注入一次**：ReAct 循环里追过工具消息后，当前问题不再被重复追加。
 """
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from tests.conftest import run_async
 
@@ -45,6 +44,22 @@ class _AlwaysToolLLM:
         )
 
 
+class _FinalAnswerLLM:
+    """用于超限后综合：不绑定工具，返回基于已有证据的最终回答。"""
+
+    async def ainvoke(self, messages):
+        assert any(
+            isinstance(message, SystemMessage) and "不要再请求工具" in message.content
+            for message in messages
+        )
+        return AIMessage(content="根据已经检索到的证据，这是最终回答。")
+
+
+class _FailingFinalAnswerLLM:
+    async def ainvoke(self, _messages):
+        raise RuntimeError("finalizer unavailable")
+
+
 class _DirectBreaker:
     """直通熔断器：不重试、不熔断，直接 await 目标协程。"""
 
@@ -63,12 +78,14 @@ class _FakeTool:
         return self._result
 
 
-def _patch_llm(monkeypatch, llm):
+def _patch_llm(monkeypatch, llm, finalizer=None):
     import agent.chat_agent as ca
     from config.context import get_context
 
     class _FakeChat:
-        def chat_model(self, **_kw):
+        def chat_model(self, **kwargs):
+            if kwargs.get("streaming") is False and finalizer is not None:
+                return finalizer
             return llm
 
         async def aclose(self):
@@ -136,32 +153,45 @@ def _run_react(state: dict, max_steps: int = 30) -> dict:
 
 class TestReActOverflow:
     def test_overflow_yields_fallback_not_transitional(self, monkeypatch):
-        """跑到轮次上限仍在请求工具时，必须有明确兜底，且不是过渡语。"""
+        """跑到轮次上限仍请求工具时，基于已有证据生成答案，而非直接兜底。"""
         import agent.chat_agent as ca
 
-        _patch_llm(monkeypatch, _AlwaysToolLLM())
+        _patch_llm(monkeypatch, _AlwaysToolLLM(), _FinalAnswerLLM())
         _patch_retrieve(monkeypatch)
 
         state = _run_react(_fresh_state())
 
         final = state.get("final_answer", "")
         assert final.strip(), "溢出了 final_answer 却是空的 —— 上层只能拿过渡语凑答案"
-        # 关键：不是过渡语，也不是过渡语的拼接
-        assert final != TRANSITIONAL
+        assert final == "根据已经检索到的证据，这是最终回答。"
+        assert final != ca.REACT_OVERFLOW_ANSWER
         assert TRANSITIONAL not in final
-        assert final != TRANSITIONAL * ca.MAX_REACT_ITERATIONS
-        assert final == ca.REACT_OVERFLOW_ANSWER
+        assert not state["messages"][-1].tool_calls, "未执行的 tool_call 不应进入历史"
 
-        # 溢出被记进 reasoning_log（运维可见）
-        assert any("轮次" in line or "兜底" in line for line in state["reasoning_log"])
-        # 确实用满了轮次上限
+        # 溢出与最终综合都被记进 reasoning_log（运维可见）。
+        assert any("轮次" in line and "证据" in line for line in state["reasoning_log"])
         assert state["iteration_count"] == ca.MAX_REACT_ITERATIONS
 
-    def test_node_at_limit_returns_fallback(self, monkeypatch):
-        """直接构造"已达上限且仍要工具"的状态，节点本身要产出兜底。"""
+    def test_node_at_limit_finalizes_without_tools(self, monkeypatch):
+        """达到上限后，用不绑定工具的模型基于已有上下文给出最终回答。"""
         import agent.chat_agent as ca
 
-        _patch_llm(monkeypatch, _AlwaysToolLLM())
+        _patch_llm(monkeypatch, _AlwaysToolLLM(), _FinalAnswerLLM())
+        state = _fresh_state()
+        state["iteration_count"] = ca.MAX_REACT_ITERATIONS
+
+        out = run_async(ca.chat_agent_node(state))
+
+        assert out["final_answer"] == "根据已经检索到的证据，这是最终回答。"
+        assert out["needs_tool_call"] is False
+        assert not out["messages"][0].tool_calls
+        assert any("轮次" in line for line in out["reasoning_log"])
+
+    def test_failed_finalization_uses_explicit_fallback(self, monkeypatch):
+        """最终综合模型不可用时仍有明确兜底，不留下空回答或过渡语。"""
+        import agent.chat_agent as ca
+
+        _patch_llm(monkeypatch, _AlwaysToolLLM(), _FailingFinalAnswerLLM())
         state = _fresh_state()
         state["iteration_count"] = ca.MAX_REACT_ITERATIONS
 
@@ -169,11 +199,11 @@ class TestReActOverflow:
 
         assert out["final_answer"] == ca.REACT_OVERFLOW_ANSWER
         assert out["needs_tool_call"] is False
-        assert any("轮次" in line for line in out["reasoning_log"])
+        assert "综合失败" in out["reasoning_log"][0]
 
 
 class TestShouldContinueChat:
-    """路由不再抢先把超限轮次判给 END（那会让 chat_agent 没机会出兜底）。"""
+    """路由不抢先结束超限轮次，让 chat_agent 有机会综合已有证据。"""
 
     def test_passes_through_at_limit_so_node_can_fallback(self):
         from agent.graph_workflow import should_continue_chat
