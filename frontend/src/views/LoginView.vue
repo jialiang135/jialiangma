@@ -103,42 +103,67 @@ onMounted(loadRules)
 
 <template>
   <div class="auth-page">
-    <!-- 左栏：品牌与定位。窄屏隐藏。 -->
-    <section class="auth-brand">
+    <!-- 左栏：品牌、产品价值和界面示意。窄屏时收敛为紧凑品牌区。 -->
+    <section class="auth-brand" aria-label="产品介绍">
       <div class="brand-top">
         <span class="brand-mark"><UiIcon name="layers" :size="20" /></span>
-        <span class="brand-name">私人知识库</span>
+        <span class="brand-name">
+          <strong>私人知识库</strong>
+          <small>PERSONAL AI WORKSPACE</small>
+        </span>
+        <span class="brand-status"><i /> PRIVATE</span>
       </div>
 
-      <h1 class="brand-title">个人数字分身</h1>
-      <p class="brand-desc">
-        把自己的简历、项目文档、技术笔记喂进私有知识库，
-        让 AI 以本人的身份回答问题 —— 并且<strong>句句有据可查</strong>。
-      </p>
+      <div class="brand-copy">
+        <span class="brand-kicker"><UiIcon name="shield" :size="13" /> EVIDENCE-FIRST AI</span>
+        <h1 class="brand-title">让经验沉淀下来，<br /><span>让回答有据可查。</span></h1>
+        <p class="brand-desc">
+          将简历、项目文档与技术笔记汇入个人知识库，让 AI 基于其中的经验回答问题，
+          并清楚展示答案来自哪里。
+        </p>
+      </div>
+
+      <div class="product-preview" role="group" aria-label="产品界面示意">
+        <div class="preview-topbar">
+          <span class="preview-dots"><i /><i /><i /></span>
+          <span class="preview-window-title">个人数字分身 <span>·</span> 新对话</span>
+          <span class="preview-lock"><UiIcon name="shield" :size="12" /> PRIVATE</span>
+        </div>
+        <div class="preview-question">你做过哪些 AI Agent 项目？</div>
+        <div class="preview-answer">
+          <span class="preview-avatar"><UiIcon name="zap" :size="14" /></span>
+          <div class="preview-answer-body">
+            <span class="preview-label">基于知识库的回答</span>
+            <p>结合项目经历作答，并附上可核查的原文片段。</p>
+          </div>
+        </div>
+        <div class="preview-source">
+          <span><UiIcon name="file" :size="13" /> 项目经历 · 相关知识片段</span>
+          <span class="source-status"><UiIcon name="check" :size="12" /> 可追溯</span>
+        </div>
+      </div>
 
       <ul class="brand-points">
-        <li>
-          <UiIcon name="layers" :size="16" />
-          <span>每个回答都标注它依据了知识库里的哪些片段与相关度</span>
-        </li>
-        <li>
-          <UiIcon name="zap" :size="16" />
-          <span>可展开查看完整推理过程：检索了哪些内容、模型怎么想的</span>
-        </li>
-        <li>
-          <UiIcon name="volume" :size="16" />
-          <span>支持语音朗读，可用复刻的真人音色</span>
-        </li>
-        <li>
-          <UiIcon name="shield" :size="16" />
-          <span>只依据已上传的文档作答，未知内容如实说明，不编造</span>
-        </li>
+        <li><UiIcon name="layers" :size="15" /><span>回答关联知识来源</span></li>
+        <li><UiIcon name="zap" :size="15" /><span>检索与推理过程可查看</span></li>
+        <li><UiIcon name="shield" :size="15" /><span>没有依据时如实说明</span></li>
       </ul>
+      <p class="brand-footer">私有知识库驱动 <span>·</span> 证据优先 <span>·</span> 可追溯</p>
     </section>
 
     <!-- 右栏：登录 / 注册 -->
     <section class="auth-panel">
       <div class="auth-card">
+        <div class="auth-heading">
+          <span class="auth-heading-icon"><UiIcon :name="mode === 'login' ? 'user' : 'plus'" :size="17" /></span>
+          <div>
+            <p class="auth-eyebrow">WORKSPACE ACCESS</p>
+            <h2>{{ mode === 'login' ? '欢迎回来' : '创建访问账号' }}</h2>
+          </div>
+        </div>
+        <p class="auth-intro">
+          {{ mode === 'login' ? '登录后继续体验个人数字分身问答。' : '创建账号，开始体验知识库问答。' }}
+        </p>
         <UiTabs v-model="mode" :tabs="TABS" variant="pill" />
 
         <form class="auth-form" @submit.prevent="submit">
@@ -163,7 +188,7 @@ onMounted(loadRules)
                 v-model="password"
                 :type="showPassword ? 'text' : 'password'"
                 placeholder="请输入密码"
-                autocomplete="current-password"
+                :autocomplete="mode === 'register' ? 'new-password' : 'current-password'"
                 @enter="submit"
               />
               <button
@@ -236,103 +261,365 @@ onMounted(loadRules)
 
 <style scoped>
 .auth-page {
+  position: relative;
+  isolation: isolate;
   display: grid;
-  grid-template-columns: 1.1fr 1fr;
+  grid-template-columns: minmax(0, 1.05fr) minmax(430px, 0.95fr);
   min-height: 100%;
+  overflow: hidden;
   background: var(--c-bg);
 }
 
-/* ── 左栏：品牌 ── */
+/* ── 左栏：品牌与产品示意 ── */
 .auth-brand {
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: var(--sp-12) var(--sp-10);
-  background: var(--c-surface);
-  border-right: 1px solid var(--c-border);
+  min-height: 100%;
+  padding: clamp(36px, 6vh, 72px) clamp(32px, 6vw, 96px);
+  overflow: hidden;
+  color: var(--c-white);
+  background: linear-gradient(145deg, var(--c-brand-ink) 0%, var(--c-brand-indigo) 56%, var(--c-brand-violet) 100%);
+}
+.auth-brand::before,
+.auth-brand::after {
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  content: '';
+}
+.auth-brand::before {
+  top: -190px;
+  right: -190px;
+  width: 560px;
+  height: 560px;
+  background: radial-gradient(circle, var(--c-brand-glow), transparent 72%);
+  border: 1px solid var(--c-brand-glass-border);
+  border-radius: 50%;
+}
+.auth-brand::after {
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 48%;
+  background-image: radial-gradient(var(--c-brand-grid) 0.7px, transparent 0.7px);
+  background-position: 0 0;
+  background-size: 22px 22px;
+  mask-image: linear-gradient(to top, var(--c-brand-mask), transparent 82%);
+}
+.auth-brand > * {
+  position: relative;
 }
 
 .brand-top {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  margin-bottom: var(--sp-8);
+  margin-bottom: clamp(28px, 5vh, 54px);
 }
 .brand-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 42px;
+  height: 42px;
   color: var(--c-white);
-  background: var(--c-accent);
-  border-radius: var(--r-lg);
+  background: var(--c-accent-gradient);
+  border: 1px solid var(--c-brand-glass-border);
+  border-radius: 14px;
+  box-shadow: var(--sh-brand-mark);
 }
 .brand-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.2;
+}
+.brand-name strong {
   font-size: var(--fs-md);
   font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
+}
+.brand-name small {
+  font-size: 9px;
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.14em;
+  color: var(--c-brand-subtle);
+}
+.brand-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.12em;
+  color: var(--c-brand-status);
+  background: var(--c-brand-glass-soft);
+  border: 1px solid var(--c-brand-glass-border);
+  border-radius: var(--r-full);
+}
+.brand-status i {
+  width: 6px;
+  height: 6px;
+  background: var(--c-brand-success);
+  border-radius: 50%;
+  box-shadow: var(--sh-brand-success);
 }
 
-.brand-title {
-  font-size: var(--fs-2xl);
+.brand-copy {
+  max-width: 620px;
+}
+.brand-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  font-size: 10px;
   font-weight: var(--fw-semibold);
-  letter-spacing: -0.01em;
+  letter-spacing: 0.14em;
+  color: var(--c-brand-highlight);
+  background: var(--c-brand-glass-soft);
+  border: 1px solid var(--c-brand-glass-border);
+  border-radius: var(--r-full);
+}
+.brand-title {
+  margin-top: 20px;
+  font-size: clamp(34px, 4vw, 52px);
+  font-weight: var(--fw-semibold);
+  line-height: 1.24;
+  letter-spacing: -0.045em;
+  color: var(--c-white);
+}
+.brand-title span {
+  color: var(--c-brand-highlight);
 }
 .brand-desc {
-  max-width: 40ch;
-  margin-top: var(--sp-3);
-  font-size: var(--fs-base);
-  line-height: var(--lh-loose);
-  color: var(--c-text-2);
+  max-width: 45ch;
+  margin-top: 18px;
+  font-size: var(--fs-md);
+  line-height: 1.9;
+  color: var(--c-brand-muted);
 }
 .brand-desc strong {
-  color: var(--c-accent-text);
+  font-weight: var(--fw-semibold);
+  color: var(--c-white);
+}
+
+.product-preview {
+  width: min(100%, 590px);
+  margin-top: clamp(24px, 4vh, 38px);
+  padding: 16px 18px 14px;
+  background: var(--c-brand-glass);
+  border: 1px solid var(--c-brand-glass-border);
+  border-radius: 18px;
+  box-shadow: var(--sh-brand-preview);
+  backdrop-filter: blur(16px);
+}
+.preview-topbar,
+.preview-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.preview-topbar {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--c-brand-glass-border);
+}
+.preview-dots {
+  display: flex;
+  gap: 4px;
+}
+.preview-dots i {
+  width: 6px;
+  height: 6px;
+  background: var(--c-brand-grid);
+  border-radius: 50%;
+}
+.preview-dots i:first-child {
+  background: var(--c-danger);
+}
+.preview-dots i:nth-child(2) {
+  background: var(--c-warning);
+}
+.preview-dots i:nth-child(3) {
+  background: var(--c-success);
+}
+.preview-window-title {
+  flex: 1;
+  font-size: 11px;
+  color: var(--c-brand-muted);
+}
+.preview-window-title span {
+  padding: 0 3px;
+  color: var(--c-brand-subtle);
+}
+.preview-lock,
+.source-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: var(--fw-medium);
+  color: var(--c-brand-highlight);
+}
+.preview-question {
+  width: fit-content;
+  max-width: 86%;
+  margin: 16px 0 14px auto;
+  padding: 9px 12px;
+  font-size: var(--fs-sm);
+  color: var(--c-white);
+  background: var(--c-brand-glass-soft);
+  border: 1px solid var(--c-brand-glass-border);
+  border-radius: 13px 13px 4px 13px;
+}
+.preview-answer {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.preview-avatar {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--c-brand-highlight);
+  background: var(--c-brand-glass-soft);
+  border: 1px solid var(--c-brand-glass-border);
+  border-radius: 9px;
+}
+.preview-answer-body {
+  padding-top: 1px;
+}
+.preview-label {
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.03em;
+  color: var(--c-brand-subtle);
+}
+.preview-answer-body p {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--c-white);
+}
+.preview-source {
+  margin: 12px 0 0 38px;
+  padding: 9px 10px;
+  font-size: 10px;
+  color: var(--c-brand-muted);
+  background: var(--c-brand-deep-glass);
+  border: 1px solid var(--c-brand-glass-border);
+  border-radius: 9px;
+}
+.preview-source > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.source-status {
+  color: var(--c-brand-success);
 }
 
 .brand-points {
   display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  margin-top: var(--sp-8);
-  padding-top: var(--sp-6);
-  border-top: 1px solid var(--c-border);
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  margin-top: 22px;
 }
 .brand-points li {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--c-brand-muted);
+}
+.brand-points svg {
+  color: var(--c-brand-highlight);
+}
+.brand-footer {
+  margin-top: clamp(22px, 4vh, 38px);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--c-brand-subtle);
+}
+.brand-footer span {
+  padding: 0 5px;
+  color: var(--c-brand-highlight);
+}
+
+/* ── 右栏：登录 / 注册 ── */
+.auth-panel {
+  position: relative;
   display: flex;
-  align-items: flex-start;
-  gap: var(--sp-3);
+  align-items: center;
+  justify-content: center;
+  padding: clamp(24px, 3vw, 52px);
+  background:
+    radial-gradient(ellipse at 100% 0%, var(--c-auth-glow), transparent 40%),
+    var(--c-bg);
+}
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+  padding: clamp(26px, 3vw, 38px);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 24px;
+  box-shadow: var(--sh-float);
+}
+.auth-heading {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+.auth-heading-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  color: var(--c-accent-text);
+  background: var(--c-accent-soft);
+  border: 1px solid var(--c-accent-border);
+  border-radius: 13px;
+}
+.auth-eyebrow {
+  margin-bottom: 3px;
+  font-size: 9px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.14em;
+  color: var(--c-text-3);
+}
+.auth-heading h2 {
+  font-size: 23px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.035em;
+}
+.auth-intro {
+  margin: 10px 0 14px;
   font-size: var(--fs-sm);
   line-height: var(--lh-base);
   color: var(--c-text-2);
 }
-.brand-points svg {
-  margin-top: 3px;
-  color: var(--c-accent);
-}
-
-/* ── 右栏：表单 ── */
-.auth-panel {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--sp-8) var(--sp-6);
-}
-
-.auth-card {
-  width: 100%;
-  max-width: 380px;
-  padding: var(--sp-6);
-  background: var(--c-surface);
-  border: 1px solid var(--c-border);
-  border-radius: var(--r-xl);
-  box-shadow: var(--sh-2);
+.auth-card > :deep(.ui-tabs) {
+  width: fit-content;
+  margin-bottom: 14px;
 }
 
 .auth-form {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
-  margin-top: var(--sp-5);
+  margin-top: 0;
 }
 
 .field {
@@ -428,24 +715,68 @@ onMounted(loadRules)
   color: var(--c-text-3);
 }
 
-/* ── 窄屏：单栏，品牌区收成一条 ── */
+/* ── 窄屏：品牌区收敛，表单成为视觉主体 ── */
 @media (max-width: 900px) {
   .auth-page {
     grid-template-columns: 1fr;
   }
   .auth-brand {
-    padding: var(--sp-8) var(--sp-5) var(--sp-6);
-    border-right: none;
-    border-bottom: 1px solid var(--c-border);
+    min-height: auto;
+    padding: 24px 24px 22px;
   }
-  .brand-points {
+  .brand-top {
+    margin-bottom: 24px;
+  }
+  .brand-copy {
+    max-width: 700px;
+  }
+  .brand-title {
+    margin-top: 14px;
+    font-size: clamp(28px, 5vw, 36px);
+  }
+  .brand-desc {
+    max-width: 58ch;
+    margin-top: 10px;
+    font-size: var(--fs-sm);
+    line-height: 1.7;
+  }
+  .product-preview,
+  .brand-points,
+  .brand-footer {
+    display: none;
+  }
+  .auth-panel {
+    padding: 24px 20px 36px;
+  }
+  .auth-card {
+    max-width: 460px;
+  }
+}
+
+@media (max-width: 520px) {
+  .auth-brand {
+    padding: 20px 20px 18px;
+  }
+  .brand-top {
+    margin-bottom: 20px;
+  }
+  .brand-status,
+  .brand-name small {
     display: none;
   }
   .brand-title {
-    font-size: var(--fs-xl);
+    font-size: 28px;
+  }
+  .brand-desc {
+    font-size: 13px;
   }
   .auth-panel {
-    padding: var(--sp-6) var(--sp-4) var(--sp-10);
+    align-items: flex-start;
+    padding: 18px 14px 28px;
+  }
+  .auth-card {
+    padding: 24px 20px;
+    border-radius: 20px;
   }
 }
 </style>

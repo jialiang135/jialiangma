@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Personal digital-twin RAG system for AI Agent job interview demos. A single-admin private knowledge base that ingests résumés, project docs, and tech notes, then answers interview questions as the candidate via LangGraph orchestration: **one real ReAct agent (chat Q&A) plus two deterministic workflow nodes (knowledge-base management, evaluation)**. The manage/eval nodes are deliberately deterministic (if/elif dispatch and keyword matching, no LLM decision) — for deterministic operations an LLM's "intent understanding" is less reliable (same input can yield different judgments), so this is a trade-off, not unfinished work.
 
-**Stack:** FastAPI (server) + Vue 3 (frontend) + LangGraph 1.x (agent orchestration) + SQLAlchemy 2.0 async + aiosqlite (metadata) + ChromaDB (local vector store) + DeepSeek reasoning model (LLM) + Alibaba DashScope (embedding + rerank) + RAGAS (evaluation).
+**Stack:** FastAPI (server) + Vue 3 (frontend) + LangGraph 1.x (agent orchestration) + SQLAlchemy 2.0 async + aiosqlite (metadata) + ChromaDB (local vector store) + configurable DeepSeek chat model + Alibaba DashScope (embedding + rerank) + RAGAS (evaluation).
 
 **Deployment:** Tencent Cloud Lighthouse at http://193.112.29.164:8080 (nginx also maps :80), Docker Compose multi-container (app + nginx, plus optional prometheus + grafana under the `monitoring` profile). **No Redis** — caching and the task queue are in-process (see `core/async_queue.py`).
 
@@ -44,7 +44,7 @@ python -m pytest tests/ -q -m "not slow"
 ```
 Browser → Nginx (:80 / :8080) → FastAPI SSE → LangGraph ReAct Agent
   → ChromaDB (vector search) + DashScope (rerank)
-  → DeepSeek reasoning model (LLM)
+  → Configured DeepSeek chat model (LLM; model name comes from config)
   → SSE events: reasoning → answer → done
 ```
 
@@ -58,7 +58,7 @@ Chat mode uses a ReAct loop: `retrieve → chat_agent ⇄ tools → END` (max 5 
 
 ### RAG pipeline (rag/)
 
-1. `rag/document_loader.py` — 15 format handlers (PDF, DOCX, XLSX, TXT/MD/code, images via pytesseract OCR, ZIP recursive)
+1. `rag/document_loader.py` — 15 supported file extensions (PDF/Word/Excel/text/code/images via Tesseract OCR) plus recursive ZIP extraction
 2. `rag/text_splitter.py` — `SemanticTextSplitter` (Markdown headings → Chinese numbered sections → paragraphs → recursive fallback), chunk_size=1000, overlap=200. Toggle via `USE_SEMANTIC_SPLITTER`.
 3. `rag/vector_store.py` — ChromaDB PersistentClient, collection `knowledge_base`
 4. `rag/retriever.py` — Hybrid (BM25 + vector, RRF fusion) topK=10 → DashScope gte-rerank topK=5, with TTL cache and graceful degradation. Cache invalidation is hooked into `rag/vector_store.py` write ops.
@@ -85,7 +85,7 @@ implementation modules (`core/kb_tasks.py`, `core/eval_runner.py`) as these two 
 - **Hallucination guard**: Retrieval returns empty → system prompt forces fallback "我的知识库中没有这方面的信息"
 - **Lazy singletons**: ChromaDB client, vector store, and LangGraph graph are created on first use, not at import time
 - **Graceful degradation**: Rerank API failure → fallback to raw ChromaDB ordering. Missing Tesseract → OCR skipped with warning
-- **Multi-tenant data isolation**: Every data layer carries `owner_id` (ChromaDB metadata, SQLite WHERE, JWT payload, file records)
+- **Data ownership**: chats/usage and other user records are scoped by the authenticated `owner_id`; the shipped product intentionally shares the admin-owned KB with authenticated users via `shared_kb_owner_id`. Anonymous KB access is off by default; this is not one-private-KB-per-account isolation.
 - **`config/settings.py` module-level code**: Creates directories and configures Loguru on import
 
 ## Deployment & Sync
@@ -102,7 +102,7 @@ Full deploy guide + the pitfalls hit during the Tencent Cloud deploy live in **[
 | User | `ubuntu` (passwordless sudo) |
 | Project path | /opt/personal-agent |
 | SSH | `ssh ubuntu@193.112.29.164` (public key already installed — **no password**) |
-| Web | http://193.112.29.164:8080 (and http://193.112.29.164:80) — Docker nginx maps both |
+| Web | http://193.112.29.164:8080 (and http://193.112.29.164:80) — HTTP only; TLS is not configured |
 
 > The old Alibaba Cloud ECS `39.106.191.98` (user `admin`) is **expired and released** — do not use it.
 > The app container runs as non-root user `appuser` (**uid 999**); nginx listens on 80 inside the

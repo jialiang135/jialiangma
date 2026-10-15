@@ -138,9 +138,10 @@ const isAssistant = () => props.message.role === 'assistant'
   border-radius: var(--r-md);
 }
 .msg.is-assistant .avatar {
-  color: var(--c-accent-text);
-  background: var(--c-accent-soft);
-  border-color: var(--c-accent-border);
+  color: var(--c-white);
+  background: var(--c-accent-gradient);
+  border-color: transparent;
+  box-shadow: 0 4px 12px var(--c-accent-halo);
 }
 
 .body {
@@ -160,8 +161,9 @@ const isAssistant = () => props.message.role === 'assistant'
   color: var(--c-white);
   white-space: pre-wrap;
   word-break: break-word;
-  background: var(--c-accent);
-  border-radius: var(--r-lg) var(--r-lg) var(--r-sm) var(--r-lg);
+  background: var(--c-accent-gradient);
+  border-radius: 16px 16px 5px 16px;
+  box-shadow: 0 5px 14px var(--c-accent-halo);
 }
 
 .actions {

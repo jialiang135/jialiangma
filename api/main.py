@@ -24,6 +24,7 @@ from api.routes.token_routes import router as token_router
 from api.routes.tool_routes import router as tool_router
 from api.routes.tts_routes import router as tts_router
 from config.settings import settings
+from config.version import APP_VERSION
 from core.auth import hash_password
 from core.db.engine import init_database
 from core.db.users import create_admin_user
@@ -132,10 +133,10 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="个人数字分身 · 私有 RAG 知识库系统",
         description=(
-            "基于 LangGraph + DeepSeek V4 Pro 的私有知识库问答系统"
+            f"基于 LangGraph + {settings.deepseek_model} 的私有知识库问答系统"
             "（1 个 ReAct Agent + 2 个确定性工作流）"
         ),
-        version="1.0.0",
+        version=APP_VERSION,
         docs_url="/api/docs",
         redoc_url="/api/redoc",
         lifespan=lifespan,
@@ -234,7 +235,7 @@ def create_app() -> FastAPI:
     # --- 健康检查 ---
     @app.get("/api/health")
     async def health_check():
-        return {"status": "ok", "version": "1.0.6-final"}
+        return {"status": "ok", "version": APP_VERSION}
 
     # Prometheus 指标监控（可选，未安装则跳过）
     try:

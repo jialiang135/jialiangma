@@ -99,15 +99,16 @@ function onKeydown(e) {
   padding: var(--sp-2);
   background: var(--c-surface);
   border: 1px solid var(--c-border);
-  border-radius: var(--r-lg);
+  border-radius: 17px;
+  box-shadow: var(--sh-1);
   transition: border-color var(--dur-fast) var(--ease),
-    box-shadow var(--dur-fast) var(--ease);
+    box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 /* 焦点环落在整个容器上，而不是内层 textarea ——
    视觉上输入区是一个整体，只给 textarea 描边会显得碎 */
 .composer:focus-within {
   border-color: var(--c-accent);
-  box-shadow: 0 0 0 3px var(--c-accent-soft);
+  box-shadow: 0 0 0 3px var(--c-accent-halo), var(--sh-2);
 }
 
 .composer-input {
@@ -142,10 +143,12 @@ function onKeydown(e) {
   transition: background var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
 }
 .composer-btn.is-send {
-  background: var(--c-accent);
+  background: var(--c-accent-gradient);
+  box-shadow: 0 4px 12px var(--c-accent-halo);
 }
 .composer-btn.is-send:hover:not(:disabled) {
-  background: var(--c-accent-hover);
+  background: var(--c-accent);
+  transform: translateY(-1px);
 }
 .composer-btn.is-send:disabled {
   opacity: 0.4;

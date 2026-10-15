@@ -1,13 +1,15 @@
 # 个人数字分身 · 私有 RAG 知识库系统
 
 [![Python](https://img.shields.io/badge/Python-3.12-blue)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)](https://fastapi.tiangolo.com)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.143.1-green)](https://fastapi.tiangolo.com)
 [![Vue](https://img.shields.io/badge/Vue-3-green)](https://vuejs.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-blue)](https://docker.com)
 
-> 基于 LangGraph + DeepSeek 推理模型的私有知识库问答系统 —— **1 个 ReAct Agent + 2 个确定性工作流**
+> 基于 LangGraph + 可配置 DeepSeek 模型的私有知识库问答系统 —— **1 个 ReAct Agent + 2 个确定性工作流**
 
 **🌐 在线地址：http://193.112.29.164:8080**
+
+> 当前公网部署为 HTTP；HTTPS 尚未启用，HTTPS 配置文件仅是模板。不要在不可信网络复用重要密码。
 
 **📦 GitHub：https://github.com/jialiang135/jialiangma**
 
@@ -20,7 +22,7 @@
 ```
 手机 / 桌面浏览器
       ↓
-  Nginx (:80 / :8080, 反向代理 + 限流 + HTTPS)
+  Nginx (:80 / :8080, HTTP 反向代理 + 限流；TLS 为可选配置模板)
       ↓
   FastAPI (SSE 真实流式, 30+ 个接口)
       ↓
@@ -79,7 +81,7 @@
 
 ### 数据层（SQLAlchemy 2.0 async）
 
-- 6 张表 + 审计表统一为 `DeclarativeBase` 模型，表结构只有一个来源
+- 9 张表统一为 `DeclarativeBase` 模型，表结构只有一个来源
 - `create_async_engine` + `aiosqlite`，**DB 操作不再阻塞事件循环**
 - 连接级 PRAGMA：`journal_mode=WAL`（读写不互斥）+ `busy_timeout=5000`
   （写锁冲突时等待而非立刻报错）+ `synchronous=NORMAL`
@@ -88,12 +90,13 @@
 - 无法 async 的阻塞操作（Chroma 查询、DashScope 同步 HTTP、文档解析）
   统一用 `asyncio.to_thread` 移出事件循环
 
-### 数据隔离（多租户就绪）
+### 数据归属与访问边界（共享知识库模式）
 
-所有数据层携带 `owner_id`：
-- ChromaDB：`metadata={"owner_id": N}` + 查询 `filter={"owner_id": owner_id}`
-- SQLite：所有查询 `WHERE owner_id = ?`
-- JWT：payload 含 `sub`（owner_id）→ FastAPI `Depends(get_current_user)` 注入
+当前产品是**单管理员知识库**：所有已登录用户都可以查询由 `shared_kb_owner_id` 指定的同一份知识库；匿名访问默认关闭。不要把它描述成“每个注册用户各有一份私有知识库”。
+
+- 知识库文件记录与 ChromaDB 向量块按共享知识库 owner 归属，并在检索/删除时过滤 `owner_id`
+- 对话历史、Token 用量等用户数据按实际登录用户的 `owner_id` 记录和读取
+- JWT 的 `sub` 是用户 ID；每次鉴权会结合数据库中的当前用户状态
 
 ### 两阶段 RAG 检索
 
@@ -180,7 +183,7 @@
 - **架构设计**：由 Claude 根据需求生成技术方案，人工 review 后确认
 - **代码生成**：Claude 生成主体代码（Vue 3 组件、FastAPI 路由、LangGraph 编排、Docker 配置）
 - **迭代优化**：遇到问题 → 描述给 Claude → Claude 分析 → 提出修复 → 验证
-- **部署配置**：Dockerfile、docker-compose、Nginx、CI/CD 全部由 Claude 生成
+- **部署配置**：Dockerfile、docker-compose、Nginx 与 GitHub Actions CI 配置由 Claude 辅助生成
 
 **Vibe Coding 心得：**
 - 越具体的需求描述 → Claude 生成的代码越准确
@@ -279,7 +282,7 @@ llm_with_tools = llm.bind_tools(
 from langchain_deepseek import ChatDeepSeek
 
 llm = ChatDeepSeek(
-    model=settings.deepseek_model,  # 推理模型：先输出思考再输出答案
+    model=settings.deepseek_model,  # 默认值见 config/.env.example，可由部署配置覆盖
     api_key=settings.deepseek_api_key,
     api_base=settings.deepseek_base_url,
     temperature=0.3,  # 低温度，减少幻觉
@@ -300,24 +303,27 @@ llm = ChatDeepSeek(
 - 一个域名（可选，用于 HTTPS）
 - Docker & Docker Compose 已安装
 
-### 第 1 步：克隆项目
+### 第 1 步：获取项目代码
+
+首次部署可克隆仓库：
 
 ```bash
 git clone https://github.com/jialiang135/jialiangma.git /opt/personal-agent
 cd /opt/personal-agent
 ```
 
-### 第 2 步：配置 API Key
+腾讯云线上实例的日常更新请按 [docs/DEPLOY.md](docs/DEPLOY.md) 使用 tar+SSH；不要依赖服务器直接 `git pull`。
+
+### 第 2 步：配置环境变量
 
 ```bash
-# 创建 .env 文件
-cat > config/.env << 'EOF'
-DEEPSEEK_API_KEY=sk-your-deepseek-api-key-here
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DASHSCOPE_API_KEY=sk-your-dashscope-api-key-here
-JWT_SECRET_KEY=your-random-secret-key-change-this
-EOF
+cp config/.env.example config/.env
+openssl rand -hex 32
+# 编辑 config/.env，填入模型 API Key，并把上面生成的随机值设为 JWT_SECRET_KEY。
+# 同时设置强 ADMIN_PASSWORD；生产域名启用 TLS 后，将 CORS_ORIGINS 收紧到该 HTTPS 源。
 ```
+
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` 首次启动时用于创建管理员；仓库默认口令和 JWT 密钥会阻止生产启动。`ALLOW_REGISTRATION` 默认关闭，开放注册前先确认知识库内容适合所有已登录用户共享。
 
 ### 第 3 步：启动服务
 
@@ -329,7 +335,7 @@ docker compose up -d --build
 docker compose --profile monitoring up -d
 ```
 
-默认访问 http://服务器IP:8080，管理员 `admin` / `admin123456`。
+HTTP 默认访问 `http://服务器IP:8080`。管理员账号取自 `config/.env`，没有可安全使用的通用默认密码。
 
 ### 第 4 步（可选）：配置 DNS
 
@@ -342,32 +348,32 @@ docker compose --profile monitoring up -d
 
 ```bash
 # 1. 安装 certbot
-sudo yum install -y certbot  # Alibaba Cloud Linux / CentOS
-# 或 sudo apt install -y certbot  # Ubuntu
+sudo apt install -y certbot  # Ubuntu；其它发行版使用对应包管理器
 
-# 2. 先停掉 Nginx（释放 80 端口）
+# 2. 确认域名 A 记录已指向服务器，再暂时停止 Nginx 释放 80 端口
+cd /opt/personal-agent
 docker compose stop nginx
 
-# 3. 获取免费证书
+# 3. 获取 Let's Encrypt 证书
 sudo certbot certonly --standalone -d your-domain.com
 
-# 4. 证书路径（certbot 默认输出）
-# 证书: /etc/letsencrypt/live/your-domain.com/fullchain.pem
-# 私钥: /etc/letsencrypt/live/your-domain.com/privkey.pem
+# 4. 启用与当前代理行为匹配的 HTTPS 模板（含 SSE、TTS WebSocket、限流和动态上游）
+cp nginx/nginx-ssl.conf nginx/nginx.conf
+# 将 nginx.conf 中的 your-domain.com 替换成真实域名
 
-# 5. 启用 HTTPS 配置
-# 编辑 nginx/nginx.conf，取消 HTTPS server 块的注释
-# 填入证书路径和域名
+# 5. 编辑 docker-compose.yml：为 nginx 增加 443:443 端口映射，
+#    并挂载 - /etc/letsencrypt:/etc/letsencrypt:ro
+# 同时在 config/.env 中把 CORS_ORIGINS 设为 https://your-domain.com
 
-# 6. 更新 docker-compose.yml，挂载证书目录
-#    - /etc/letsencrypt:/etc/letsencrypt:ro
-
-# 7. 重启 Nginx
+# 6. 校验并启动 Nginx
 docker compose up -d nginx
+docker compose exec nginx nginx -t
 
-# 8. 证书自动续签（crontab）
-echo "0 3 * * * certbot renew --quiet && docker compose -f /opt/personal-agent/docker-compose.yml restart nginx" | crontab -
+# 7. 验证 HTTPS 和健康检查
+curl -fsS https://your-domain.com/api/health
 ```
+
+证书通过 standalone 验证时，续签也需要临时释放 80 端口；配置 certbot 的 pre/post-hook 停止并重新启动 Nginx，并先实测一次续签流程。不要直接照抄旧版 cron 命令，否则可能因 80 端口被 Nginx 占用而续签失败。
 
 HTTPS 配置模板见 [nginx/nginx-ssl.conf](nginx/nginx-ssl.conf)。
 
@@ -390,13 +396,10 @@ docker compose ps
 # 健康巡检
 ./scripts/health_check.sh
 
-# 回滚到指定版本
-./scripts/rollback.sh v1.0.0
+# 当前 tar+SSH 部署未接入镜像仓库版本回滚；不要使用旧版 rollback.sh。
+# 更新/恢复流程见 docs/DEPLOY.md。
 
-# 更新部署
-cd /opt/personal-agent
-git pull
-docker compose up -d --build
+# 线上更新：按 docs/DEPLOY.md 从本地 tar+SSH 同步并重建，不要在服务器直接 git pull
 
 # 查看 Swagger 文档
 # http://服务器IP:8080/api/docs
@@ -440,8 +443,8 @@ pip install pre-commit && pre-commit install
 |------|------|
 | 前端 | Vue 3, Vite, Vue Router, Pinia, 纯 CSS 响应式, DOMPurify（Markdown 净化） |
 | 后端 | FastAPI, LangGraph 1.x, LangChain 1.x, SSE 真实流式 |
-| AI | DeepSeek（推理模型）, DashScope Embedding + Rerank |
-| 数据 | SQLAlchemy 2.0 async + aiosqlite（WAL）, ChromaDB（缓存与任务队列均在进程内，无外部中间件） |
+| AI | DeepSeek（模型名与端点由环境配置）, DashScope Embedding + Rerank |
+| 数据 | SQLAlchemy 2.0 async + aiosqlite（WAL）, ChromaDB 向量库；检索缓存和任务队列为进程内实现（无 Redis） |
 | 检索 | 结构感知分块, BM25 + 向量混合检索（RRF）, Rerank 重排, TTL 缓存 |
 | 评测 | RAGAS（faithfulness / relevancy / context precision & recall）+ 自建诚实度 |
 | 安全 | JWT + bcrypt, slowapi 限流, 路径穿越防护, 上传校验, 审计日志 |
@@ -458,9 +461,9 @@ personal_agent/
 ├── rag/                  RAG 检索链路（loader / splitter / vector_store / retriever / bm25）
 ├── config/               配置（settings + .env + prometheus + grafana）
 ├── frontend/             Vue 3 前端（Vite 构建，纯 CSS 响应式）
-├── scripts/              运维脚本（rollback / health_check）
-├── nginx/                Nginx 配置（反向代理 + 限流 + HTTPS 模板）
-├── .github/workflows/    CI/CD 流水线（GitHub Actions）
+├── scripts/              运维脚本（health_check；旧镜像 rollback 入口已禁用）
+├── nginx/                Nginx 配置（HTTP 反向代理 + 限流；另有匹配功能的 HTTPS 模板）
+├── .github/workflows/    CI 流水线（GitHub Actions；不自动部署）
 ├── assets/               运行时数据（chroma_db / upload_docs / sample_kb）
 ├── logs/                 日志（Loguru 轮转，30 天保留）
 ├── Dockerfile            多阶段构建

@@ -6,7 +6,7 @@ The current server URL (`http://193.112.29.164:8080`) is plain HTTP. Passwords a
 JWTs are therefore not encrypted in transit. Do not use real credentials over an untrusted
 network. Before treating the public deployment as production/enterprise-ready, terminate TLS
 with a trusted certificate and use an HTTPS domain; then restrict `CORS_ORIGINS` to that origin.
-The Nginx TLS block and Compose port mapping are currently templates, not active configuration.
+The HTTPS Nginx file and Compose 443 mapping are templates, not active configuration; the deployed service remains HTTP-only.
 
 Registration should remain disabled unless public account creation is explicitly intended.
 Production must use unique `JWT_SECRET_KEY` and admin credentials in the server-only

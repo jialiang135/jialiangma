@@ -21,7 +21,6 @@ import Composer from '../components/chat/Composer.vue'
 import ConversationSidebar from '../components/chat/ConversationSidebar.vue'
 import MessageItem from '../components/chat/MessageItem.vue'
 import UiButton from '../components/ui/UiButton.vue'
-import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiIcon from '../components/ui/UiIcon.vue'
 import UiModal from '../components/ui/UiModal.vue'
 import { useChatStream } from '../composables/useChatStream.js'
@@ -197,26 +196,48 @@ onMounted(() => {
       </header>
 
       <div ref="scroller" class="chat-scroll" @scroll.passive="onScroll">
-        <UiEmpty
-          v-if="showEmptyState"
-          icon="layers"
-          title="个人数字分身"
-          description="基于私有知识库的智能问答。每个回答都会标注它依据了知识库里的哪些片段 —— 句句有据可查。"
-        >
-          <button
-            v-for="q in quickQuestions"
-            :key="q.label"
-            class="quick-card"
-            type="button"
-            @click="pickQuick(q)"
-          >
-            <UiIcon :name="q.icon" :size="16" class="quick-icon" />
-            <span class="quick-text">
-              <span class="quick-label">{{ q.label }}</span>
-              <span class="quick-hint">{{ q.hint }}</span>
-            </span>
-          </button>
-        </UiEmpty>
+        <section v-if="showEmptyState" class="chat-welcome" aria-labelledby="welcome-title">
+          <div class="welcome-hero">
+            <span class="welcome-mark"><UiIcon name="layers" :size="22" /></span>
+            <p class="welcome-kicker"><i /> 私有知识库 · 证据优先</p>
+            <h1 id="welcome-title">你好，今天想聊点什么？</h1>
+            <p class="welcome-desc">
+              我可以结合知识库中的项目、技能和经历作答。每个回答都尽量附上来源，
+              让内容<strong>可核查，而不只是听起来可信</strong>。
+            </p>
+            <div class="welcome-capabilities">
+              <span><UiIcon name="file" :size="14" />来源可追溯</span>
+              <span><UiIcon name="zap" :size="14" />推理可展开</span>
+              <span><UiIcon name="shield" :size="14" />未知不编造</span>
+            </div>
+          </div>
+
+          <div class="quick-section">
+            <div class="quick-heading">
+              <div>
+                <h2>从一个问题开始</h2>
+                <p>选择一个方向，快速开启对话</p>
+              </div>
+              <span class="quick-count">QUICK START <b>{{ String(quickQuestions.length).padStart(2, '0') }}</b></span>
+            </div>
+            <div class="quick-grid">
+              <button
+                v-for="q in quickQuestions"
+                :key="q.label"
+                class="quick-card"
+                type="button"
+                @click="pickQuick(q)"
+              >
+                <span class="quick-icon-wrap"><UiIcon :name="q.icon" :size="17" /></span>
+                <span class="quick-text">
+                  <span class="quick-label">{{ q.label }}</span>
+                  <span class="quick-hint">{{ q.hint }}</span>
+                </span>
+                <UiIcon name="chevron-right" :size="15" class="quick-arrow" />
+              </button>
+            </div>
+          </div>
+        </section>
 
         <div v-else class="chat-stream">
           <MessageItem
@@ -278,6 +299,7 @@ onMounted(() => {
   display: flex;
   height: 100%;
   min-height: 0;
+  background: var(--c-bg);
 }
 
 .chat-main {
@@ -319,6 +341,9 @@ onMounted(() => {
   flex: 1;
   padding: var(--sp-6) var(--sp-5) var(--sp-4);
   overflow-y: auto;
+  background:
+    radial-gradient(ellipse at 50% 0%, var(--c-chat-glow), transparent 58%),
+    var(--c-bg);
 }
 
 .chat-stream {
@@ -327,16 +352,168 @@ onMounted(() => {
   margin: 0 auto;
 }
 
-/* 快捷问题做成卡片放在空状态里，而不是飘在输入框上方 */
+/* 新会话欢迎区：让项目能力和可尝试的问题一眼可见 */
+.chat-welcome {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: clamp(34px, 6vh, 58px);
+  width: 100%;
+  max-width: 960px;
+  min-height: 100%;
+  margin: 0 auto;
+  padding: clamp(32px, 7vh, 72px) clamp(8px, 2vw, 24px);
+}
+.welcome-hero {
+  max-width: 720px;
+  margin: 0 auto;
+  text-align: center;
+}
+.welcome-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 18px;
+  color: var(--c-white);
+  background: var(--c-accent-gradient);
+  border: 1px solid var(--c-white);
+  border-radius: 18px;
+  box-shadow: 0 10px 26px var(--c-accent-halo);
+  animation: welcome-float 5s ease-in-out infinite;
+}
+@keyframes welcome-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .welcome-mark {
+    animation: none;
+  }
+}
+.welcome-kicker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.05em;
+  color: var(--c-text-3);
+}
+.welcome-kicker i {
+  width: 7px;
+  height: 7px;
+  background: var(--c-success);
+  border-radius: 50%;
+  box-shadow: 0 0 0 4px var(--c-success-soft);
+}
+.welcome-hero h1 {
+  margin-top: 14px;
+  font-size: clamp(28px, 3vw, 38px);
+  font-weight: var(--fw-semibold);
+  line-height: 1.25;
+  letter-spacing: -0.045em;
+  color: var(--c-text);
+}
+.welcome-desc {
+  max-width: 58ch;
+  margin: 14px auto 0;
+  font-size: var(--fs-base);
+  line-height: 1.8;
+  color: var(--c-text-2);
+}
+.welcome-desc strong {
+  font-weight: var(--fw-semibold);
+  color: var(--c-accent-text);
+}
+.welcome-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 20px;
+}
+.welcome-capabilities span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  font-size: var(--fs-xs);
+  color: var(--c-text-2);
+  background: var(--c-glass-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-full);
+}
+.welcome-capabilities svg {
+  color: var(--c-accent);
+}
+
+.quick-section {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+}
+.quick-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  margin-bottom: 14px;
+}
+.quick-heading h2 {
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.02em;
+  color: var(--c-text);
+}
+.quick-heading p {
+  margin-top: 3px;
+  font-size: var(--fs-xs);
+  color: var(--c-text-3);
+}
+.quick-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 2px;
+  font-size: 9px;
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.12em;
+  color: var(--c-text-3);
+}
+.quick-count b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  font-size: 10px;
+  color: var(--c-accent-text);
+  background: var(--c-accent-soft);
+  border-radius: var(--r-full);
+}
+.quick-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
 .quick-card {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
+  gap: 11px;
+  min-width: 0;
+  padding: 14px 13px;
   text-align: left;
-  background: var(--c-surface);
+  background: var(--c-glass-surface);
   border: 1px solid var(--c-border);
-  border-radius: var(--r-lg);
+  border-radius: 15px;
   box-shadow: var(--sh-1);
   transition: border-color var(--dur-fast) var(--ease),
     box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
@@ -344,14 +521,26 @@ onMounted(() => {
 .quick-card:hover {
   border-color: var(--c-accent-border);
   box-shadow: var(--sh-2);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
-.quick-icon {
-  color: var(--c-accent);
+.quick-icon-wrap {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  color: var(--c-accent-text);
+  background: var(--c-accent-soft);
+  border: 1px solid var(--c-accent-border);
+  border-radius: 12px;
 }
 .quick-text {
   display: flex;
+  flex: 1;
   flex-direction: column;
+  gap: 3px;
+  min-width: 0;
 }
 .quick-label {
   font-size: var(--fs-sm);
@@ -362,10 +551,20 @@ onMounted(() => {
   font-size: var(--fs-xs);
   color: var(--c-text-3);
 }
+.quick-arrow {
+  flex-shrink: 0;
+  color: var(--c-text-3);
+  transition: color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.quick-card:hover .quick-arrow {
+  color: var(--c-accent);
+  transform: translateX(2px);
+}
 
 .chat-foot {
   flex-shrink: 0;
-  padding: 0 var(--sp-5) var(--sp-3);
+  padding: 14px var(--sp-5) var(--sp-3);
+  background: linear-gradient(to bottom, transparent, var(--c-bg) 22%);
 }
 /* 输入区与消息区宽度对齐，视觉上是一条中轴线 */
 .chat-foot :deep(.composer) {
@@ -391,8 +590,31 @@ onMounted(() => {
   .chat-scroll {
     padding: var(--sp-4) var(--sp-3) var(--sp-3);
   }
+  .chat-welcome {
+    min-height: auto;
+    gap: 34px;
+    padding: 34px 0 40px;
+  }
+  .welcome-mark {
+    width: 50px;
+    height: 50px;
+    margin-bottom: 14px;
+  }
+  .welcome-hero h1 {
+    font-size: clamp(26px, 6vw, 34px);
+  }
+  .welcome-desc {
+    font-size: var(--fs-sm);
+  }
+  .quick-grid {
+    grid-template-columns: 1fr;
+    gap: 9px;
+  }
+  .quick-card {
+    padding: 11px 12px;
+  }
   .chat-foot {
-    padding: 0 var(--sp-3) var(--sp-2);
+    padding: 10px var(--sp-3) var(--sp-2);
   }
   /* 侧栏改抽屉式：默认移出屏幕，靠工具条的汉堡按钮拉出 */
   .chat-sidebar {

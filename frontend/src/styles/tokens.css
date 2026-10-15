@@ -31,9 +31,9 @@
   /* 中性色：用 zinc 系（略带暖调）而不是 slate 系。
      冷灰蓝是后台模板的默认脸，暖灰看着更像打磨过的产品。 */
   --c-white: #ffffff;
-  --c-bg: #fafafa;
+  --c-bg: #f7f8fc;
   --c-surface: #ffffff;
-  --c-surface-2: #f4f4f5; /* 次级底：气泡、表头、输入框内底 */
+  --c-surface-2: #f4f4f7; /* 次级底：气泡、表头、输入框内底 */
   --c-surface-3: #ebebed; /* 三级底：hover、选中 */
 
   --c-border: #e4e4e7;
@@ -51,6 +51,30 @@
   --c-accent-soft: #eef2ff;
   --c-accent-text: #3730a3;
   --c-accent-border: #c7d2fe;
+  --c-accent-gradient: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  --c-accent-halo: rgba(79, 70, 229, 0.14);
+  --c-header-glass: rgba(255, 255, 255, 0.9);
+  --c-chat-glow: rgba(99, 102, 241, 0.05);
+  --c-glass-surface: rgba(255, 255, 255, 0.88);
+  --c-auth-glow: rgba(99, 102, 241, 0.07);
+
+  /* 品牌展示面板：深靛蓝基底与低对比度玻璃层 */
+  --c-brand-ink: #11132b;
+  --c-brand-indigo: #1f1b50;
+  --c-brand-violet: #322966;
+  --c-brand-highlight: #c4b5fd;
+  --c-brand-muted: rgba(226, 232, 255, 0.72);
+  --c-brand-status: rgba(224, 231, 255, 0.8);
+  --c-brand-subtle: rgba(226, 232, 255, 0.42);
+  --c-brand-mask: rgba(0, 0, 0, 0.3);
+  --c-overlay: rgba(24, 24, 27, 0.4);
+  --c-brand-glow: rgba(129, 140, 248, 0.24);
+  --c-brand-glass: rgba(255, 255, 255, 0.075);
+  --c-brand-glass-soft: rgba(255, 255, 255, 0.07);
+  --c-brand-glass-border: rgba(255, 255, 255, 0.15);
+  --c-brand-grid: rgba(255, 255, 255, 0.24);
+  --c-brand-deep-glass: rgba(15, 23, 42, 0.2);
+  --c-brand-success: #86efac;
 
   /* 语义色四件套 */
   --c-success: #16a34a;
@@ -134,6 +158,11 @@
   --sh-2: 0 1px 3px rgba(24, 24, 27, 0.08), 0 1px 2px rgba(24, 24, 27, 0.04);
   --sh-3: 0 4px 12px rgba(24, 24, 27, 0.08);
   --sh-4: 0 12px 32px rgba(24, 24, 27, 0.12);
+  --sh-float: 0 18px 48px rgba(31, 41, 85, 0.12), 0 4px 12px rgba(31, 41, 85, 0.05);
+  --sh-header: 0 4px 18px rgba(31, 41, 85, 0.035);
+  --sh-brand-mark: 0 8px 24px rgba(79, 70, 229, 0.35);
+  --sh-brand-success: 0 0 10px rgba(110, 231, 183, 0.75);
+  --sh-brand-preview: 0 20px 56px rgba(7, 8, 28, 0.22), inset 0 1px rgba(255, 255, 255, 0.08);
 
   --z-base: 1;
   --z-sticky: 100;

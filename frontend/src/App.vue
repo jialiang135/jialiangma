@@ -179,15 +179,20 @@ function closeGuide() {
   z-index: var(--z-sticky);
   flex-shrink: 0;
   height: var(--header-h);
-  background: var(--c-surface);
+  background: var(--c-header-glass);
   border-bottom: 1px solid var(--c-border);
+  box-shadow: var(--sh-header);
+  backdrop-filter: blur(16px);
 }
 
 .header-inner {
   display: flex;
   align-items: center;
   gap: var(--sp-4);
+  width: 100%;
+  max-width: 1680px;
   height: 100%;
+  margin: 0 auto;
   padding: 0 var(--sp-5);
 }
 
@@ -215,11 +220,13 @@ function closeGuide() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   color: var(--c-white);
-  background: var(--c-accent);
-  border-radius: var(--r-md);
+  background: var(--c-accent-gradient);
+  border: 1px solid var(--c-white);
+  border-radius: 10px;
+  box-shadow: 0 4px 12px var(--c-accent-halo);
 }
 .brand-text {
   display: flex;
@@ -238,15 +245,15 @@ function closeGuide() {
 .nav {
   display: flex;
   align-items: center;
-  gap: var(--sp-1);
-  margin-left: var(--sp-2);
+  gap: 3px;
+  margin-left: var(--sp-3);
 }
 
 .nav-link {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
+  padding: 8px 11px;
   font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
   color: var(--c-text-2);
@@ -284,7 +291,7 @@ function closeGuide() {
   position: fixed;
   inset: 0;
   z-index: var(--z-modal);
-  background: rgba(24, 24, 27, 0.4);
+  background: var(--c-overlay);
 }
 .drawer {
   display: flex;
