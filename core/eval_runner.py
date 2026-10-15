@@ -352,7 +352,7 @@ def _load_ragas():
         from ragas import EvaluationDataset, RunConfig, evaluate
         from ragas.embeddings import LangchainEmbeddingsWrapper
         from ragas.llms import LangchainLLMWrapper
-        from ragas.metrics import (
+        from ragas.metrics.collections import (
             answer_relevancy,
             context_precision,
             context_recall,

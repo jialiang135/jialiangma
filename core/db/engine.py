@@ -134,6 +134,10 @@ def run_async_from_thread(coro, timeout: float = 30.0):
     这里把协程提交到主循环执行并等待结果。
     """
     if _main_loop is None or not _main_loop.is_running():
+        # 调用方通常先构造 coroutine 再进入本函数。若循环已关闭，主动关闭
+        # coroutine，避免错误处理路径遗留 "was never awaited" 的 RuntimeWarning。
+        if asyncio.iscoroutine(coro):
+            coro.close()
         raise RuntimeError("主事件循环未就绪，无法跨线程执行异步数据库操作")
     future = asyncio.run_coroutine_threadsafe(coro, _main_loop)
     return future.result(timeout=timeout)
