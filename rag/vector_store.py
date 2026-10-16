@@ -29,7 +29,7 @@ _vector_store: Chroma | None = None
 
 class VectorStoreError(RuntimeError):
     """
-    向量库检索/统计链路故障（Chroma 挂了 / embedding 挂了 / filter 写错等）。
+    向量库链路故障（检索、删除、统计等操作中的 Chroma / Embedding 错误）。
 
     为什么用异常而不是返回 ``[]``：空列表与"知识库里本来就没有相关内容"
     **完全无法区分**，上层会把故障当成"没找到"，自信地答"我的知识库中没有
@@ -133,31 +133,34 @@ def add_documents(
 
     all_ids = []
     total = len(chunks)
+    owner_ids = {m.get("owner_id") for m in metadatas if m.get("owner_id") is not None}
+    write_attempted = False
 
-    for i in range(0, total, batch_size):
-        batch_chunks = chunks[i : i + batch_size]
-        batch_metadatas = metadatas[i : i + batch_size]
-        batch_ids = ids[i : i + batch_size]
+    try:
+        for i in range(0, total, batch_size):
+            batch_chunks = chunks[i : i + batch_size]
+            batch_metadatas = metadatas[i : i + batch_size]
+            batch_ids = ids[i : i + batch_size]
 
-        try:
-            added = vector_store.add_texts(
-                texts=batch_chunks,
-                metadatas=batch_metadatas,
-                ids=batch_ids,
-            )
-            all_ids.extend(added)
-            logger.info(f"向量库入库: {i + len(batch_chunks)}/{total}")
-        except Exception as e:
-            logger.error(f"向量库入库失败 (batch {i // batch_size}): {e}")
-            raise
+            write_attempted = True
+            try:
+                added = vector_store.add_texts(
+                    texts=batch_chunks,
+                    metadatas=batch_metadatas,
+                    ids=batch_ids,
+                )
+                all_ids.extend(added)
+                logger.info(f"向量库入库: {i + len(batch_chunks)}/{total}")
+            except Exception as e:
+                logger.error(f"向量库入库失败 (batch {i // batch_size}): {e}")
+                raise
+    finally:
+        # Even a failed batch may have partially persisted; don't retain stale search results.
+        if write_attempted:
+            for oid in owner_ids:
+                _invalidate_retrieval_caches(oid)
 
     logger.info(f"向量库入库完成: {len(all_ids)} 条")
-
-    # 文档变了 → 检索侧缓存必须失效，否则新增内容检索不到
-    owner_ids = {m.get("owner_id") for m in metadatas if m.get("owner_id") is not None}
-    for oid in owner_ids:
-        _invalidate_retrieval_caches(oid)
-
     return all_ids
 
 
@@ -201,10 +204,9 @@ def delete_by_file(filename: str, owner_id: int) -> int:
     删除某个文件的所有向量块（需 owner_id 校验）。
     返回删除数量。
     """
-    collection = _get_or_create_collection()
-
     count = 0
     try:
+        collection = _get_or_create_collection()
         # 查找匹配的文档ID
         existing = collection.get(
             where={
@@ -220,9 +222,10 @@ def delete_by_file(filename: str, owner_id: int) -> int:
             logger.info(f"从向量库删除文件: {filename}, {count} 条")
     except Exception as e:
         logger.warning(f"向量库删除失败: {e}")
-
-    # 无论是否删到东西都失效缓存：宁可多清一次，也不要留下旧结果
-    _invalidate_retrieval_caches(owner_id)
+        raise VectorStoreError(f"向量库删除失败: {e}") from e
+    finally:
+        # A failed delete may have partially changed storage; never retain stale results.
+        _invalidate_retrieval_caches(owner_id)
     return count
 
 
@@ -231,10 +234,9 @@ def delete_all_by_owner(owner_id: int) -> int:
     清空某个用户的所有向量数据。
     返回删除数量。
     """
-    collection = _get_or_create_collection()
-
     count = 0
     try:
+        collection = _get_or_create_collection()
         existing = collection.get(where={"owner_id": owner_id})
         if existing["ids"]:
             collection.delete(ids=existing["ids"])
@@ -242,8 +244,10 @@ def delete_all_by_owner(owner_id: int) -> int:
             logger.info(f"清空用户向量库: owner_id={owner_id}, {count} 条")
     except Exception as e:
         logger.warning(f"向量库清空失败: {e}")
-
-    _invalidate_retrieval_caches(owner_id)
+        raise VectorStoreError(f"向量库清空失败: {e}") from e
+    finally:
+        # A failed clear may have partially changed storage; never retain stale results.
+        _invalidate_retrieval_caches(owner_id)
     return count
 
 

@@ -264,7 +264,7 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
     **同步函数**，应在工作线程中执行。
     """
     from rag.document_loader import load_document_detailed
-    from rag.vector_store import add_documents
+    from rag.vector_store import add_documents, delete_by_file
 
     file_size = os.path.getsize(file_path)
     upload_dir = str(settings.resolve_path(settings.upload_dir))
@@ -313,19 +313,30 @@ def process_file_sync(file_path: str, filename: str, owner_id: int) -> dict:
         }
 
     metadatas = _chunk_metadatas(chunks, owner_id, filename, dest_path)
-    # 向量化是最慢的一步（每批一次 DashScope HTTP），单独计时
-    with span("document.embed", filename=filename, chunks=len(chunks)):
-        add_documents([c["content"] for c in chunks], metadatas)
+    try:
+        # 向量化是最慢的一步（每批一次 DashScope HTTP），单独计时
+        with span("document.embed", filename=filename, chunks=len(chunks)):
+            add_documents([c["content"] for c in chunks], metadatas)
 
-    file_id = run_async_from_thread(
-        insert_file_record(
-            owner_id=owner_id,
-            filename=filename,
-            filepath=dest_path,
-            file_size=file_size,
-            chunk_count=len(chunks),
+        file_id = run_async_from_thread(
+            insert_file_record(
+                owner_id=owner_id,
+                filename=filename,
+                filepath=dest_path,
+                file_size=file_size,
+                chunk_count=len(chunks),
+            )
         )
-    )
+    except Exception:
+        # Insertion may have partially written vectors before failing; don't leave a
+        # file that has no database record or searchable chunks with no file record.
+        try:
+            delete_by_file(filename, owner_id)
+        except Exception as cleanup_error:
+            logger.warning("[KB] 入库失败后的向量回滚失败: {} - {}", filename, cleanup_error)
+        with contextlib.suppress(OSError):
+            os.unlink(dest_path)
+        raise
     run_async_from_thread(update_file_chunk_count(file_id, len(chunks)))
     run_async_from_thread(update_file_hash(file_id, file_hash))
 
@@ -686,6 +697,7 @@ def check_kb_consistency(owner_id: int = 1) -> dict:
     files = run_async_from_thread(get_files_by_owner(owner_id))
     db_sources = {f["filename"] for f in files if f.get("filename")}
     stats = get_collection_stats(owner_id)
+    stats_error = stats.get("error")
     vec_sources = set(stats.get("files") or [])
 
     orphan_sources = sorted(vec_sources - db_sources)
@@ -693,14 +705,17 @@ def check_kb_consistency(owner_id: int = 1) -> dict:
 
     report = {
         "owner_id": owner_id,
-        "consistent": not orphan_sources and not sources_without_chunks,
+        "consistent": not stats_error and not orphan_sources and not sources_without_chunks,
+        "error": stats_error,
         "db_file_count": len(db_sources),
         "vector_chunk_count": stats.get("total_chunks", 0),
         "vector_source_count": len(vec_sources),
         "orphan_sources": orphan_sources,
         "sources_without_chunks": sources_without_chunks,
     }
-    if not report["consistent"]:
+    if stats_error:
+        logger.warning("[KB] 向量库一致性检查失败: {}", stats_error)
+    elif not report["consistent"]:
         logger.warning(
             "[KB] 知识库不一致: 向量库孤儿来源={} 缺向量的文件={}",
             orphan_sources,
@@ -722,6 +737,9 @@ def repair_kb_consistency(owner_id: int = 1) -> dict:
     from rag.vector_store import delete_by_file
 
     report = check_kb_consistency(owner_id)
+    if report.get("error"):
+        raise RuntimeError(f"知识库一致性检查失败，未执行修复: {report['error']}")
+
     removed = {}
     for source in report["orphan_sources"]:
         removed[source] = delete_by_file(source, owner_id)

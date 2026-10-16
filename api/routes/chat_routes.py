@@ -4,7 +4,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from loguru import logger
 
@@ -149,7 +149,10 @@ async def get_conversation(
 
     # 旧记录（无 conversation_id）：group_id 格式为 '__single_<id>'
     if conversation_id.startswith("__single_"):
-        log_id = int(conversation_id.replace("__single_", ""))
+        try:
+            log_id = int(conversation_id.removeprefix("__single_"))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="对话 ID 无效") from e
         log = await get_chat_log_by_id(owner_id, log_id)
         if not log:
             return {"conversation_id": conversation_id, "messages": [], "owner_id": owner_id}

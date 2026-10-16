@@ -149,6 +149,8 @@ async def tts_stream(ws: WebSocket) -> None:
         await ws.close(code=4401, reason="auth required")
         return
 
+    if not isinstance(first, dict):
+        first = {}
     user = await _user_from_token(first.get("token")) if first.get("type") == "auth" else None
     if not user:
         await _send_json(ws, {"type": "error", "message": "未认证"})

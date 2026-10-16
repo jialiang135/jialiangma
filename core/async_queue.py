@@ -80,15 +80,18 @@ class AsyncQueue:
                 调用方必须向用户如实报错，不能吞掉异常假装已提交 —— 那样前端会
                 去轮询一个永远不会完成的任务。
         """
-        try:
-            self._executor.submit(self._run, func, args, kwargs)
-        except RuntimeError as e:
-            raise QueueUnavailableError(f"任务队列不可用: {e}") from e
-
         with self._lock:
             self._submitted += 1
             task_id = f"task_{next(self._seq)}"
-        logger.info("任务提交: {} ({})", func.__name__, task_id)
+
+        try:
+            self._executor.submit(self._run, func, args, kwargs)
+        except RuntimeError as e:
+            with self._lock:
+                self._submitted -= 1
+            raise QueueUnavailableError(f"任务队列不可用: {e}") from e
+
+        logger.info("任务提交: {} ({})", getattr(func, "__name__", type(func).__name__), task_id)
         return task_id
 
     def _run(self, func, args, kwargs) -> None:

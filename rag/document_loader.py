@@ -179,10 +179,11 @@ def load_xlsx(filepath: str) -> str:
     try:
         import openpyxl
 
-        # 使用 with 语句确保资源正确释放
-        with openpyxl.load_workbook(filepath, read_only=True, data_only=True) as wb:
+        # Workbook is not a context manager; close explicitly so read-only archives release.
+        wb = openpyxl.load_workbook(filepath, read_only=True, data_only=True)
+        try:
             all_texts = []
-            sheet_names = list(wb.sheetnames)  # 在 close 前获取
+            sheet_names = list(wb.sheetnames)
             for sheet_name in sheet_names:
                 ws = wb[sheet_name]
                 sheet_texts = [f"--- Sheet: {sheet_name} ---"]
@@ -191,6 +192,8 @@ def load_xlsx(filepath: str) -> str:
                     if row_text.strip():
                         sheet_texts.append(row_text)
                 all_texts.append("\n".join(sheet_texts))
+        finally:
+            wb.close()
         content = "\n\n".join(all_texts)
         logger.info(f"XLSX 解析完成: {filepath}, sheets={sheet_names}")
         return content

@@ -98,6 +98,10 @@ async def remove_user(
         await asyncio.to_thread(delete_all_by_owner, user_id)
     except Exception as e:
         logger.warning(f"[Admin] 清理用户 {user_id} 向量库失败: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="用户知识库暂时无法清理，用户及关联文件未删除，请稍后重试",
+        ) from e
 
     # 清理上传文件
 
@@ -277,7 +281,7 @@ async def get_kb_consistency(current_user: dict = Depends(require_admin)):
     from core.kb_tasks import check_kb_consistency
 
     report = await asyncio.to_thread(check_kb_consistency, settings.shared_kb_owner_id)
-    return {"success": True, **report}
+    return {"success": not report.get("error"), **report}
 
 
 @router.post("/kb-consistency/repair")
@@ -291,7 +295,14 @@ async def repair_kb_consistency_endpoint(current_user: dict = Depends(require_ad
     """
     from core.kb_tasks import repair_kb_consistency
 
-    result = await asyncio.to_thread(repair_kb_consistency, settings.shared_kb_owner_id)
+    try:
+        result = await asyncio.to_thread(repair_kb_consistency, settings.shared_kb_owner_id)
+    except Exception as e:
+        logger.warning("[Admin] 知识库一致性修复未执行: {}", e)
+        raise HTTPException(
+            status_code=503,
+            detail="向量库暂时不可用，未执行修复，请稍后重试",
+        ) from e
     logger.info(
         "[Admin] 知识库一致性修复: {} 清除了 {} 个孤儿块",
         current_user["username"],

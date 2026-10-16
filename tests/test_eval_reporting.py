@@ -185,6 +185,43 @@ class TestConfigSnapshot:
 
 
 class TestRetrievalFailedAndStatus:
+    def test_empty_testset_is_marked_failed_without_loading_ragas(self, monkeypatch):
+        from core import eval_runner
+
+        monkeypatch.setattr(
+            eval_runner,
+            "_load_ragas",
+            lambda: pytest.fail("empty testset must not initialize the evaluator"),
+        )
+        report = _run_eval(monkeypatch, questions=[])
+        assert report["status"] == "failed"
+        assert report["error"] == "评测集为空"
+        assert report["progress"] == 100
+        assert json.loads(report["config_json"])["testset"] == "auto_eval"
+
+    def test_answer_exceptions_are_recorded_and_excluded(self, monkeypatch):
+        def fail(_question, _owner_id):
+            raise RuntimeError("agent unavailable")
+
+        report = _run_eval(monkeypatch, answer_fn=fail, metrics=["faithfulness"])
+        rows = json.loads(report["results_json"])
+        assert report["status"] == "failed"
+        assert len(rows) == 2
+        assert all(row["answer_failed"] and row["retrieval_failed"] for row in rows)
+        assert "因回答为空被排除" in report["error"]
+        assert report["answered_count"] == 0
+
+    def test_unknown_metric_names_fail_without_calling_ragas(self, monkeypatch):
+        capture = _patch_ragas(monkeypatch, scores={"faithfulness": [0.9]})
+        report = _run_eval(
+            monkeypatch,
+            metrics=["not-a-ragas-metric"],
+            scores_patch=capture,
+        )
+        assert report["status"] == "failed"
+        assert "未选择任何有效的 RAGAS 指标" in report["error"]
+        assert capture["n_samples"] is None
+
     def test_retrieval_failed_question_marked_and_excluded(self, monkeypatch):
         """检索为空的题被标记，且不进 RAGAS 样本、不参与聚合。"""
         captures = _patch_ragas(

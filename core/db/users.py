@@ -193,17 +193,23 @@ async def delete_user_cascade(user_id: int) -> dict:
     """
     counts: dict[str, int] = {}
     async with session_scope() as session:
+        user = await session.get(User, user_id)
         for name, model in (
             ("chat_logs", ChatLog),
             ("token_usage", TokenUsage),
-            ("login_attempts", None),  # 该表按 username 关联，见下
             ("files", FileRecord),
             ("upload_tasks", UploadTask),
         ):
-            if model is None:
-                continue
             result = await session.execute(delete(model).where(model.owner_id == user_id))
             counts[name] = result.rowcount or 0
+
+        if user is not None:
+            result = await session.execute(
+                delete(LoginAttempt).where(LoginAttempt.username == user.username)
+            )
+            counts["login_attempts"] = result.rowcount or 0
+        else:
+            counts["login_attempts"] = 0
 
         # audit_log 按 user_id
         result = await session.execute(delete(AuditLog).where(AuditLog.user_id == user_id))

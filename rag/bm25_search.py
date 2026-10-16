@@ -177,7 +177,14 @@ class BM25IndexManager:
                 }
             )
 
-        tokenized_corpus = [_tokenize(d["content"]) for d in documents]
+        tokenized_documents = [(doc, _tokenize(doc["content"])) for doc in documents]
+        tokenized_documents = [(doc, tokens) for doc, tokens in tokenized_documents if tokens]
+        if not tokenized_documents:
+            logger.warning("用户 {} 的文档没有可索引的关键词，BM25 索引为空", owner_id)
+            return None, []
+
+        documents = [doc for doc, _tokens in tokenized_documents]
+        tokenized_corpus = [tokens for _doc, tokens in tokenized_documents]
         bm25 = BM25Okapi(tokenized_corpus)
 
         logger.info("BM25 索引构建完成: owner_id={}, docs={}", owner_id, len(documents))

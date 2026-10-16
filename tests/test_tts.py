@@ -14,6 +14,9 @@
 ``scripts/tts_check.py``（合成本身）和 ``scripts/tts_ws_check.py``（服务端 WS）。
 """
 
+import asyncio
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -261,3 +264,165 @@ class TestTtsWebSocket:
             assert ws.receive_json() == {"type": "pong"}
         finally:
             ws.__exit__(None, None, None)
+
+
+def test_build_synthesizer_configures_sdk_and_forwards_callbacks(monkeypatch):
+    import dashscope.audio.tts_v2 as tts_v2
+
+    import core.tts as tts
+
+    captured = {}
+
+    class FakeResultCallback:
+        pass
+
+    class FakeSynthesizer:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(tts_v2, "ResultCallback", FakeResultCallback)
+    monkeypatch.setattr(tts_v2, "SpeechSynthesizer", FakeSynthesizer)
+    monkeypatch.setattr(tts.settings, "tts_model", "test-model")
+    monkeypatch.setattr(tts.settings, "tts_voice", "test-voice")
+    data, done, errors = [], [], []
+    synth = tts._build_synthesizer(data.append, lambda: done.append(True), errors.append)
+    callback = captured["callback"]
+
+    callback.on_open()
+    callback.on_event({"ignored": True})
+    callback.on_data(b"audio")
+    callback.on_data(b"")
+    callback.on_complete()
+    callback.on_error("provider error")
+    callback.on_close()
+
+    assert isinstance(synth, FakeSynthesizer)
+    assert captured["model"] == "test-model"
+    assert captured["voice"] == "test-voice"
+    assert captured["additional_params"] == {"enable_markdown_filter": True}
+    assert data == [b"audio"]
+    assert done == [True]
+    assert errors == ["provider error"]
+
+
+def test_synthesize_stream_yields_audio_and_propagates_provider_errors(monkeypatch):
+    import core.tts as tts
+
+    seen = []
+
+    def build(on_data, on_done, _on_error):
+        class Synth:
+            def streaming_call(self, text):
+                seen.append(text)
+                on_data(b"first")
+                on_data(b"second")
+
+            def streaming_complete(self):
+                on_done()
+
+        return Synth()
+
+    monkeypatch.setattr(tts, "_build_synthesizer", build)
+
+    async def collect():
+        return [chunk async for chunk in tts.synthesize_stream("hello")]
+
+    assert asyncio.run(collect()) == [b"first", b"second"]
+    assert seen == ["hello"]
+
+    def build_error(_on_data, _on_done, on_error):
+        class Synth:
+            def streaming_call(self, _text):
+                on_error("upstream refused")
+
+            def streaming_complete(self):
+                pass
+
+        return Synth()
+
+    monkeypatch.setattr(tts, "_build_synthesizer", build_error)
+
+    async def collect_error():
+        return [chunk async for chunk in tts.synthesize_stream("hello")]
+
+    with pytest.raises(tts.TTSError, match="upstream refused"):
+        asyncio.run(collect_error())
+
+
+def test_synthesize_stream_wraps_worker_exceptions_and_joins_early_exit(monkeypatch):
+    import core.tts as tts
+
+    def broken_builder(*_args):
+        raise RuntimeError("SDK construction failed")
+
+    monkeypatch.setattr(tts, "_build_synthesizer", broken_builder)
+
+    async def collect_error():
+        return [chunk async for chunk in tts.synthesize_stream("hello")]
+
+    with pytest.raises(tts.TTSError, match="SDK construction failed"):
+        asyncio.run(collect_error())
+
+    release = threading.Event()
+
+    def blocking_builder(on_data, on_done, _on_error):
+        class Synth:
+            def streaming_call(self, _text):
+                on_data(b"first")
+                release.wait(timeout=2)
+
+            def streaming_complete(self):
+                on_done()
+
+        return Synth()
+
+    monkeypatch.setattr(tts, "_build_synthesizer", blocking_builder)
+
+    async def stop_after_first_chunk():
+        stream = tts.synthesize_stream("hello")
+        first = await anext(stream)
+        timer = threading.Timer(0.05, release.set)
+        timer.start()
+        await stream.aclose()
+        timer.join()
+        return first
+
+    assert asyncio.run(stop_after_first_chunk()) == b"first"
+
+
+def test_synthesize_once_joins_chunks_and_honors_timeout(monkeypatch):
+    import core.tts as tts
+
+    async def chunks(_text):
+        yield b"a"
+        yield b"b"
+
+    monkeypatch.setattr(tts, "synthesize_stream", chunks)
+    assert tts.synthesize_once("hello") == b"ab"
+
+    async def slow_chunks(_text):
+        await asyncio.sleep(0.05)
+        yield b"late"
+
+    monkeypatch.setattr(tts, "synthesize_stream", slow_chunks)
+    with pytest.raises(TimeoutError):
+        tts.synthesize_once("slow", timeout=0.001)
+
+
+def test_tts_available_reports_disabled_missing_key_and_active_config(monkeypatch):
+    import core.tts as tts
+
+    monkeypatch.setattr(tts.settings, "tts_enabled", False)
+    monkeypatch.setattr(tts.settings, "dashscope_api_key", "valid-key")
+    assert tts.tts_available() == (False, "TTS 未启用（TTS_ENABLED=false）")
+
+    monkeypatch.setattr(tts.settings, "tts_enabled", True)
+    monkeypatch.setattr(tts.settings, "dashscope_api_key", "")
+    assert tts.tts_available() == (False, "DashScope API Key 未配置")
+    monkeypatch.setattr(tts.settings, "dashscope_api_key", "sk-your-placeholder")
+    assert tts.tts_available() == (False, "DashScope API Key 未配置")
+
+    monkeypatch.setattr(tts.settings, "dashscope_api_key", "valid-key")
+    monkeypatch.setattr(tts.settings, "tts_model", "cosyvoice-v2")
+    monkeypatch.setattr(tts.settings, "tts_voice", "longxiaochun_v2")
+    assert tts.tts_available() == (True, "cosyvoice-v2 / longxiaochun_v2")

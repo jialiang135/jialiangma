@@ -527,7 +527,8 @@ def _answer_one_sync(question: str, owner_id: int) -> tuple[str, list[str], list
                     source = match.group(1).strip()[:200]
                     score_text = match.group(2).strip()
                     try:
-                        score = round(float(score_text), 4)
+                        parsed_score = float(score_text)
+                        score = round(parsed_score, 4) if math.isfinite(parsed_score) else None
                     except ValueError:
                         score = None
                     item = {"source": source, "score": score}
@@ -642,7 +643,7 @@ def _as_number(value: Any) -> float | None:
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    if isinstance(value, float) and math.isnan(value):
+    if isinstance(value, float) and not math.isfinite(value):
         return None
     return float(value)
 

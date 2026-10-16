@@ -391,6 +391,152 @@ class TestCircuitBreaker:
 
         assert asyncio.run(run()) == "closed"
 
+    def test_cancelled_half_open_probe_can_be_retried(self):
+        from core.circuit_breaker import CircuitBreaker
+
+        async def run():
+            cb = CircuitBreaker(name="t", failure_threshold=1, recovery_timeout=0.01, max_retries=0)
+
+            async def boom():
+                raise RuntimeError("x")
+
+            with pytest.raises(RuntimeError):
+                await cb.call(boom)
+            await asyncio.sleep(0.02)
+            assert cb.state.value == "half_open"
+
+            entered = asyncio.Event()
+
+            async def pending_probe():
+                entered.set()
+                await asyncio.Event().wait()
+
+            probe = asyncio.create_task(cb.call(pending_probe))
+            await entered.wait()
+            probe.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await probe
+
+            async def recovered():
+                return "ok"
+
+            assert await cb.call(recovered) == "ok"
+            return cb.state.value
+
+        assert asyncio.run(run()) == "closed"
+
+    def test_sync_calls_retry_then_open_and_fail_fast(self):
+        from core.circuit_breaker import CircuitBreaker, CircuitOpenError
+
+        cb = CircuitBreaker(name="sync", failure_threshold=2, max_retries=1, backoff_base=0)
+        attempts = {"retry": 0, "failure": 0, "blocked": 0}
+
+        def succeeds_after_retry():
+            attempts["retry"] += 1
+            if attempts["retry"] == 1:
+                raise RuntimeError("transient")
+            return "ok"
+
+        assert cb.call_sync(succeeds_after_retry) == "ok"
+        assert attempts["retry"] == 2
+        assert cb.state.value == "closed"
+        assert cb.snapshot()["failure_count"] == 0
+
+        def fails():
+            attempts["failure"] += 1
+            raise RuntimeError("upstream")
+
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="upstream"):
+                cb.call_sync(fails)
+        assert attempts["failure"] == 4
+        assert cb.state.value == "open"
+
+        def must_not_run():
+            attempts["blocked"] += 1
+            return "unexpected"
+
+        with pytest.raises(CircuitOpenError):
+            cb.call_sync(must_not_run)
+        assert attempts["blocked"] == 0
+        assert cb.snapshot()["can_pass"] is False
+
+    def test_half_open_probe_failure_reopens_and_capacity_is_reported(self):
+        from core.circuit_breaker import CircuitBreaker, CircuitState
+
+        failed = CircuitBreaker(
+            name="half-open-fail", failure_threshold=1, recovery_timeout=0.01, max_retries=0
+        )
+
+        def boom():
+            raise RuntimeError("still down")
+
+        with pytest.raises(RuntimeError):
+            failed.call_sync(boom)
+        time.sleep(0.02)
+        assert failed.state == CircuitState.HALF_OPEN
+        failed.recovery_timeout = 10
+        with pytest.raises(RuntimeError):
+            failed.call_sync(boom)
+        assert failed.state == CircuitState.OPEN
+        assert failed.snapshot()["can_pass"] is False
+
+        probe = CircuitBreaker(
+            name="capacity", failure_threshold=1, recovery_timeout=0.01, half_open_max=2
+        )
+        with pytest.raises(RuntimeError):
+            probe.call_sync(boom)
+        time.sleep(0.02)
+        assert probe.snapshot()["state"] == "half_open"
+        assert probe.snapshot()["can_pass"] is True
+        assert probe.can_pass() is True
+        assert probe.snapshot()["can_pass"] is True
+        assert probe.can_pass() is True
+        assert probe.snapshot()["can_pass"] is False
+        assert probe.can_pass() is False
+
+    def test_decorator_fallback_value_and_non_circuit_exceptions(self):
+        from core.circuit_breaker import CircuitBreaker, CircuitOpenError, with_circuit_breaker
+
+        async def run():
+            cb = CircuitBreaker(name="fallback", failure_threshold=1, max_retries=0)
+
+            async def fail():
+                raise RuntimeError("down")
+
+            with pytest.raises(RuntimeError):
+                await cb.call(fail)
+
+            @with_circuit_breaker(cb, fallback_value="offline")
+            async def protected():
+                raise AssertionError("open circuit must not call upstream")
+
+            assert await protected() == "offline"
+
+            fresh = CircuitBreaker(name="exception", failure_threshold=10, max_retries=0)
+
+            @with_circuit_breaker(fresh, fallback_value="fallback")
+            async def errors():
+                raise ValueError("bad request")
+
+            assert await errors() == "fallback"
+
+            @with_circuit_breaker(fresh)
+            async def propagates():
+                raise ValueError("preserve original")
+
+            with pytest.raises(ValueError, match="preserve original"):
+                await propagates()
+
+        asyncio.run(run())
+
+    def test_fallback_response_without_query_has_no_prefix(self):
+        from core.circuit_breaker import CircuitBreaker
+
+        response = CircuitBreaker(name="t").get_fallback_response()
+        assert response.startswith("抱歉，AI 服务暂时不可用")
+        assert "原始问题" not in response
+
     def test_fallback_includes_original_query(self):
         """
         原实现用 getattr(kwargs, 'query') 取原始问题（kwargs 是 dict，

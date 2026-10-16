@@ -294,7 +294,28 @@ class _FakeEmbeddings:
 
 
 @pytest.fixture
-def fake_embeddings(monkeypatch):
+def clean_vector_collection():
+    """测试前后删除临时 Chroma 集合，避免不同 embedding 维度相互污染。"""
+    import rag.vector_store as vs
+
+    def clean():
+        vs.reset_vector_store()
+        client = vs._get_chroma_client()
+        exists = any(
+            getattr(collection, "name", collection) == vs.COLLECTION_NAME
+            for collection in client.list_collections()
+        )
+        if exists:
+            client.delete_collection(vs.COLLECTION_NAME)
+        vs.reset_vector_store()
+
+    clean()
+    yield
+    clean()
+
+
+@pytest.fixture
+def fake_embeddings(monkeypatch, clean_vector_collection):
     """
     把向量库的 embedding 换成假实现，并**重置懒加载单例**。
 
@@ -365,7 +386,7 @@ class TestVectorStore:
         delete_all_by_owner(owner)
 
     @pytest.mark.slow
-    def test_crud_with_real_embeddings(self):
+    def test_crud_with_real_embeddings(self, clean_vector_collection):
         """
         **真实的完整链路**：DashScope embedding → Chroma → 检索。
 
@@ -572,7 +593,12 @@ class TestAPIKB:
         data = resp.json()
         assert "total_files" in data or "files" in data
 
-    def test_upload_txt(self, client, auth_headers, sample_pdf):
+    def test_upload_txt(self, client, auth_headers, sample_pdf, monkeypatch):
+        # This test checks the HTTP upload/submission contract, not background processing.
+        # Keep the worker offline and deterministic; the queue handoff is covered separately.
+        from core.async_queue import async_queue
+
+        monkeypatch.setattr(async_queue, "enqueue", lambda *_args, **_kwargs: "queued")
         with open(sample_pdf, "rb") as f:
             resp = client.post(
                 "/api/kb/upload",

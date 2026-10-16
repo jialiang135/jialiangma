@@ -4,6 +4,7 @@ Token 使用统计与费用估算
 """
 
 import json
+import math
 from datetime import timedelta
 
 from loguru import logger
@@ -50,15 +51,26 @@ def _load_cost_rates() -> dict[str, dict[str, float]]:
         logger.error("settings.llm_cost_rates 不是合法 JSON，已忽略: {}", e)
         return rates
 
-    for model, rate in (overrides or {}).items():
-        if isinstance(rate, dict) and "input" in rate and "output" in rate:
+    if not isinstance(overrides, dict):
+        logger.error("settings.llm_cost_rates 必须是 JSON 对象，已忽略")
+        return rates
+
+    for model, rate in overrides.items():
+        if not isinstance(rate, dict) or "input" not in rate or "output" not in rate:
+            logger.warning("llm_cost_rates 里 {} 的格式不对（需 input/output），已跳过", model)
+            continue
+        try:
             entry = {"input": float(rate["input"]), "output": float(rate["output"])}
             # cached_input 是可选的，别漏掉 —— 漏了就等于"缓存命中不省钱"
             if rate.get("cached_input") is not None:
                 entry["cached_input"] = float(rate["cached_input"])
-            rates[model] = entry
-        else:
-            logger.warning("llm_cost_rates 里 {} 的格式不对（需 input/output），已跳过", model)
+        except (TypeError, ValueError, OverflowError):
+            logger.warning("llm_cost_rates 里 {} 的费率不是有效数字，已跳过", model)
+            continue
+        if any(not math.isfinite(value) or value < 0 for value in entry.values()):
+            logger.warning("llm_cost_rates 里 {} 的费率必须是有限非负数，已跳过", model)
+            continue
+        rates[model] = entry
     return rates
 
 

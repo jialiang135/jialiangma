@@ -25,6 +25,12 @@ from core import token_tracker as tt
 
 
 class TestCalculateCost:
+    def test_estimate_tokens_handles_empty_ascii_and_cjk_text(self):
+        assert tt.estimate_tokens("") == 0
+        assert tt.estimate_tokens("abc") == 1
+        assert tt.estimate_tokens("中文") == 3
+        assert tt.estimate_tokens("a中") == 1
+
     def test_known_model(self):
         """
         按**费率表里的实际值**算，不写死数字。
@@ -72,6 +78,51 @@ class TestCalculateCost:
         """缓存 token 数超过输入数时不该算出负成本"""
         cost = tt.calculate_cost("deepseek-v4-pro", 100, 0, cached_tokens=999_999)
         assert cost >= 0
+
+
+class TestTrackUsage:
+    def test_records_usage_and_contains_database_failures(self, monkeypatch):
+        import asyncio
+
+        class Session:
+            def add(self, row):
+                records.append(row)
+
+        class SessionContext:
+            async def __aenter__(self):
+                return Session()
+
+            async def __aexit__(self, *_args):
+                return None
+
+        records = []
+        monkeypatch.setattr(
+            tt,
+            "COST_RATES",
+            {"test-model": {"input": 1.0, "output": 2.0}},
+        )
+        monkeypatch.setattr(tt, "session_scope", lambda: SessionContext())
+        asyncio.run(tt.track_usage(9, "test-model", 1_000_000, 500_000, 100_000, 20_000))
+        row = records[0]
+        assert row.owner_id == 9
+        assert row.model == "test-model"
+        assert (row.prompt_tokens, row.completion_tokens, row.reasoning_tokens, row.cached_tokens) == (
+            1_000_000,
+            500_000,
+            100_000,
+            20_000,
+        )
+        assert row.cost_estimate == 1.98
+
+        class BrokenSession:
+            async def __aenter__(self):
+                raise RuntimeError("database unavailable")
+
+            async def __aexit__(self, *_args):
+                return None
+
+        monkeypatch.setattr(tt, "session_scope", lambda: BrokenSession())
+        asyncio.run(tt.track_usage(9, "test-model", 1, 1))  # best-effort recording must not fail the request
 
 
 class TestGlobalUsage:
@@ -157,6 +208,34 @@ class TestCostRateConfig:
         monkeypatch.setattr(settings, "llm_cost_rates", "{ 这不是 JSON")
         rates = tt._load_cost_rates()
         assert "deepseek-v4-pro" in rates
+
+    def test_malformed_numeric_rates_and_non_object_json_are_ignored(self, monkeypatch):
+        from config.settings import settings
+
+        monkeypatch.setattr(
+            settings,
+            "llm_cost_rates",
+            json.dumps(
+                {
+                    "bad-text": {"input": "not-a-number", "output": 1},
+                    "bad-infinity": {"input": float("inf"), "output": 1},
+                    "bad-negative": {"input": -1, "output": 1},
+                }
+            ),
+        )
+        rates = tt._load_cost_rates()
+        assert not {"bad-text", "bad-infinity", "bad-negative"} & rates.keys()
+
+        monkeypatch.setattr(settings, "llm_cost_rates", json.dumps([{"input": 1, "output": 2}]))
+        assert "deepseek-v4-pro" in tt._load_cost_rates()
+
+    def test_cached_rate_is_applied_to_cached_input(self, monkeypatch):
+        monkeypatch.setattr(
+            tt,
+            "COST_RATES",
+            {"test-model": {"input": 1.0, "output": 2.0, "cached_input": 0.1}},
+        )
+        assert tt.calculate_cost("test-model", 1_000_000, 0, cached_tokens=500_000) == 0.55
 
     def test_malformed_entry_skipped(self, monkeypatch):
         """条目格式不对（缺 input/output）时跳过它，别把整张表带坏"""

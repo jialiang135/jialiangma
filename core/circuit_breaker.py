@@ -105,18 +105,30 @@ class CircuitBreaker:
                     self.recovery_timeout,
                 )
 
-    def can_pass(self) -> bool:
-        """检查是否允许通过（半开态限量放行）。"""
+    def _admit(self) -> tuple[bool, bool]:
+        """尝试放行；返回值还标记本调用是否占用了半开探测名额。"""
         with self._lock:
             self._maybe_half_open()
             if self._state == CircuitState.CLOSED:
-                return True
-            if self._state == CircuitState.HALF_OPEN:
-                if self._half_open_inflight < self.half_open_max:
-                    self._half_open_inflight += 1
-                    return True
-                return False
-            return False
+                return True, False
+            if (
+                self._state == CircuitState.HALF_OPEN
+                and self._half_open_inflight < self.half_open_max
+            ):
+                self._half_open_inflight += 1
+                return True, True
+            return False, False
+
+    def can_pass(self) -> bool:
+        """检查是否允许通过（半开态限量放行）。"""
+        allowed, _ = self._admit()
+        return allowed
+
+    def _release_half_open_probe(self) -> None:
+        """取消的半开探测不代表上游失败，归还它占用的探测名额。"""
+        with self._lock:
+            if self._state == CircuitState.HALF_OPEN and self._half_open_inflight > 0:
+                self._half_open_inflight -= 1
 
     def snapshot(self) -> dict:
         """当前状态快照（供管理接口展示）。"""
@@ -150,61 +162,73 @@ class CircuitBreaker:
             CircuitOpenError: 熔断打开，直接拒绝（不重试）。
             原始异常:         重试耗尽后抛出，由调用方决定降级策略。
         """
-        if not self.can_pass():
+        allowed, half_open_probe = self._admit()
+        if not allowed:
             logger.warning("熔断器 [{}] 拒绝请求", self.name)
             raise CircuitOpenError(f"服务暂时不可用（熔断器 {self.name} 已打开）")
 
         last_exception = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                result = await func(*args, **kwargs)
-                self.on_success()
-                return result
-            except Exception as e:
-                last_exception = e
-                logger.warning(
-                    "熔断器 [{}] 第 {}/{} 次失败: {}",
-                    self.name,
-                    attempt + 1,
-                    self.max_retries + 1,
-                    e,
-                )
-                if attempt < self.max_retries:
-                    # 必须是 asyncio.sleep：time.sleep 会阻塞整个事件循环
-                    await asyncio.sleep(self.backoff_base**attempt)
+        try:
+            for attempt in range(self.max_retries + 1):
+                try:
+                    result = await func(*args, **kwargs)
+                    self.on_success()
+                    return result
+                except Exception as e:
+                    last_exception = e
+                    logger.warning(
+                        "熔断器 [{}] 第 {}/{} 次失败: {}",
+                        self.name,
+                        attempt + 1,
+                        self.max_retries + 1,
+                        e,
+                    )
+                    if attempt < self.max_retries:
+                        # 必须是 asyncio.sleep：time.sleep 会阻塞整个事件循环
+                        await asyncio.sleep(self.backoff_base**attempt)
 
-        self.on_failure()
-        raise last_exception
+            self.on_failure()
+            raise last_exception
+        except BaseException:
+            if half_open_probe:
+                self._release_half_open_probe()
+            raise
 
     def call_sync(self, func, *args, **kwargs):
         """
         执行受保护的**同步**调用（供 embedding 这类同步链路使用，
         它们本身已在 ``asyncio.to_thread`` 里，所以这里用 time.sleep 是安全的）。
         """
-        if not self.can_pass():
+        allowed, half_open_probe = self._admit()
+        if not allowed:
             logger.warning("熔断器 [{}] 拒绝请求", self.name)
             raise CircuitOpenError(f"服务暂时不可用（熔断器 {self.name} 已打开）")
 
         last_exception = None
-        for attempt in range(self.max_retries + 1):
-            try:
-                result = func(*args, **kwargs)
-                self.on_success()
-                return result
-            except Exception as e:
-                last_exception = e
-                logger.warning(
-                    "熔断器 [{}] 第 {}/{} 次失败: {}",
-                    self.name,
-                    attempt + 1,
-                    self.max_retries + 1,
-                    e,
-                )
-                if attempt < self.max_retries:
-                    time.sleep(self.backoff_base**attempt)
+        try:
+            for attempt in range(self.max_retries + 1):
+                try:
+                    result = func(*args, **kwargs)
+                    self.on_success()
+                    return result
+                except Exception as e:
+                    last_exception = e
+                    logger.warning(
+                        "熔断器 [{}] 第 {}/{} 次失败: {}",
+                        self.name,
+                        attempt + 1,
+                        self.max_retries + 1,
+                        e,
+                    )
+                    if attempt < self.max_retries:
+                        time.sleep(self.backoff_base**attempt)
 
-        self.on_failure()
-        raise last_exception
+            self.on_failure()
+            raise last_exception
+        except BaseException:
+            if half_open_probe:
+                self._release_half_open_probe()
+            raise
 
     # ── 降级文案 ──
 

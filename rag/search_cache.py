@@ -59,7 +59,7 @@ class TTLCache:
     def set(self, key: str, value) -> None:
         """写入缓存条目（若达到 maxsize 则淘汰最旧条目）。"""
         with self._lock:
-            if len(self._cache) >= self._maxsize:
+            if key not in self._cache and len(self._cache) >= self._maxsize:
                 oldest_key = min(self._cache, key=lambda k: self._cache[k]["ts"])
                 del self._cache[oldest_key]
             self._cache[key] = {"value": value, "ts": time.time()}

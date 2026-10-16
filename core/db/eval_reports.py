@@ -111,7 +111,11 @@ async def list_eval_reports(owner_id: int | None = None, limit: int = 20) -> lis
         if owner_id is not None:
             stmt = stmt.where(EvalReport.owner_id == owner_id)
         rows = (
-            (await session.execute(stmt.order_by(EvalReport.created_at.desc()).limit(limit)))
+            (
+                await session.execute(
+                    stmt.order_by(EvalReport.created_at.desc(), EvalReport.id.desc()).limit(limit)
+                )
+            )
             .scalars()
             .all()
         )
